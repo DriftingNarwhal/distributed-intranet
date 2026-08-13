@@ -52,6 +52,20 @@ pub fn hash_enc(enc: &Enc) -> Hash {
     hash_bytes(&enc.finish())
 }
 
+/// Computes a keyed hash — a message authentication code.
+///
+/// Used to derive synthetic nonces for deterministic encryption (Storage Spec
+/// §1.2, §5.3). The spec suggests `HMAC(key, hash(plaintext))`; BLAKE3's keyed
+/// mode is exactly that primitive in one pass, and is a proper MAC rather than a
+/// hash-with-key-prepended construction.
+///
+/// The output is unpredictable without the key, which is what keeps a synthetic
+/// nonce from leaking anything about the plaintext beyond the equality relation
+/// deduplication requires anyway.
+pub fn keyed_hash(key: &[u8; 32], data: &[u8]) -> Hash {
+    Hash(*blake3::keyed_hash(key, data).as_bytes())
+}
+
 /// Computes a Merkle root over an ordered list of leaf hashes.
 ///
 /// Used for quorum certificates (Core Protocol Spec §2.6.1, point 4), which are

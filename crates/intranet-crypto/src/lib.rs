@@ -24,7 +24,7 @@ pub mod sign;
 pub mod time;
 
 pub use enc::Enc;
-pub use hash::{Hash, hash_bytes, merkle_root};
+pub use hash::{Hash, hash_bytes, hash_enc, keyed_hash, merkle_root};
 pub use sign::{SecretKey, Signature, VerifyingKey};
 pub use time::Timestamp;
 
