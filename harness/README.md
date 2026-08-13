@@ -17,14 +17,14 @@ harness.
 | Relay + health/peer-id endpoints | **Verified, but see below.** Both endpoints answer and the peer id is returned. This is *not* evidence the relay is usable: it reported ready while granting reservations that no client could accept. |
 | Tier assertion (`dial --expect-tier`) | **Verified in both directions.** A correct expectation exits 0; a wrong one exits 1 with a conformance failure. |
 | Direct connection, tier 1 | **Verified.** Two real nodes over loopback, plus IPv6-before-IPv4 preference. |
-| Relay resource limits | **Unit-tested only.** 17 tests in `intranet-transport`; the limits are not wired into `RelayNode`'s event loop and are not exercised by a live relay. |
+| Relay resource limits | **Enforced by a live relay.** `RelayLimits` now configures the relay behaviour, and `relay_enforcement.rs` drives a real `RelayNode` and asserts a reservation past the ceiling is refused. Two gaps remain, below. |
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2, 4, 5 | **Passing.** |
 | **Scenario 3 (hole-punching)** | **FAILING.** See *Outstanding*. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 434 tests and `cargo clippy --workspace --all-targets` reports no
+passes 438 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -211,7 +211,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 434 tests
+cargo test --workspace                      # 438 tests
 cargo run -p intranet-harness -- --help
 ```
 
@@ -261,9 +261,15 @@ and drive the peers by hand instead.
 
 ## Not yet built
 
-- Relay rate-limit verification *inside* the NAT environment (§2.5). The limits
-  are unit-tested but are not wired into `RelayNode`, so a live relay does not
-  enforce them at all.
+- **Refusing service to identities that are not current members.** A live relay
+  now enforces its ceilings, and because a PeerId here is derived from a
+  per-network identity (§1.2) those ceilings cannot be shrugged off by rotating a
+  peer ID, as they could in a generic libp2p deployment. But nothing yet stops an
+  attacker presenting freshly generated keypairs that were never admitted, so the
+  cost the per-identity limit assumes is not actually being charged.
+- **Per-invite metering for pre-admission identities** (§5.3). `RelayGuard`
+  models it and is unit-tested, but a relay cannot apply it until it learns which
+  invite a connecting node used — a protocol addition, not a wiring one.
 - Governance partition scenarios (§3) — fork reconciliation and finality are
   tested in-process in `intranet-governance`, but not across partitioned
   containers with real gossip.

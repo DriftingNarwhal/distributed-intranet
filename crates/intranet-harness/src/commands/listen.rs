@@ -106,6 +106,19 @@ impl ListenArgs {
                 NodeEvent::ExternalAddressConfirmed { address } => {
                     println!("external-confirmed: {address}");
                 }
+                // Emitted only by a relay, but the event type is shared. Handled
+                // explicitly rather than with a catch-all: a wildcard here is how
+                // a future variant goes unnoticed, which is the failure mode that
+                // hid the relay's missing external address.
+                NodeEvent::ReservationGranted { peer } => {
+                    println!("reservation-granted: peer={peer}");
+                }
+                NodeEvent::ReservationDenied { peer } => {
+                    println!("reservation-denied: peer={peer}");
+                }
+                NodeEvent::ReservationReleased { peer } => {
+                    println!("reservation-released: peer={peer}");
+                }
             }
         }
 

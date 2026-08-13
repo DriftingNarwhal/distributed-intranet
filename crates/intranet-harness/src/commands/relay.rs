@@ -85,6 +85,17 @@ impl RelayArgs {
                     NodeEvent::Disconnected { peer } => {
                         println!("disconnected: peer={peer}");
                     }
+                    // A refusal has to be observable, or an unenforced limiter
+                    // is indistinguishable from an enforced one (§2.5).
+                    NodeEvent::ReservationGranted { peer } => {
+                        println!("reservation-granted: peer={peer}");
+                    }
+                    NodeEvent::ReservationDenied { peer } => {
+                        println!("reservation-denied: peer={peer}");
+                    }
+                    NodeEvent::ReservationReleased { peer } => {
+                        println!("reservation-released: peer={peer}");
+                    }
                     _ => {}
                 },
                 _ = tokio::signal::ctrl_c() => {

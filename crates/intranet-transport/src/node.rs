@@ -1,7 +1,7 @@
 //! Member and relay nodes — Core Protocol Spec §5.1–5.5.
 
 use crate::dial::{ConnectionTier, classify};
-use crate::{TransportError, behaviour::*};
+use crate::{RelayLimits, TransportError, behaviour::*};
 use intranet_identity::PerNetworkIdentity;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, identify, kad, mdns, ping, relay,
@@ -83,6 +83,24 @@ pub enum NodeEvent {
     ExternalAddressConfirmed {
         /// The confirmed address.
         address: Multiaddr,
+    },
+    /// A relay granted a reservation.
+    ReservationGranted {
+        /// The reserving peer.
+        peer: PeerId,
+    },
+    /// A relay refused a reservation, typically for exceeding a limit.
+    ///
+    /// Observable on purpose: a refusal that only appears in a log is
+    /// indistinguishable from a limiter that never ran.
+    ReservationDenied {
+        /// The refused peer.
+        peer: PeerId,
+    },
+    /// A reservation ended.
+    ReservationReleased {
+        /// The peer whose reservation ended.
+        peer: PeerId,
     },
 }
 
@@ -396,6 +414,44 @@ impl MemberNode {
     }
 }
 
+/// Builds a libp2p relay configuration from this project's declared limits.
+///
+/// # What wiring these buys, and what it does not
+///
+/// Until now `RelayLimits` was enforced only by `RelayGuard` in unit tests,
+/// while a live relay enforced nothing — which is precisely the class of defect
+/// §5.3 exists to prevent, a limiter that computes a decision nothing acts on.
+/// Mapping them onto libp2p's own ceilings makes a running relay reject
+/// reservations and circuits past the limit, close over-long circuits, and cut
+/// off circuits that exceed their byte budget.
+///
+/// libp2p keys its per-peer ceilings on PeerId. §5.3 warns that a peer-ID-keyed
+/// limit is not real protection because a peer ID is free to regenerate — and
+/// in a generic libp2p deployment that is exactly right. **Here the binding is
+/// tighter**: a node's PeerId is derived from its per-network identity key
+/// (§1.2), so it cannot be rotated without rotating that identity.
+///
+/// That is necessary but *not sufficient*, and the gap is worth naming: nothing
+/// stops an attacker generating fresh keypairs that were never admitted to the
+/// network. Making these limits meaningful therefore still requires refusing
+/// service to identities that are not current members, and metering
+/// pre-admission activity per-invite (§5.3) — neither of which a relay can do
+/// until it learns which invite a connecting node used. See
+/// [`relay_limits`](crate::relay_limits) for the model that expresses both.
+fn relay_config(limits: &RelayLimits) -> relay::Config {
+    relay::Config {
+        max_reservations: limits.max_reservations as usize,
+        max_reservations_per_peer: limits.max_reservations_per_identity as usize,
+        max_circuits: limits.max_circuits as usize,
+        max_circuits_per_peer: limits.max_reservations_per_identity as usize,
+        max_circuit_duration: std::time::Duration::from_millis(
+            limits.max_circuit_duration_millis.max(0) as u64,
+        ),
+        max_circuit_bytes: limits.max_circuit_bytes,
+        ..relay::Config::default()
+    }
+}
+
 /// A relay and bootstrap node — §5.2–5.5.
 ///
 /// Deliberately stateless across restarts: its keypair and all routing and
@@ -408,11 +464,26 @@ impl MemberNode {
 /// point §5.2 confirms against a real working implementation.
 pub struct RelayNode {
     swarm: Swarm<RelayBehaviour>,
+    limits: RelayLimits,
+    /// Reservations currently granted, by peer.
+    ///
+    /// Mirrors what libp2p is enforcing so the relay can report its own state —
+    /// otherwise "is the limit working" is answerable only by observing clients
+    /// fail, which is how an unenforced limiter goes unnoticed.
+    reservations: std::collections::BTreeSet<PeerId>,
 }
 
 impl RelayNode {
-    /// Builds a relay node from an identity.
+    /// Builds a relay node with the default resource limits.
     pub fn new(identity: &PerNetworkIdentity) -> Result<Self, TransportError> {
+        Self::with_limits(identity, RelayLimits::default())
+    }
+
+    /// Builds a relay node enforcing specific resource limits.
+    pub fn with_limits(
+        identity: &PerNetworkIdentity,
+        limits: RelayLimits,
+    ) -> Result<Self, TransportError> {
         let keypair = crate::keypair_for(identity);
 
         let swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -427,7 +498,7 @@ impl RelayNode {
             .with_behaviour(|key| {
                 let peer = key.public().to_peer_id();
                 RelayBehaviour {
-                    relay: relay::Behaviour::new(peer, relay::Config::default()),
+                    relay: relay::Behaviour::new(peer, relay_config(&limits)),
                     identify: identify::Behaviour::new(identify::Config::new(
                         PROTOCOL_VERSION.into(),
                         key.public(),
@@ -439,7 +510,21 @@ impl RelayNode {
             .map_err(|e| TransportError::Build(e.to_string()))?
             .build();
 
-        Ok(Self { swarm })
+        Ok(Self {
+            swarm,
+            limits,
+            reservations: std::collections::BTreeSet::new(),
+        })
+    }
+
+    /// The limits this relay is enforcing.
+    pub fn limits(&self) -> &RelayLimits {
+        &self.limits
+    }
+
+    /// How many reservations are currently granted.
+    pub fn reservation_count(&self) -> usize {
+        self.reservations.len()
     }
 
     /// This relay's PeerId.
@@ -505,6 +590,29 @@ impl RelayNode {
                 SwarmEvent::ExternalAddrConfirmed { address } => {
                     return NodeEvent::ExternalAddressConfirmed { address };
                 }
+
+                SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(
+                    relay::Event::ReservationReqAccepted { src_peer_id, .. },
+                )) => {
+                    self.reservations.insert(src_peer_id);
+                    return NodeEvent::ReservationGranted { peer: src_peer_id };
+                }
+
+                SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(
+                    relay::Event::ReservationReqDenied { src_peer_id, .. },
+                )) => {
+                    // Surfaced rather than logged, because "the limit is
+                    // enforced" is only demonstrable if a refusal is observable.
+                    return NodeEvent::ReservationDenied { peer: src_peer_id };
+                }
+
+                SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(
+                    relay::Event::ReservationClosed { src_peer_id },
+                )) => {
+                    self.reservations.remove(&src_peer_id);
+                    return NodeEvent::ReservationReleased { peer: src_peer_id };
+                }
+
                 other => {
                     tracing::trace!(event = ?other, "unhandled relay swarm event");
                     continue;
