@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/intranet-crypto",
+    "crates/intranet-identity",
+    "crates/intranet-governance",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+intranet-crypto = { path = "crates/intranet-crypto" }
+intranet-identity = { path = "crates/intranet-identity" }
+
+bip39 = "2.2"
+blake3 = "1.8"
+ed25519-dalek = "3.0"
+getrandom = "0.3"
+libp2p-identity = { version = "0.3", features = ["ed25519", "peerid"] }
+slip10_ed25519 = "0.1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

@@ -1,0 +1,14 @@
+[package]
+name = "intranet-governance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+intranet-crypto.workspace = true
+intranet-identity.workspace = true
+
+thiserror.workspace = true
+
+[lints]
+workspace = true
