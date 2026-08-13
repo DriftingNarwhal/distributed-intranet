@@ -47,7 +47,7 @@ pub mod object;
 pub mod pointer;
 pub mod serving;
 
-pub use appendset::{AppendSetEntry, AppendSetView, collection_id};
+pub use appendset::{AppendSetEntry, AppendSetView, collection_id, validate_entry_context};
 pub use chunk::ChunkSpec;
 pub use crypto::{Dek, EpochKey};
 pub use object::{Cid, EncodedObject, Manifest, decode, encode};

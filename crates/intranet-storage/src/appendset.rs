@@ -49,6 +49,38 @@ pub fn collection_id(network: &NetworkId, name: &str) -> Hash {
     hash_bytes(&e.finish())
 }
 
+/// The context checks every append-set-derived record must pass.
+///
+/// Extracted so that consumers building their own record types on this
+/// primitive — search postings being the first — reuse the security-critical
+/// logic rather than reimplementing it. Two of the three mandatory checks live
+/// here; the third, the signature, is specific to each record's own encoding
+/// and stays with the type that defines it.
+///
+/// Both checks resolve against replayed governance state, so a node answers
+/// them by computation rather than by asking anyone.
+pub fn validate_entry_context(
+    publisher: &PerNetworkIdentityId,
+    references: Option<&PointerId>,
+    state: &GovernanceState,
+) -> Result<(), StorageError> {
+    if !state.is_member(publisher) {
+        return Err(StorageError::PublisherNotAMember {
+            publisher: publisher.short(),
+        });
+    }
+
+    if let Some(pointer) = references
+        && state.is_delisted(pointer)
+    {
+        return Err(StorageError::ReferencesDelistedContent {
+            pointer: pointer.short(),
+        });
+    }
+
+    Ok(())
+}
+
 /// One independently-addressed entry in a collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendSetEntry {
@@ -128,21 +160,7 @@ impl AppendSetEntry {
             .verify(&payload, &self.signature)
             .map_err(|_| StorageError::BadSignature)?;
 
-        if !state.is_member(&self.publisher_identity) {
-            return Err(StorageError::PublisherNotAMember {
-                publisher: self.publisher_identity.short(),
-            });
-        }
-
-        if let Some(pointer) = &self.references
-            && state.is_delisted(pointer)
-        {
-            return Err(StorageError::ReferencesDelistedContent {
-                pointer: pointer.short(),
-            });
-        }
-
-        Ok(())
+        validate_entry_context(&self.publisher_identity, self.references.as_ref(), state)
     }
 
     fn payload_bytes(

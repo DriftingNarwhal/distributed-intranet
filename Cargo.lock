@@ -1795,6 +1795,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "intranet-search"
+version = "0.1.0"
+dependencies = [
+ "intranet-crypto",
+ "intranet-governance",
+ "intranet-identity",
+ "intranet-storage",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "intranet-storage"
 version = "0.1.0"
 dependencies = [

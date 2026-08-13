@@ -10,6 +10,7 @@ members = [
     "crates/intranet-ledger",
     "crates/intranet-storage",
     "crates/intranet-epoch",
+    "crates/intranet-search",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ intranet-transport = { path = "crates/intranet-transport" }
 intranet-ledger = { path = "crates/intranet-ledger" }
 intranet-storage = { path = "crates/intranet-storage" }
 intranet-epoch = { path = "crates/intranet-epoch" }
+intranet-search = { path = "crates/intranet-search" }
 
 bip39 = "2.2"
 chacha20poly1305 = "0.11"
