@@ -1499,6 +1499,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "intranet-ledger"
+version = "0.1.0"
+dependencies = [
+ "intranet-crypto",
+ "intranet-governance",
+ "intranet-identity",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "intranet-transport"
 version = "0.1.0"
 dependencies = [

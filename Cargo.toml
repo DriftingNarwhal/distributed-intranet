@@ -7,6 +7,7 @@ members = [
     "crates/intranet-invite",
     "crates/intranet-transport",
     "crates/intranet-harness",
+    "crates/intranet-ledger",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ intranet-identity = { path = "crates/intranet-identity" }
 intranet-governance = { path = "crates/intranet-governance" }
 intranet-invite = { path = "crates/intranet-invite" }
 intranet-transport = { path = "crates/intranet-transport" }
+intranet-ledger = { path = "crates/intranet-ledger" }
 
 bip39 = "2.2"
 clap = { version = "4", features = ["derive"] }
