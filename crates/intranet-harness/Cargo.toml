@@ -1,0 +1,23 @@
+[package]
+name = "intranet-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "intranet-harness"
+path = "src/main.rs"
+
+[dependencies]
+intranet-crypto.workspace = true
+intranet-governance.workspace = true
+intranet-identity.workspace = true
+intranet-invite.workspace = true
+intranet-transport.workspace = true
+
+clap.workspace = true
+libp2p.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

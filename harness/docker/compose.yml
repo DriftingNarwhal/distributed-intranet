@@ -1,0 +1,190 @@
+# NAT simulation topology — Reference Test Harness Spec §2.2.
+#
+# Reproduces real NAT'd topologies on one machine, so cross-NAT validation stops
+# requiring a second physical network and another person's cooperation. That
+# requirement is what actually blocked prior progress, which is why this file is
+# the centerpiece of the harness rather than an accessory to it.
+#
+# Topology:
+#
+#   public-net .............. the open internet; the relay lives here
+#     ├── gw-a ............... restricted-cone NAT ──> lan-a ──> peer-a
+#     ├── gw-b ............... restricted-cone NAT ──> lan-b ──> peer-b
+#     ├── gw-c-cgnat ......... symmetric NAT ────────> cgnat-c
+#     │     └── gw-c-home .... symmetric NAT ────────> lan-c ──> peer-c
+#     └── gw-d-cgnat ......... symmetric NAT ────────> cgnat-d
+#           └── gw-d-home .... symmetric NAT ────────> lan-d ──> peer-d
+#
+# peer-a and peer-b sit behind independent single-layer NATs: the expected case
+# for two different home networks, where hole-punching should succeed.
+# peer-c and peer-d sit behind double-NAT chains reproducing CGNAT, deliberately
+# the hardest real-world case and the one that caused the most trouble before.
+# Scenario 1 needs no NAT at all and runs two peers directly on lan-a.
+
+name: intranet-nat-harness
+
+x-peer: &peer
+  build:
+    context: ../..
+    dockerfile: harness/docker/Dockerfile.harness
+  entrypoint: ["/usr/local/bin/peer-entrypoint.sh"]
+  cap_add: [NET_ADMIN]
+  depends_on: [relay]
+
+x-nat: &nat
+  build:
+    context: ../..
+    dockerfile: harness/docker/Dockerfile.nat
+  cap_add: [NET_ADMIN]
+  sysctls:
+    net.ipv4.ip_forward: 1
+
+networks:
+  public-net:
+    ipam: {config: [{subnet: 172.30.0.0/24}]}
+  lan-a:
+    internal: true
+    ipam: {config: [{subnet: 172.31.1.0/24}]}
+  lan-b:
+    internal: true
+    ipam: {config: [{subnet: 172.31.2.0/24}]}
+  lan-c:
+    internal: true
+    ipam: {config: [{subnet: 172.31.3.0/24}]}
+  cgnat-c:
+    internal: true
+    ipam: {config: [{subnet: 172.31.4.0/24}]}
+  lan-d:
+    internal: true
+    ipam: {config: [{subnet: 172.31.5.0/24}]}
+  cgnat-d:
+    internal: true
+    ipam: {config: [{subnet: 172.31.6.0/24}]}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Relay and bootstrap node (§5.2–5.5)
+  # ---------------------------------------------------------------------------
+  relay:
+    build:
+      context: ../..
+      dockerfile: harness/docker/Dockerfile.harness
+    command:
+      - relay
+      - --seed=1
+      - --network=1
+      - --listen=/ip4/0.0.0.0/tcp/4001
+      - --listen=/ip4/0.0.0.0/udp/4001/quic-v1
+      - --health-port=8080
+    networks:
+      public-net:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      # §5.4: the relay answers health checks before it is fully initialized,
+      # returning a placeholder until setup completes, so a slow boot is not
+      # mistaken for a failed deployment.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # ---------------------------------------------------------------------------
+  # NAT gateways
+  # ---------------------------------------------------------------------------
+  gw-a:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: restricted
+    networks:
+      public-net: {ipv4_address: 172.30.0.21}
+      lan-a: {ipv4_address: 172.31.1.2}
+
+  gw-b:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: restricted
+    networks:
+      public-net: {ipv4_address: 172.30.0.22}
+      lan-b: {ipv4_address: 172.31.2.2}
+
+  # Carrier-grade layer for peer-c: symmetric, upstream of the home router.
+  gw-c-cgnat:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: symmetric
+    networks:
+      public-net: {ipv4_address: 172.30.0.23}
+      cgnat-c: {ipv4_address: 172.31.4.2}
+
+  gw-c-home:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: symmetric
+    networks:
+      cgnat-c: {ipv4_address: 172.31.4.3}
+      lan-c: {ipv4_address: 172.31.3.2}
+
+  gw-d-cgnat:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: symmetric
+    networks:
+      public-net: {ipv4_address: 172.30.0.24}
+      cgnat-d: {ipv4_address: 172.31.6.2}
+
+  gw-d-home:
+    <<: *nat
+    environment:
+      PRIVATE_IF: eth1
+      UPSTREAM_IF: eth0
+      NAT_MODE: symmetric
+    networks:
+      cgnat-d: {ipv4_address: 172.31.6.3}
+      lan-d: {ipv4_address: 172.31.5.2}
+
+  # ---------------------------------------------------------------------------
+  # Peers. Each waits to be driven by run-scenario.sh rather than dialling on
+  # start, so a scenario controls which side dials and what tier it asserts.
+  # ---------------------------------------------------------------------------
+  peer-a:
+    <<: *peer
+    environment: {GATEWAY_IP: 172.31.1.2}
+    command: ["--help"]
+    networks: {lan-a: {ipv4_address: 172.31.1.10}}
+
+  # Second peer on lan-a with no gateway in its path, for scenario 1's
+  # same-network baseline: mDNS discovery and direct connection, the sanity
+  # floor that everything else is measured against.
+  peer-a2:
+    <<: *peer
+    environment: {}
+    command: ["--help"]
+    networks: {lan-a: {ipv4_address: 172.31.1.11}}
+
+  peer-b:
+    <<: *peer
+    environment: {GATEWAY_IP: 172.31.2.2}
+    command: ["--help"]
+    networks: {lan-b: {ipv4_address: 172.31.2.10}}
+
+  peer-c:
+    <<: *peer
+    environment: {GATEWAY_IP: 172.31.3.2}
+    command: ["--help"]
+    networks: {lan-c: {ipv4_address: 172.31.3.10}}
+
+  peer-d:
+    <<: *peer
+    environment: {GATEWAY_IP: 172.31.5.2}
+    command: ["--help"]
+    networks: {lan-d: {ipv4_address: 172.31.5.10}}

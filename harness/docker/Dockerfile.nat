@@ -1,0 +1,16 @@
+# NAT gateway image — Reference Test Harness Spec §2.2.
+#
+# Performs real address/port translation and real connection-state tracking,
+# and drops unsolicited inbound the way an actual NAT does. That last part is
+# what makes this a genuine simulation rather than network segmentation with
+# extra steps: a gateway that forwarded unsolicited inbound would let every
+# scenario succeed at tier 1 and prove nothing.
+
+FROM alpine:3.20
+
+RUN apk add --no-cache iptables iproute2 bash
+
+COPY harness/docker/nat-entrypoint.sh /usr/local/bin/nat-entrypoint.sh
+RUN chmod +x /usr/local/bin/nat-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/nat-entrypoint.sh"]

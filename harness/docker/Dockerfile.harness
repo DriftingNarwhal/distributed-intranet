@@ -1,0 +1,24 @@
+# Harness node image — Reference Test Harness Spec §2.
+#
+# Builds the conformance CLI once and runs it as either a relay or a peer,
+# depending on the command a scenario passes.
+
+FROM rust:1-bookworm AS build
+WORKDIR /src
+
+# Copy manifests first so dependency compilation caches across source edits.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN cargo build --release --bin intranet-harness
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates iproute2 iputils-ping curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/target/release/intranet-harness /usr/local/bin/intranet-harness
+COPY harness/docker/peer-entrypoint.sh /usr/local/bin/peer-entrypoint.sh
+RUN chmod +x /usr/local/bin/peer-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/intranet-harness"]
