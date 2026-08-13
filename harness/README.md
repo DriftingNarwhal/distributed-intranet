@@ -135,13 +135,46 @@ alternated between `relayed` and "no connection within 60s" because the 10-secon
 teardown was racing the 15-second `--upgrade-secs` window. It was a race with our
 own defaults, not anything in the NAT.
 
-### Outstanding: the upgrade does not complete
+### The upgrade path itself is not the problem
 
-With both fixes, both sides advertise a dialable address and the traversal
-itself works — the dialing peer logs a real direct connection to its peer. DCUtR
-then reports the hole punch as failed and the connection is torn down, so the
-punch lands but the upgrade does not complete. That is a different problem from
-the one originally recorded here, and is where to pick up.
+`crates/intranet-transport/tests/hole_punch.rs` runs the whole tier-2 flow —
+relay, two reservations, a circuit dial, DCUtR — with both peers trivially
+dialable, and it passes:
+
+```
+dialer connected tier=relayed
+dialer connected tier=direct-ipv4
+dialer hole-punch succeeded
+```
+
+So DCUtR negotiation, the upgrade, and our attribution of it to the right
+connection all work. Whatever remains in the NAT environment is environmental.
+
+That test also documents a real constraint found while writing it: `RelayNode`
+refuses to advertise a loopback address as external, which is right in
+production but means **a loopback-only relay is unusable** — it hands back
+reservations containing no addresses. The test binds a routable interface
+instead.
+
+### Outstanding: one side's SYN is being dropped
+
+The reported symptom is asymmetric — the target logs a real direct connection
+while the initiator reports the punch as failed. That asymmetry is the useful
+clue: A's SYN reached B, so B's gateway admitted it, while B's SYN did not reach
+A, so A's gateway dropped it.
+
+A hole punch is a TCP simultaneous open, and Linux conntrack with strict window
+tracking can judge the reply-direction SYN out of window and mark it INVALID —
+after which the `ESTABLISHED,RELATED` rule never matches it and the default DROP
+applies. `net.netfilter.nf_conntrack_tcp_be_liberal=1` is the standard remedy
+and has been added to the gateway `sysctls:` in `docker/compose.yml`.
+
+**That change is unverified**: this container has no Docker. If the daemon
+rejects the key as unnamespaced it has to be set on the host. If hole-punching
+still fails with it applied, the next thing to check is timing rather than
+filtering — confirm with `conntrack -L` on each gateway that the initiator's
+outbound entry exists *before* the peer's SYN arrives, since a punch whose SYN
+lands first has no flow to match against.
 
 Scenarios 4 and 5 pass, so the fallback path the protocol guarantees does hold:
 scenario 5, the worst realistic case and the one that must always succeed, ends

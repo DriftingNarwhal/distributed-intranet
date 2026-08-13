@@ -38,6 +38,21 @@ x-nat: &nat
   cap_add: [NET_ADMIN]
   sysctls:
     net.ipv4.ip_forward: 1
+    # Hole-punching is a TCP simultaneous open: both peers send SYN at once and
+    # each NAT must admit the other's SYN as belonging to the flow its own peer
+    # just opened. With strict window tracking, conntrack can judge that
+    # reply-direction SYN out of window and mark it INVALID, at which point the
+    # FORWARD rule matching ESTABLISHED,RELATED never sees it and it is dropped.
+    #
+    # The effect is asymmetric and looks baffling: whichever side's SYN arrives
+    # after its own outbound is admitted, the other is dropped, so one peer holds
+    # a working direct connection while the other reports the punch as failed.
+    #
+    # Set on the gateways rather than in the entrypoint because /proc/sys is
+    # read-only in the container. **Unverified** — this container has no Docker,
+    # so it has not been run; if the daemon refuses the key as unnamespaced it
+    # must be set on the host instead.
+    net.netfilter.nf_conntrack_tcp_be_liberal: 1
 
 networks:
   public-net:
