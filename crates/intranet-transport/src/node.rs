@@ -302,15 +302,26 @@ impl MemberNode {
     /// Events observed while waiting are buffered and replayed, so a caller
     /// loses nothing by using this instead of `listen_on`.
     pub async fn reserve_via_relay(&mut self, relay: Multiaddr) -> Result<(), TransportError> {
-        // Waiting for *any* listener is not enough. libp2p reuses a listening
-        // port only when its loopback-ness matches the remote's, so a wildcard
-        // bind that reports 127.0.0.1 before its routable interface would
-        // satisfy a naive wait while registering nothing the dial can use.
-        let want_loopback = is_loopback(&relay);
+        // Waiting for *any* listener is not enough. libp2p pairs a listener with
+        // a dial only when **both** the address family and the loopback-ness
+        // match, so a wait satisfied by a listener failing either test proceeds
+        // while nothing the dial can actually use is registered.
+        //
+        // Both halves bite in practice, and differently:
+        //
+        // - loopback: a wildcard bind reports `127.0.0.1` before its routable
+        //   interface, so a naive wait is satisfied by a listener that cannot
+        //   serve a dial to a routable relay.
+        // - family: a dual-stack node listens on IPv4 and IPv6, and they do not
+        //   arrive together. Waiting on an IPv6 listener while dialling an IPv4
+        //   relay registers nothing usable — which matters more as IPv6
+        //   deployment grows, since dual-stack is the case where both are live
+        //   at once and the race is real rather than theoretical.
+        let want = AddressShape::of(&relay);
         let usable = |listeners: &std::collections::BTreeSet<Multiaddr>| {
             listeners
                 .iter()
-                .any(|address| is_loopback(address) == want_loopback)
+                .any(|address| AddressShape::of(address) == want)
         };
 
         if !usable(&self.direct_listeners) {
@@ -656,11 +667,50 @@ impl RelayNode {
     }
 }
 
+/// The properties that decide whether a listener can serve a dial.
+///
+/// Mirrors libp2p's own port-reuse rule, which pairs a listener with a remote
+/// only when the address family and loopback-ness both agree. Kept as a type so
+/// the two halves cannot drift apart, and so a future third condition has an
+/// obvious home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AddressShape {
+    ipv4: bool,
+    loopback: bool,
+}
+
+impl AddressShape {
+    fn of(address: &Multiaddr) -> Self {
+        let mut shape = Self {
+            // Absent an IP component there is nothing to pair on; treating it as
+            // IPv4 keeps the comparison total rather than introducing an
+            // "unknown" that silently matches everything.
+            ipv4: true,
+            loopback: false,
+        };
+        for part in address.iter() {
+            match part {
+                libp2p::multiaddr::Protocol::Ip4(ip) => {
+                    shape.ipv4 = true;
+                    shape.loopback = ip.is_loopback();
+                    return shape;
+                }
+                libp2p::multiaddr::Protocol::Ip6(ip) => {
+                    shape.ipv4 = false;
+                    shape.loopback = ip.is_loopback();
+                    return shape;
+                }
+                _ => {}
+            }
+        }
+        shape
+    }
+}
+
 /// Whether an address is loopback.
 ///
-/// Used for two different decisions: whether a relay may advertise an address as
-/// external, and whether a listener can serve a dial under libp2p's port-reuse
-/// rule, which pairs listeners and remotes by loopback-ness.
+/// Used for whether a relay may advertise an address as external; listener
+/// pairing uses [`AddressShape`], which also accounts for address family.
 fn is_loopback(address: &Multiaddr) -> bool {
     address.iter().any(|part| match part {
         libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),

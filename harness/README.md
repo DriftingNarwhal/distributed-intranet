@@ -24,7 +24,7 @@ harness.
 | **Scenario 3 (hole-punching)** | **FAILING.** See *Outstanding*. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 438 tests and `cargo clippy --workspace --all-targets` reports no
+passes 440 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -242,7 +242,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 438 tests
+cargo test --workspace                      # 440 tests
 cargo run -p intranet-harness -- --help
 ```
 
@@ -301,6 +301,13 @@ and drive the peers by hand instead.
 - **Per-invite metering for pre-admission identities** (§5.3). `RelayGuard`
   models it and is unit-tested, but a relay cannot apply it until it learns which
   invite a connecting node used — a protocol addition, not a wiring one.
+- **Any IPv6 scenario.** The topology is IPv4 only — every network in
+  `docker/compose.yml` is an IPv4 subnet and the peers bind `/ip4/...`. So the
+  matrix cannot tell us whether §5.2's tier-1 IPv6 preference works, and cannot
+  exercise the case that matters most for real deployments: a peer behind CGNAT,
+  where IPv4 hole-punching may be impossible but a globally-routable IPv6 address
+  needs no traversal at all. The ordering itself is unit-tested
+  (`dial.rs`, and `conformance.rs` over loopback), but end to end it is unproven.
 - Governance partition scenarios (§3) — fork reconciliation and finality are
   tested in-process in `intranet-governance`, but not across partitioned
   containers with real gossip.

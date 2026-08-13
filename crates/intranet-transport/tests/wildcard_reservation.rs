@@ -254,3 +254,70 @@ async fn diagnostic_wildcard_with_routable_relay() {
     println!("ROUTABLE-RELAY listen_port={listen} observed_source_port={observed} reused={}",
         listen == observed);
 }
+
+#[tokio::test]
+async fn reserve_via_relay_waits_for_a_listener_of_the_relays_family() {
+    // A dual-stack node listens on both families, and they do not arrive
+    // together. libp2p pairs a listener with a dial only when the family *and*
+    // loopback-ness both match, so waiting on an IPv6 listener while dialling an
+    // IPv4 relay would register nothing usable and lose port reuse silently.
+    //
+    // This matters more as IPv6 deployment grows: dual-stack is precisely the
+    // case where both are live at once and the race stops being theoretical.
+    let relay_identity = identity(1);
+    let mut relay = RelayNode::new(&relay_identity).unwrap();
+    relay.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+
+    let relay_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = relay.next_event().await
+                && tcp_port(&address).is_some()
+                && !address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+            {
+                return address;
+            }
+        }
+    })
+    .await
+    .expect("relay should listen on a routable IPv4 address");
+
+    // Bind IPv6 first, so the naive wait would be satisfied by the wrong family.
+    let mut member = MemberNode::new(&identity(2)).unwrap();
+    member.listen_on("/ip6/::/tcp/0".parse().unwrap()).unwrap();
+    member.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+
+    let relay_full = relay_addr.with(Protocol::P2p(relay_identity.peer_id()));
+    member.reserve_via_relay(relay_full).await.unwrap();
+
+    let mut ipv4_listen = None;
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = relay.next_event() => {
+                    if let NodeEvent::Connected { address, .. } = event
+                        && let Some(port) = tcp_port(&address)
+                    {
+                        return port;
+                    }
+                }
+                event = member.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if !ip.is_loopback()))
+                        && let Some(port) = tcp_port(&address)
+                    {
+                        ipv4_listen = Some(port);
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("the member should reach the relay");
+
+    assert_eq!(
+        ipv4_listen.expect("a routable IPv4 listen port"),
+        observed,
+        "reserving toward an IPv4 relay must reuse the IPv4 listener, not be satisfied \
+         by an IPv6 one that cannot serve the dial"
+    );
+}
