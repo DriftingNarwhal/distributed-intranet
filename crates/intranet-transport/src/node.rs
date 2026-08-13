@@ -84,6 +84,17 @@ pub enum NodeEvent {
         /// The confirmed address.
         address: Multiaddr,
     },
+    /// An outbound dial failed.
+    ///
+    /// Carries the reason, because during a hole punch that reason is the whole
+    /// diagnosis: refused, timed out and never left are three different faults
+    /// with three different fixes.
+    DialFailed {
+        /// The peer dialled, if known.
+        peer: Option<PeerId>,
+        /// Why it failed.
+        error: String,
+    },
     /// A relay granted a reservation.
     ReservationGranted {
         /// The reserving peer.
@@ -291,9 +302,20 @@ impl MemberNode {
     /// Events observed while waiting are buffered and replayed, so a caller
     /// loses nothing by using this instead of `listen_on`.
     pub async fn reserve_via_relay(&mut self, relay: Multiaddr) -> Result<(), TransportError> {
-        if self.direct_listeners.is_empty() {
+        // Waiting for *any* listener is not enough. libp2p reuses a listening
+        // port only when its loopback-ness matches the remote's, so a wildcard
+        // bind that reports 127.0.0.1 before its routable interface would
+        // satisfy a naive wait while registering nothing the dial can use.
+        let want_loopback = is_loopback(&relay);
+        let usable = |listeners: &std::collections::BTreeSet<Multiaddr>| {
+            listeners
+                .iter()
+                .any(|address| is_loopback(address) == want_loopback)
+        };
+
+        if !usable(&self.direct_listeners) {
             let deadline = tokio::time::Instant::now() + LISTENER_SETTLE_TIMEOUT;
-            while self.direct_listeners.is_empty() {
+            while !usable(&self.direct_listeners) {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
                     break;
@@ -373,6 +395,18 @@ impl MemberNode {
                         Err(_) => NodeEvent::HolePunchFailed {
                             peer: remote_peer_id,
                         },
+                    };
+                }
+
+                SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                    // The reason a hole punch failed lives here and nowhere
+                    // else. Discarding it leaves "the punch failed" with no
+                    // account of whether the SYN was refused, timed out, or
+                    // never left — which is the difference between a NAT
+                    // problem and a timing one.
+                    return NodeEvent::DialFailed {
+                        peer: peer_id,
+                        error: error.to_string(),
                     };
                 }
 
@@ -622,7 +656,11 @@ impl RelayNode {
     }
 }
 
-/// Whether an address is loopback, and so not usable as an external address.
+/// Whether an address is loopback.
+///
+/// Used for two different decisions: whether a relay may advertise an address as
+/// external, and whether a listener can serve a dial under libp2p's port-reuse
+/// rule, which pairs listeners and remotes by loopback-ness.
 fn is_loopback(address: &Multiaddr) -> bool {
     address.iter().any(|part| match part {
         libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),

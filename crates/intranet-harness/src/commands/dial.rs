@@ -185,8 +185,33 @@ impl DialArgs {
                         return (peer, ConnectionTier::HolePunched);
                     }
                     NodeEvent::HolePunchFailed { peer } if is_target(peer) => {
-                        println!("hole-punch: failed peer={peer}, staying relayed");
-                        return (peer, ConnectionTier::Relayed);
+                        // Reported, but deliberately *not* returned on.
+                        //
+                        // DCUtR has both peers dial simultaneously, and only our
+                        // own dial's outcome reaches us as success or failure. If
+                        // ours fails while the peer's succeeds, their connection
+                        // still arrives here as an ordinary inbound one — so
+                        // returning at this point would report `relayed` while a
+                        // direct connection was moments away, and would explain a
+                        // peer that appears to establish a direct connection we
+                        // never see.
+                        //
+                        // Waiting out the upgrade window instead costs nothing
+                        // when the punch has genuinely failed: the window expires
+                        // and `relayed` is reported anyway.
+                        println!("hole-punch: our dial failed peer={peer}; \
+                                  waiting out the upgrade window in case theirs lands");
+                        settle.get_or_insert_with(|| {
+                            (tokio::time::Instant::now() + upgrade_window, peer)
+                        });
+                    }
+                    NodeEvent::DialFailed { peer, error } => {
+                        // The reason a punch failed, which is otherwise invisible:
+                        // refused, timed out and never left are different faults.
+                        match peer {
+                            Some(peer) => println!("dial-failed: peer={peer} error={error}"),
+                            None => println!("dial-failed: error={error}"),
+                        }
                     }
                     NodeEvent::Listening(address) => {
                         println!("listening: {address}");

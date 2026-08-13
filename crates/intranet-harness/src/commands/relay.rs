@@ -87,6 +87,12 @@ impl RelayArgs {
                     }
                     // A refusal has to be observable, or an unenforced limiter
                     // is indistinguishable from an enforced one (§2.5).
+                    NodeEvent::DialFailed { peer, error } => {
+                        match peer {
+                            Some(peer) => println!("dial-failed: peer={peer} error={error}"),
+                            None => println!("dial-failed: error={error}"),
+                        }
+                    }
                     NodeEvent::ReservationGranted { peer } => {
                         println!("reservation-granted: peer={peer}");
                     }

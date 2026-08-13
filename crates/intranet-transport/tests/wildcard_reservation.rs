@@ -185,3 +185,72 @@ async fn reserve_via_relay_restores_port_reuse_for_a_wildcard_bind() {
          dialable address"
     );
 }
+
+/// Same as `observed_source_port`, but the relay sits on a routable interface.
+///
+/// libp2p only reuses a listening port when the listener's loopback-ness matches
+/// the remote's (`local_dial_addr`). A wildcard bind reports 127.0.0.1 before the
+/// routable interface, so waiting for *any* listener can proceed while only a
+/// loopback one is registered — which matches nothing when the relay is routable.
+async fn observed_source_port_routable_relay(how: Reserve) -> (u16, u16) {
+    let relay_identity = identity(1);
+    let mut relay = RelayNode::new(&relay_identity).unwrap();
+    relay.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+
+    let relay_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = relay.next_event().await
+                && tcp_port(&address).is_some()
+                && !address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+            {
+                return address;
+            }
+        }
+    })
+    .await
+    .expect("relay should listen on a routable address");
+
+    let mut member = MemberNode::new(&identity(2)).unwrap();
+    member.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+
+    let relay_full = relay_addr.with(Protocol::P2p(relay_identity.peer_id()));
+    match how {
+        Reserve::ViaHelper => member.reserve_via_relay(relay_full).await.unwrap(),
+        _ => member.listen_on(relay_full.with(Protocol::P2pCircuit)).unwrap(),
+    }
+
+    let mut routable_listen = None;
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = relay.next_event() => {
+                    if let NodeEvent::Connected { address, .. } = event
+                        && let Some(port) = tcp_port(&address)
+                    {
+                        return port;
+                    }
+                }
+                event = member.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && !address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+                        && !address.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+                        && let Some(port) = tcp_port(&address)
+                    {
+                        routable_listen = Some(port);
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("the member should reach the relay");
+
+    (routable_listen.expect("a routable listen port"), observed)
+}
+
+#[tokio::test]
+async fn diagnostic_wildcard_with_routable_relay() {
+    let (listen, observed) = observed_source_port_routable_relay(Reserve::ViaHelper).await;
+    println!("ROUTABLE-RELAY listen_port={listen} observed_source_port={observed} reused={}",
+        listen == observed);
+}

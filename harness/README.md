@@ -97,6 +97,20 @@ fixed, and the remaining failure is narrower.**
 
 ### Fixed: reserving after a wildcard bind lost port reuse
 
+**Status:** the scenarios still pass `--listen=/ip4/0.0.0.0/tcp/4001`, and that is
+now fine — the ordering requirement lives in `MemberNode::reserve_via_relay`, not
+in the call site, so a wildcard bind is handled wherever it appears. Verified
+against both a loopback and a routable relay. The `external-candidate:` line a
+peer prints is the direct check: it should carry the node's listening port, and
+if it ever carries an ephemeral one this has regressed.
+
+The wait was also tightened after the first fix. Waiting for *any* listener is
+insufficient in principle: libp2p reuses a port only when the listener's
+loopback-ness matches the remote's, so a wildcard bind reporting `127.0.0.1`
+before its routable interface could satisfy a naive wait while registering
+nothing the dial could use. It now waits for a listener matching the relay.
+
+
 The earlier note here said libp2p had been "ruled out" as a cause. That was
 **too strong**, and the tests behind it had a gap worth naming: `port_reuse.rs`
 and `reservation_port.rs` bind *concrete* addresses, which register the
@@ -156,25 +170,42 @@ production but means **a loopback-only relay is unusable** — it hands back
 reservations containing no addresses. The test binds a routable interface
 instead.
 
-### Outstanding: one side's SYN is being dropped
+### Outstanding: one side's punch completes, the other never surfaces
+
+The reported symptom is that the target logs a successfully established
+`direct-ipv4` connection while the initiator never surfaces a direct connection
+at all. That rules out a plain dropped SYN — the target could not have reached
+`ConnectionEstablished` if nothing arrived — and it also rules out the previous
+theory here: `nf_conntrack_tcp_be_liberal=1` was tried and produced byte-for-byte
+the same result, so conntrack marking the reply SYN INVALID is not what is
+happening. The setting is left in place as harmless, but it is not the fix.
+
+Two things that were obscuring the evidence have been fixed:
+
+- **`dial` returned as soon as DCUtR reported failure.** Only our *own* dial's
+  outcome reaches us; a punch has both peers dialling at once. If ours fails
+  while the peer's succeeds, their connection arrives as an ordinary inbound one
+  — moments after we had already returned `relayed`. That alone could produce
+  exactly the reported asymmetry. `dial` now waits out the upgrade window
+  instead, which costs nothing when the punch has genuinely failed.
+- **Dial failures were discarded.** `OutgoingConnectionError` never reached the
+  event stream, so "the punch failed" came with no account of *why*. It is now
+  reported as `dial-failed: peer=… error=…`, and refused, timed out and never
+  left are three different faults with three different fixes.
+
+The next run should therefore show, on the initiator, either a late direct
+connection it previously never waited for, or a concrete dial error. Either is
+decisive; before, neither was observable.
+
+### Superseded: one side's SYN is being dropped
 
 The reported symptom is asymmetric — the target logs a real direct connection
 while the initiator reports the punch as failed. That asymmetry is the useful
 clue: A's SYN reached B, so B's gateway admitted it, while B's SYN did not reach
 A, so A's gateway dropped it.
 
-A hole punch is a TCP simultaneous open, and Linux conntrack with strict window
-tracking can judge the reply-direction SYN out of window and mark it INVALID —
-after which the `ESTABLISHED,RELATED` rule never matches it and the default DROP
-applies. `net.netfilter.nf_conntrack_tcp_be_liberal=1` is the standard remedy
-and has been added to the gateway `sysctls:` in `docker/compose.yml`.
-
-**That change is unverified**: this container has no Docker. If the daemon
-rejects the key as unnamespaced it has to be set on the host. If hole-punching
-still fails with it applied, the next thing to check is timing rather than
-filtering — confirm with `conntrack -L` on each gateway that the initiator's
-outbound entry exists *before* the peer's SYN arrives, since a punch whose SYN
-lands first has no flow to match against.
+This theory has been **tested and disproved** — see above. Retained only so it is
+not proposed again.
 
 Scenarios 4 and 5 pass, so the fallback path the protocol guarantees does hold:
 scenario 5, the worst realistic case and the one that must always succeed, ends

@@ -110,6 +110,12 @@ impl ListenArgs {
                 // explicitly rather than with a catch-all: a wildcard here is how
                 // a future variant goes unnoticed, which is the failure mode that
                 // hid the relay's missing external address.
+                NodeEvent::DialFailed { peer, error } => {
+                    match peer {
+                        Some(peer) => println!("dial-failed: peer={peer} error={error}"),
+                        None => println!("dial-failed: error={error}"),
+                    }
+                }
                 NodeEvent::ReservationGranted { peer } => {
                     println!("reservation-granted: peer={peer}");
                 }
