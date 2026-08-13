@@ -12,7 +12,7 @@ rather than decided silently.
 
 ## Status
 
-Every specification document has an implementation. **430 tests, clippy clean.**
+Every specification document has an implementation. **434 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -30,12 +30,12 @@ scenarios have now been run. Scenarios 1, 2, 4 and 5 pass; **scenario 3, the
 only one asserting a hole-punched connection, fails** — DCUtR dials the peer's
 ephemeral NAT port rather than one mapped to its listener.
 
-Of the two candidate causes, **libp2p has been ruled out**: two loopback tests
-show that both ordinary dials and the relay-reservation connection originate
-from the listening port, so the observed address should be dialable. The
-remaining explanation is the NAT emulation. Logging is now wired up and peers
-print the observed address they will advertise, which should settle it on the
-next run; see [`harness/README.md`](harness/README.md).
+Two causes have since been found and fixed in the transport layer — reserving a
+relay circuit straight after a wildcard bind lost port reuse, and a 10-second
+idle timeout tore the relayed connection down mid-upgrade. Both were protocol
+bugs rather than harness ones. With those fixed the traversal itself works and a
+real direct connection is made, but DCUtR still reports the upgrade as failed;
+see [`harness/README.md`](harness/README.md).
 
 First execution needed seven fixes, and the expectation that bugs would be
 confined to the harness was wrong — the most serious was in `intranet-transport`:
@@ -81,7 +81,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 430 tests
+cargo test --workspace      # 434 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```

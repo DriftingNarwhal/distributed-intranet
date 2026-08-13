@@ -86,11 +86,38 @@ pub enum NodeEvent {
     },
 }
 
+/// How long a connection may sit idle before libp2p closes it.
+///
+/// libp2p defaults to 10 seconds, which is too short here for one specific
+/// reason: a relayed connection awaiting a DCUtR upgrade carries no traffic, so
+/// it is idle by definition and gets torn down mid-negotiation. That produced a
+/// hole punch that appeared to land and then vanish, and made scenario outcomes
+/// look nondeterministic when they were racing this timer.
+///
+/// **Flagged: the specs do not name a value.** Sixty seconds is comfortably
+/// longer than an upgrade takes and still well inside the 120-second maximum
+/// circuit duration a relay enforces (§5.3), so it cannot keep a circuit alive
+/// past the relay's own ceiling.
+const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long to wait for listen addresses to register before reserving.
+const LISTENER_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A full member node.
 pub struct MemberNode {
     swarm: Swarm<MemberBehaviour>,
     tiers: BTreeMap<PeerId, ConnectionTier>,
     discovered: BTreeMap<PeerId, Vec<Multiaddr>>,
+    /// Events consumed while waiting internally, replayed to the caller.
+    ///
+    /// Without this, any method that drives the swarm on the caller's behalf
+    /// would silently eat events they were waiting for.
+    pending: std::collections::VecDeque<NodeEvent>,
+    /// Non-circuit listen addresses seen so far.
+    ///
+    /// Tracked because their presence is what makes port reuse possible; see
+    /// [`MemberNode::reserve_via_relay`].
+    direct_listeners: std::collections::BTreeSet<Multiaddr>,
 }
 
 impl MemberNode {
@@ -137,12 +164,17 @@ impl MemberNode {
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
+            .with_swarm_config(|config| {
+                config.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
+            })
             .build();
 
         Ok(Self {
             swarm,
             tiers: BTreeMap::new(),
             discovered: BTreeMap::new(),
+            pending: std::collections::VecDeque::new(),
+            direct_listeners: std::collections::BTreeSet::new(),
         })
     }
 
@@ -210,10 +242,74 @@ impl MemberNode {
     /// would let routing dial them indirectly. Promoting a discovered peer to a
     /// dial is the caller's decision, made after authorization.
     pub async fn next_event(&mut self) -> NodeEvent {
+        if let Some(buffered) = self.pending.pop_front() {
+            return buffered;
+        }
+        self.next_swarm_event().await
+    }
+
+    /// Reserves a relay circuit slot, ensuring port reuse can actually happen.
+    ///
+    /// # Why this exists rather than calling `listen_on` directly
+    ///
+    /// Hole-punching needs the connection to the relay to originate from a port
+    /// this node listens on, so that the address the relay observes is one a
+    /// peer can dial back into. libp2p requests port reuse by default and the
+    /// relay client's reservation dial does too — but reuse can only happen
+    /// against a listener the transport has already *registered*.
+    ///
+    /// A concrete bind registers synchronously. A wildcard bind (`0.0.0.0`)
+    /// does not: libp2p discovers interfaces asynchronously and registers each
+    /// address as it arrives. Reserving in the same breath as binding therefore
+    /// finds nothing to reuse and falls back to an ephemeral port — after which
+    /// the observed address points at a port with no listener behind it, and the
+    /// hole punch is refused.
+    ///
+    /// Nothing else surfaces that: tiers 1 and 3 keep working, and the relay
+    /// still reports healthy. So the ordering requirement lives here, in the
+    /// layer that owns it, rather than in each caller that would otherwise have
+    /// to rediscover it.
+    ///
+    /// Events observed while waiting are buffered and replayed, so a caller
+    /// loses nothing by using this instead of `listen_on`.
+    pub async fn reserve_via_relay(&mut self, relay: Multiaddr) -> Result<(), TransportError> {
+        if self.direct_listeners.is_empty() {
+            let deadline = tokio::time::Instant::now() + LISTENER_SETTLE_TIMEOUT;
+            while self.direct_listeners.is_empty() {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, self.next_swarm_event()).await {
+                    Ok(event) => self.pending.push_back(event),
+                    Err(_) => break,
+                }
+            }
+        }
+
+        if self.direct_listeners.is_empty() {
+            // Not fatal: a node with no listener can still reserve and be
+            // reached over the circuit. It simply cannot be hole-punched, so
+            // this warns rather than refusing and breaking tier 3 as well.
+            tracing::warn!(
+                "reserving a relay circuit with no direct listener registered;                  the observed address will not be dialable and tier 2 is unavailable"
+            );
+        }
+
+        self.listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
+    }
+
+    /// Drives the swarm, bypassing the replay buffer.
+    async fn next_swarm_event(&mut self) -> NodeEvent {
         loop {
             let event = futures::StreamExt::select_next_some(&mut self.swarm).await;
             match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
+                    // Circuit addresses are not local sockets, so they are not
+                    // what port reuse can bind against.
+                    if !crate::dial::is_circuit(&address) {
+                        self.direct_listeners.insert(address.clone());
+                    }
                     return NodeEvent::Listening(address);
                 }
 

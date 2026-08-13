@@ -99,9 +99,13 @@ impl DialArgs {
             let relay_address: Multiaddr = relay
                 .parse()
                 .map_err(|e| format!("bad relay address '{relay}': {e}"))?;
-            let circuit = relay_address.with(libp2p::multiaddr::Protocol::P2pCircuit);
-            println!("reserving: {circuit}");
-            node.listen_on(circuit).map_err(|e| e.to_string())?;
+            // Via `reserve_via_relay` for the same reason as `listen`: a
+            // hole punch needs both sides reachable at a port they listen on,
+            // and reserving straight after a wildcard bind loses that.
+            println!("reserving: {relay_address}/p2p-circuit");
+            node.reserve_via_relay(relay_address)
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         let candidates: Vec<Multiaddr> = self

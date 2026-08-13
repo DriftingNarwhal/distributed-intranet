@@ -9,7 +9,7 @@
 use super::{CliResult, parse_network, resolve_identity};
 use clap::Args;
 use intranet_transport::{MemberNode, NodeEvent};
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use libp2p::Multiaddr;
 use std::time::Duration;
 
 #[derive(Args)]
@@ -55,12 +55,16 @@ impl ListenArgs {
                 .parse()
                 .map_err(|e| format!("bad relay address '{relay}': {e}"))?;
 
-            // Listening on `<relay>/p2p-circuit` is what asks the relay for a
-            // reservation. The resulting listen address is what other peers dial
-            // to reach this node from behind its NAT.
-            let circuit = relay_address.with(Protocol::P2pCircuit);
-            println!("reserving: {circuit}");
-            node.listen_on(circuit).map_err(|e| e.to_string())?;
+            // Asking for a reservation is what makes this node reachable from
+            // behind its NAT. It goes through `reserve_via_relay` rather than a
+            // bare `listen_on` because the reservation connection must originate
+            // from a port this node listens on — see that method for why binding
+            // a wildcard address and reserving immediately silently breaks
+            // hole-punching while leaving every other tier working.
+            println!("reserving: {relay_address}/p2p-circuit");
+            node.reserve_via_relay(relay_address)
+                .await
+                .map_err(|e| e.to_string())?;
         }
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.hold_secs);

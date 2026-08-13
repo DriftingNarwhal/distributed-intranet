@@ -24,7 +24,7 @@ harness.
 | **Scenario 3 (hole-punching)** | **FAILING.** See *Outstanding*. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 430 tests and `cargo clippy --workspace --all-targets` reports no
+passes 434 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -92,45 +92,56 @@ without it the build context is roughly 14 GB.
 
 ## Outstanding
 
-**Scenario 3 — hole-punching between two restricted-cone NATs — does not work.**
-DCUtR dials the peer at its NAT's *ephemeral* external port and gets
-`ConnectionRefused`.
+**Scenario 3 — hole-punching — still fails, but two causes have been found and
+fixed, and the remaining failure is narrower.**
 
-**The libp2p half of that has now been ruled out.** It was the candidate flagged
-here as "more likely and more serious", so it was tested first, on loopback where
-there is no NAT to blame:
+### Fixed: reserving after a wildcard bind lost port reuse
 
-- `crates/intranet-transport/tests/port_reuse.rs` — ordinary outbound dials
-  originate from the listening port, including a second concurrent dial to a
-  different peer.
-- `crates/intranet-transport/tests/reservation_port.rs` — the connection opened
-  to obtain a *relay reservation* does too, which is the one whose observed
-  address DCUtR advertises.
+The earlier note here said libp2p had been "ruled out" as a cause. That was
+**too strong**, and the tests behind it had a gap worth naming: `port_reuse.rs`
+and `reservation_port.rs` bind *concrete* addresses, which register the
+listening port synchronously. The scenarios bind `0.0.0.0`, which does not —
+libp2p discovers interfaces asynchronously and registers each address as it
+arrives. Reserving in the same breath as binding therefore found nothing to
+reuse and fell back to an ephemeral source port. The two tests were correct and
+structurally could not reach the bug.
 
-Port reuse is also the libp2p default (`PortUse::Reuse`), and DCUtR advertises
-its own candidate set fed from `NewExternalAddrCandidate`, i.e. exactly the
-addresses peers report observing. Running a relay and a member on loopback shows
-`external-candidate` carrying the member's *listening* port.
+It is a wildcard-plus-ordering bug, not a port-reuse bug: `PortUse::Reuse` is
+libp2p's default and the relay client's reservation dial does request it.
 
-So the remaining explanation is the NAT emulation: `MASQUERADE` is not preserving
-the source port, or is not admitting the return path a restricted-cone NAT would.
-**The next run should read the `external-candidate:` line a peer now prints.** If
-it carries a port other than 4001, the NAT is remapping and the fix is in
-`nat-entrypoint.sh` — `--to-ports 4001` on the SNAT rule, or `SNAT` in place of
-`MASQUERADE`, would preserve it. If it carries 4001, the mapping is right and the
-problem is the inbound path instead: Linux conntrack admits a peer's SYN only if
-it matches an existing flow's reply direction, which is a narrower behaviour than
-a real restricted-cone NAT and may simply not survive TCP simultaneous open.
+Reproduced and fixed in `crates/intranet-transport/tests/wildcard_reservation.rs`,
+which pins all four cases — concrete bind, wildcard reserving immediately (the
+bug), wildcard after settling by hand, and wildcard through the new API. The bug
+case is *asserted*, so if libp2p ever registers wildcard binds synchronously the
+test fails and says the workaround is obsolete rather than becoming dead weight.
 
-Note this is the *opposite* of what was originally predicted here: the concern was
-that `MASQUERADE --random` might not be symmetric enough to defeat hole-punching,
-whereas hole-punching currently fails even in `restricted` mode.
+The fix is `MemberNode::reserve_via_relay`, which waits for listeners to
+register before reserving and replays any events it consumed. It lives in the
+transport layer rather than in the harness because the requirement is a property
+of the protocol: any deployment binding a wildcard address and then reserving
+hits it. Fixing only the scenarios — by passing concrete IPs — would have hidden
+that.
 
-The failure is also **not deterministic in its shape**. Across runs, scenario 3
-reports either `relayed` (connected through the wrong tier) or no connection
-within 60s — the relayed connection to the peer sometimes drops before the
-upgrade window elapses. Whatever tears it down is not yet understood and may be
-the same root cause.
+### Fixed: the relayed connection was torn down mid-upgrade
+
+libp2p's `idle_connection_timeout` defaults to **10 seconds**. A relayed
+connection awaiting a DCUtR upgrade carries no traffic, so it is idle by
+definition and was being closed at almost exactly the moment an upgrade would
+complete. `MemberNode` now sets 60 seconds — comfortably longer than an upgrade,
+still inside the 120-second maximum circuit duration a relay enforces (§5.3).
+
+This also explains the nondeterminism recorded here previously: scenario 3
+alternated between `relayed` and "no connection within 60s" because the 10-second
+teardown was racing the 15-second `--upgrade-secs` window. It was a race with our
+own defaults, not anything in the NAT.
+
+### Outstanding: the upgrade does not complete
+
+With both fixes, both sides advertise a dialable address and the traversal
+itself works — the dialing peer logs a real direct connection to its peer. DCUtR
+then reports the hole punch as failed and the connection is torn down, so the
+punch lands but the upgrade does not complete. That is a different problem from
+the one originally recorded here, and is where to pick up.
 
 Scenarios 4 and 5 pass, so the fallback path the protocol guarantees does hold:
 scenario 5, the worst realistic case and the one that must always succeed, ends
@@ -150,8 +161,9 @@ RUST_LOG=intranet_transport=trace,libp2p_dcutr=debug,libp2p_relay=debug \
 Peers also print two lines that matter more than the rest:
 
 - `external-candidate: <addr>` — the address a peer reports seeing this node at,
-  and precisely what DCUtR will hand to a remote peer to dial. **If this is not a
-  port the node listens on, tier 2 cannot work**, and no other output will say so.
+  and precisely what DCUtR will hand to a remote peer to dial. It should now
+  carry the node's *listening* port; if it ever carries an ephemeral one again,
+  port reuse has regressed and tier 2 cannot work.
 - `external-confirmed: <addr>` — an address confirmed reachable. libp2p does not
   promote candidates on its own, since one peer observing an address does not make
   it reachable by another.
@@ -166,7 +178,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 430 tests
+cargo test --workspace                      # 434 tests
 cargo run -p intranet-harness -- --help
 ```
 
