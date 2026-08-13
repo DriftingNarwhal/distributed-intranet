@@ -31,6 +31,8 @@
 //!   owner's authority.
 //! - [`appendset`] — the multi-writer collection primitive search and the app
 //!   directory both build on.
+//! - [`replication`] — holding announcements, under-replication detection, and
+//!   the repair loop where unreliable nodes are actually corrected for.
 //! - [`serving`] — the `read-content` gate, source selection, rarest-first.
 //!
 //! # Not implemented here
@@ -45,6 +47,7 @@ pub mod chunk;
 pub mod crypto;
 pub mod object;
 pub mod pointer;
+pub mod replication;
 pub mod serving;
 
 pub use appendset::{AppendSetEntry, AppendSetView, collection_id, validate_entry_context};
@@ -52,6 +55,9 @@ pub use chunk::ChunkSpec;
 pub use crypto::{Dek, EpochKey};
 pub use object::{Cid, EncodedObject, Manifest, decode, encode};
 pub use pointer::{DekWrapping, MutablePointer, new_pointer_id};
+pub use replication::{
+    HoldingAnnouncement, RepairPlan, ReplicationHealth, ReplicationStatus, ReplicationView,
+};
 pub use serving::{ServingRefusal, may_serve};
 
 /// Errors produced by the storage layer.
