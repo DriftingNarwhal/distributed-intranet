@@ -225,6 +225,19 @@ impl PerNetworkIdentity {
         self.secret().sign(message)
     }
 
+    /// Agrees a shared secret with another identity in the same network.
+    ///
+    /// Both sides reach the same secret from public information they already
+    /// hold, which is what lets call media keys derive from per-network
+    /// identities with no separate encryption keypair to distribute or keep in
+    /// step (Real-Time Spec §1.3).
+    pub fn agree(
+        &self,
+        peer: &PerNetworkIdentityId,
+    ) -> Result<[u8; 32], intranet_crypto::CryptoError> {
+        self.secret().agree(peer.verifying_key())
+    }
+
     /// Reconstructs the signing key transiently, in memory, for one operation.
     ///
     /// Matches §1.3's framing that a per-network private key is derived "in

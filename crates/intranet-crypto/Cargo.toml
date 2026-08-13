@@ -9,6 +9,7 @@ blake3.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true
+x25519-dalek.workspace = true
 
 [lints]
 workspace = true

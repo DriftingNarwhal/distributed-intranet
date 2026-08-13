@@ -183,6 +183,14 @@ pub struct NetworkPolicy {
     pub finality: FinalityParams,
     /// Durability replication target (Storage Spec §3.1).
     pub replication_factor: u16,
+    /// Participant count at which a call switches from mesh to relay — §1.2.
+    ///
+    /// Direct mesh costs each participant N-1 simultaneous upload streams,
+    /// which is cheap at two, tolerable at three or four, and degrades fast
+    /// beyond that — upload is typically the scarce resource on a residential
+    /// connection. A network-level setting rather than a protocol constant,
+    /// consistent with how every other tunable here is handled.
+    pub mesh_relay_threshold: u8,
     /// Content-defined chunking target size in bytes (Storage Spec §1.3).
     ///
     /// Must be network-wide rather than per-publisher: deduplication depends on
@@ -207,6 +215,7 @@ impl NetworkPolicy {
             extension_capabilities: BTreeMap::new(),
             finality: FinalityParams::DEFAULT,
             replication_factor: 3,
+            mesh_relay_threshold: 4,
             target_chunk_size: 32 * 1024,
         }
     }
@@ -259,6 +268,7 @@ impl NetworkPolicy {
         enc.u32(self.finality.k)
             .i64(self.finality.t_millis)
             .u32(u32::from(self.replication_factor))
+            .u8(self.mesh_relay_threshold)
             .u32(self.target_chunk_size);
     }
 }

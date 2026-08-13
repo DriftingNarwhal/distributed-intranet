@@ -106,6 +106,31 @@ impl SecretKey {
     pub fn sign(&self, message: &Enc) -> Signature {
         Signature(self.0.sign(&message.finish()).to_bytes())
     }
+
+    /// Agrees a shared secret with a peer, from signing keys alone.
+    ///
+    /// Ed25519 and X25519 use the same underlying curve in different
+    /// coordinates, so an identity's signing key converts to a Diffie-Hellman
+    /// key without needing a second keypair. That is what lets call media keys
+    /// be "derived from the call participants' per-network identities"
+    /// (Real-Time Spec §1.3) literally rather than approximately — no separate
+    /// encryption key to distribute, rotate, or get out of step with identity.
+    ///
+    /// The raw output is passed through a domain-separated hash rather than
+    /// used directly, since a bare Diffie-Hellman result is a curve point, not
+    /// a uniformly distributed key.
+    pub fn agree(&self, peer: &VerifyingKey) -> Result<[u8; 32], CryptoError> {
+        let peer_edwards = ed25519_dalek::VerifyingKey::from_bytes(&peer.0)
+            .map_err(|_| CryptoError::MalformedPublicKey)?;
+        let shared = x25519_dalek::x25519(
+            self.0.to_scalar_bytes(),
+            peer_edwards.to_montgomery().to_bytes(),
+        );
+
+        let mut e = Enc::domain("intranet.key-agreement.v1");
+        e.fixed(&shared);
+        Ok(*crate::hash_bytes(&e.finish()).as_bytes())
+    }
 }
 
 #[cfg(test)]

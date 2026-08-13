@@ -12,6 +12,7 @@ members = [
     "crates/intranet-epoch",
     "crates/intranet-search",
     "crates/intranet-app",
+    "crates/intranet-realtime",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ intranet-storage = { path = "crates/intranet-storage" }
 intranet-epoch = { path = "crates/intranet-epoch" }
 intranet-search = { path = "crates/intranet-search" }
 intranet-app = { path = "crates/intranet-app" }
+intranet-realtime = { path = "crates/intranet-realtime" }
 
 bip39 = "2.2"
 chacha20poly1305 = "0.11"
@@ -48,6 +50,7 @@ ed25519-dalek = "3.0"
 getrandom = "0.3"
 libp2p-identity = { version = "0.2", features = ["ed25519", "peerid"] }
 slip10_ed25519 = "0.1"
+x25519-dalek = "3.0"
 thiserror = "2"
 
 [workspace.lints.rust]
