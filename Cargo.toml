@@ -9,6 +9,7 @@ members = [
     "crates/intranet-harness",
     "crates/intranet-ledger",
     "crates/intranet-storage",
+    "crates/intranet-epoch",
 ]
 
 [workspace.package]
@@ -24,10 +25,15 @@ intranet-invite = { path = "crates/intranet-invite" }
 intranet-transport = { path = "crates/intranet-transport" }
 intranet-ledger = { path = "crates/intranet-ledger" }
 intranet-storage = { path = "crates/intranet-storage" }
+intranet-epoch = { path = "crates/intranet-epoch" }
 
 bip39 = "2.2"
 chacha20poly1305 = "0.11"
 fastcdc = "4.0"
+openmls = "0.8"
+openmls_basic_credential = "0.5"
+openmls_rust_crypto = "0.5"
+openmls_traits = "0.5"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 libp2p = { version = "0.56", features = ["tcp", "quic", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "tokio", "macros", "ed25519"] }

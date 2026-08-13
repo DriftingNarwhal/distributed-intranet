@@ -156,6 +156,20 @@ impl EpochKey {
         Self(bytes)
     }
 
+    /// A safe-to-log identifier for this key.
+    ///
+    /// Epoch keys implement no `Debug`, because the network's entire content
+    /// confidentiality should not reach a log line by accident. Diagnosing
+    /// "which epoch is this node on" is still a real need, so this provides a
+    /// one-way digest that identifies the key without disclosing it — and gives
+    /// tests a printable value to compare.
+    pub fn fingerprint(&self) -> Hash {
+        let mut input = Vec::with_capacity(64);
+        input.extend_from_slice(b"intranet.epoch-key-fingerprint.v1");
+        input.extend_from_slice(&self.0);
+        hash_bytes(&input)
+    }
+
     /// Wraps a DEK for storage alongside a pointer.
     ///
     /// **Deterministic by requirement, not convenience** (§5.3). Multiple
