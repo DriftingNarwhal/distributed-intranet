@@ -62,6 +62,28 @@ pub enum NodeEvent {
         /// Discovered peers and their advertised addresses.
         peers: Vec<(PeerId, Multiaddr)>,
     },
+    /// An address another peer reports seeing this node at.
+    ///
+    /// Surfaced because it is precisely what hole-punching depends on and what
+    /// is otherwise impossible to observe. DCUtR advertises its own candidate
+    /// set, fed from exactly these events, so the address carried here is the
+    /// one a remote peer will be told to dial. If it does not correspond to a
+    /// port this node listens on, tier 2 cannot succeed — and nothing else will
+    /// report that, because every other tier keeps working.
+    ExternalAddressCandidate {
+        /// The address a peer observed for this node.
+        address: Multiaddr,
+    },
+    /// An address confirmed as externally reachable.
+    ///
+    /// Distinct from a candidate: libp2p does not promote candidates on its own,
+    /// since an address observed by one peer is not necessarily reachable by
+    /// another. Confirmation normally comes from AutoNAT or from a node that
+    /// knows its own reachability, as a relay does.
+    ExternalAddressConfirmed {
+        /// The confirmed address.
+        address: Multiaddr,
+    },
 }
 
 /// A full member node.
@@ -240,6 +262,14 @@ impl MemberNode {
                     };
                 }
 
+                SwarmEvent::NewExternalAddrCandidate { address } => {
+                    return NodeEvent::ExternalAddressCandidate { address };
+                }
+
+                SwarmEvent::ExternalAddrConfirmed { address } => {
+                    return NodeEvent::ExternalAddressConfirmed { address };
+                }
+
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Mdns(mdns::Event::Discovered(
                     peers,
                 ))) => {
@@ -256,7 +286,15 @@ impl MemberNode {
                 // layer has no opinion on. Skipping them rather than surfacing
                 // an `Other` variant means a caller awaiting a connection is not
                 // forced to loop past a flood of events it cannot act on.
-                _ => continue,
+                //
+                // They are traced rather than dropped in silence. A relay bug
+                // that broke tiers 2 and 3 was invisible from the outside
+                // precisely because these events went nowhere, and was found
+                // only by temporarily printing them.
+                other => {
+                    tracing::trace!(event = ?other, "unhandled swarm event");
+                    continue;
+                }
             }
         }
     }
@@ -339,6 +377,20 @@ impl RelayNode {
             let event = futures::StreamExt::select_next_some(&mut self.swarm).await;
             match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
+                    // §5.2, §5.4: a relay is by definition reachable at a public
+                    // address, so its listen addresses are its external ones.
+                    //
+                    // This is load-bearing, not bookkeeping. libp2p builds the
+                    // addresses it hands back in a reservation from the swarm's
+                    // *external* addresses and never infers them from listen
+                    // addresses. Without this the relay still accepts every
+                    // reservation but returns an empty address list, and clients
+                    // reject it with `NoAddressesInReservation` — so tiers 2 and
+                    // 3 fail while tier 1 keeps working and the relay's health
+                    // check still reports ready.
+                    if !is_loopback(&address) {
+                        self.swarm.add_external_address(address.clone());
+                    }
                     return NodeEvent::Listening(address);
                 }
                 SwarmEvent::ConnectionEstablished {
@@ -354,8 +406,23 @@ impl RelayNode {
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     return NodeEvent::Disconnected { peer: peer_id };
                 }
-                _ => continue,
+                SwarmEvent::ExternalAddrConfirmed { address } => {
+                    return NodeEvent::ExternalAddressConfirmed { address };
+                }
+                other => {
+                    tracing::trace!(event = ?other, "unhandled relay swarm event");
+                    continue;
+                }
             }
         }
     }
+}
+
+/// Whether an address is loopback, and so not usable as an external address.
+fn is_loopback(address: &Multiaddr) -> bool {
+    address.iter().any(|part| match part {
+        libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),
+        libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback(),
+        _ => false,
+    })
 }

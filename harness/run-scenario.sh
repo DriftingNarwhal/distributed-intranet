@@ -33,10 +33,22 @@ log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
 pass() { printf '\033[32mPASS\033[0m %s\n' "$*"; }
 
-# Derives a peer id locally; needs no running container.
+# Derives a peer id inside the already-running relay.
+#
+# `docker compose run` cannot be used here: every service in this topology pins
+# a static ipv4_address, so a second container for the same service collides
+# with the running one ("Address already in use"). That failure is silent to the
+# caller — it yields an empty peer id, which composes into an address ending in
+# `/p2p/` and fails much later as "invalid multihash".
 peer_id_for() {
-  "${COMPOSE[@]}" run --rm --no-deps --entrypoint /usr/local/bin/intranet-harness relay \
-    identity derive --seed="$1" --network="$NETWORK" | awk '/^peer-id:/ {print $2}'
+  local id
+  id="$("${COMPOSE[@]}" exec -T relay /usr/local/bin/intranet-harness \
+        identity derive --seed="$1" --network="$NETWORK" | awk '/^peer-id:/ {print $2}')"
+  if [[ -z "$id" ]]; then
+    echo "peer_id_for: could not derive a peer id for seed $1" >&2
+    exit 1
+  fi
+  printf '%s' "$id"
 }
 
 relay_peer_id() {

@@ -11,11 +11,13 @@ what an older summary or comment might imply.
 ## Implementation
 
 Rust workspace, one crate per layer, in `crates/`. See README.md for the map and for what
-is and is not verified. Every layer is implemented; two things are deliberately not done:
-the Docker NAT scenarios have never been executed, and the app execution sandbox is not
-built or stubbed.
+is and is not verified. Every layer is implemented. The Docker NAT scenarios have now been
+executed and 4 of 5 pass; hole-punching (scenario 3) does not work, so tier 2 is unverified.
+The app execution sandbox is still not built or stubbed.
 
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
+  Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
+  a run that skips it has checked only half the gate, so say so rather than reporting clean.
 - Decisions the specs left open are marked `Flagged` in a comment at the point of the
   decision. Grep for it rather than re-deriving them.
 - Determinism is load-bearing in several places (entry hashes, HRW placement, quorum

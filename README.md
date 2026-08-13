@@ -12,7 +12,7 @@ rather than decided silently.
 
 ## Status
 
-Every specification document has an implementation. **427 tests, clippy clean.**
+Every specification document has an implementation. **430 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -21,17 +21,31 @@ Every specification document has an implementation. **427 tests, clippy clean.**
 | 03 App hosting — name registry, manifests, publishing policy | Implemented, **except the execution sandbox** |
 | 04 Real-time transport — calls, streams, VOD | Implemented |
 | 05 Search & indexing | Implemented |
-| 06 Reference test harness | CLI implemented; **NAT scenarios authored but never executed** |
+| 06 Reference test harness | CLI implemented; NAT scenarios executed, **4 of 5 passing** |
 
 ### The two things that are not done, and why
 
-**The Docker NAT scenarios have never been run.** They were written in a
-container without Docker available, so nesting was impractical. This is the one
-part of the codebase where bugs should be *expected* on first execution rather
-than merely possible. [`harness/README.md`](harness/README.md) lists the four
-most likely failure points, the sharpest being that if the default-route
-replacement silently fails, every peer reaches the public network directly,
-every scenario passes at tier 1, and the matrix proves nothing.
+**Hole-punching does not work, and tier 2 is unverified.** The Docker NAT
+scenarios have now been run. Scenarios 1, 2, 4 and 5 pass; **scenario 3, the
+only one asserting a hole-punched connection, fails** — DCUtR dials the peer's
+ephemeral NAT port rather than one mapped to its listener.
+
+Of the two candidate causes, **libp2p has been ruled out**: two loopback tests
+show that both ordinary dials and the relay-reservation connection originate
+from the listening port, so the observed address should be dialable. The
+remaining explanation is the NAT emulation. Logging is now wired up and peers
+print the observed address they will advertise, which should settle it on the
+next run; see [`harness/README.md`](harness/README.md).
+
+First execution needed seven fixes, and the expectation that bugs would be
+confined to the harness was wrong — the most serious was in `intranet-transport`:
+`RelayNode` never registered an external address, so it granted every reservation
+with an empty address list and no client could accept one. Tiers 2 and 3 were
+dead while tier 1 worked and the relay's health check reported ready. Two more
+were in the harness's own tier assertion, which reported `direct` for connections
+it had not actually made to the target. Treat "the tests pass" here with the
+corresponding caution: passing scenarios validate connectivity and tier
+selection, not end-to-end behaviour.
 
 **The app execution sandbox is not implemented and not stubbed.** Nothing in
 `intranet-app` will tell a caller an app is safe to run — it settles which bytes
@@ -44,7 +58,7 @@ real browser engine, and depend on target platform.
 ```
 specs/     the six design documents — authoritative
 crates/    the implementation, one crate per layer
-harness/   Docker NAT topology and scenario runner (unexecuted)
+harness/   Docker NAT topology and scenario runner
 ```
 
 Crates, roughly bottom-up:
@@ -67,7 +81,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 427 tests
+cargo test --workspace      # 430 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```
@@ -75,16 +89,21 @@ cargo run -p intranet-harness -- --help
 Rust 1.85+ (edition 2024). No services, no network access, and no external
 state are needed for the test suite.
 
+Both stay clean. `clippy` needs a toolchain that ships it; a source-tarball rustc
+with no rustup does not. On Debian/Ubuntu, `sudo apt install rust-clippy`.
+
 ## Running the NAT scenarios
 
-Requires Docker, and **has not been done yet**:
+Requires Docker, and a `.dockerignore` excluding `target/` — without one the
+build context is roughly 14 GB.
 
 ```bash
 ./harness/run-scenario.sh all     # or: ./harness/run-scenario.sh 5
 ```
 
-Read [`harness/README.md`](harness/README.md) first — it separates what is
-verified from what is not, and lists what to check when a scenario fails.
+Scenario 3 currently fails; the other four pass. Read
+[`harness/README.md`](harness/README.md) first — it separates what is verified
+from what is not, and records what the first execution found.
 
 ## Principles the code follows
 

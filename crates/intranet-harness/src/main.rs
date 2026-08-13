@@ -53,8 +53,30 @@ enum Command {
     Governance(commands::governance::GovernanceCommand),
 }
 
+/// Initialises logging from `RUST_LOG`.
+///
+/// Without this `RUST_LOG` is inert and every swarm event the node has no
+/// opinion on vanishes. A relay defect that killed tiers 2 and 3 was invisible
+/// from the outside for exactly that reason, so this is deliberately wired up
+/// before anything else runs.
+///
+/// Defaults to `warn` so ordinary scenario output stays readable; diagnosis uses
+/// `RUST_LOG=intranet_transport=trace,libp2p_dcutr=debug,libp2p_relay=debug`.
+fn init_logging() {
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    init_logging();
     let cli = Cli::parse();
 
     let result = match cli.command {

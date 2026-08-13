@@ -63,6 +63,18 @@ pub struct DialArgs {
     /// How long to wait for a connection.
     #[arg(long, default_value_t = 30)]
     timeout_secs: u64,
+    /// How long to let a relayed connection try to upgrade before accepting it
+    /// as the settled tier.
+    ///
+    /// A relayed connection is not reported the moment it is established — that
+    /// would classify every successful tier-2 connection as tier 3, since a
+    /// hole-punch is always relayed first. But a failed hole-punch does not
+    /// reliably produce a dcutr event either: when the direct dial fails at the
+    /// transport level the attempt is simply abandoned, so waiting for one hangs
+    /// until the overall timeout and reports no connection at all — even though
+    /// a working tier-3 circuit is open the whole time.
+    #[arg(long, default_value_t = 15)]
+    upgrade_secs: u64,
     /// Keep running after connecting, so the other side can complete its own test.
     #[arg(long, default_value_t = 0)]
     hold_secs: u64,
@@ -102,26 +114,73 @@ impl DialArgs {
             })
             .collect::<Result<_, _>>()?;
 
+        // The peer this dial is actually about. Taken from the last `/p2p/` of a
+        // candidate, which for a circuit address is the target rather than the
+        // relay that fronts it.
+        //
+        // Reserving above opens a *direct connection to the relay itself*, and
+        // that fires `Connected` long before the target is reached. Without this
+        // filter the relay's own connection wins the race, so every scenario
+        // passing `--relay` reports `direct` no matter which tier the target was
+        // eventually reached through — which silently defeats the tier assertion
+        // that is the entire point of the suite (§2.4).
+        // `multiaddr::Iter` is not double-ended, so fold forward and keep the
+        // last match rather than reversing.
+        let target = candidates.iter().find_map(|address| {
+            address.iter().fold(None, |found, part| match part {
+                libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
+                _ => found,
+            })
+        });
+        if let Some(target) = target {
+            println!("target: {target}");
+        }
+        let is_target = |peer| target.is_none_or(|target| target == peer);
+
         node.dial_candidates(candidates).map_err(|e| e.to_string())?;
 
+        let upgrade_window = Duration::from_secs(self.upgrade_secs);
         let outcome = tokio::time::timeout(Duration::from_secs(self.timeout_secs), async {
+            // Set once a relayed connection to the target exists: the deadline
+            // by which it must have been upgraded to count as anything better.
+            let mut settle: Option<(tokio::time::Instant, libp2p::PeerId)> = None;
             loop {
-                match node.next_event().await {
+                let event = match settle {
+                    Some((deadline, peer)) => {
+                        match tokio::time::timeout_at(deadline, node.next_event()).await {
+                            Ok(event) => event,
+                            Err(_) => {
+                                println!("relayed: no upgrade within {}s", self.upgrade_secs);
+                                return (peer, ConnectionTier::Relayed);
+                            }
+                        }
+                    }
+                    None => node.next_event().await,
+                };
+                match event {
                     NodeEvent::Connected { peer, tier, address } => {
                         println!("connected: peer={peer} tier={} via={address}", tier.label());
                         // A hole-punch upgrade arrives after the initial relayed
                         // connection, so a relayed result is not final yet —
                         // reporting it immediately would classify every
                         // successful tier-2 connection as tier 3.
-                        if !tier.relay_in_data_path() {
-                            return (peer, tier);
+                        if is_target(peer) {
+                            if !tier.relay_in_data_path() {
+                                return (peer, tier);
+                            }
+                            // Start the upgrade window on the first relayed
+                            // connection to the target, and do not restart it on
+                            // later ones.
+                            settle.get_or_insert_with(|| {
+                                (tokio::time::Instant::now() + upgrade_window, peer)
+                            });
                         }
                     }
-                    NodeEvent::HolePunchSucceeded { peer } => {
+                    NodeEvent::HolePunchSucceeded { peer } if is_target(peer) => {
                         println!("hole-punch: succeeded peer={peer}");
                         return (peer, ConnectionTier::HolePunched);
                     }
-                    NodeEvent::HolePunchFailed { peer } => {
+                    NodeEvent::HolePunchFailed { peer } if is_target(peer) => {
                         println!("hole-punch: failed peer={peer}, staying relayed");
                         return (peer, ConnectionTier::Relayed);
                     }
@@ -139,6 +198,9 @@ impl DialArgs {
                     NodeEvent::Disconnected { peer } => {
                         println!("disconnected: peer={peer}");
                     }
+                    // Hole-punch results for a peer other than the target — the
+                    // relay's own connection, typically.
+                    _ => {}
                 }
             }
         })

@@ -92,6 +92,16 @@ impl ListenArgs {
                 NodeEvent::Disconnected { peer } => {
                     println!("disconnected: peer={peer}");
                 }
+                // The address a peer reports seeing us at is exactly what DCUtR
+                // will hand to a remote peer to dial. Printing it is what makes
+                // a hole-punch failure diagnosable: if this is not a port we
+                // listen on, tier 2 cannot work and nothing else will say so.
+                NodeEvent::ExternalAddressCandidate { address } => {
+                    println!("external-candidate: {address}");
+                }
+                NodeEvent::ExternalAddressConfirmed { address } => {
+                    println!("external-confirmed: {address}");
+                }
             }
         }
 

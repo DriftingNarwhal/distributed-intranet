@@ -42,23 +42,23 @@ x-nat: &nat
 networks:
   public-net:
     ipam: {config: [{subnet: 172.30.0.0/24}]}
+  # NOTE: `internal: true` cannot be used here. Docker implements it with a host
+  # rule dropping anything on the bridge whose destination is outside the bridge
+  # subnet, which is every packet the NAT gateway is meant to translate — peers
+  # could reach their gateway's LAN address but nothing beyond it. Isolation is
+  # instead guaranteed by peer-entrypoint.sh replacing the default route, which
+  # is asserted at start-up rather than assumed.
   lan-a:
-    internal: true
     ipam: {config: [{subnet: 172.31.1.0/24}]}
   lan-b:
-    internal: true
     ipam: {config: [{subnet: 172.31.2.0/24}]}
   lan-c:
-    internal: true
     ipam: {config: [{subnet: 172.31.3.0/24}]}
   cgnat-c:
-    internal: true
     ipam: {config: [{subnet: 172.31.4.0/24}]}
   lan-d:
-    internal: true
     ipam: {config: [{subnet: 172.31.5.0/24}]}
   cgnat-d:
-    internal: true
     ipam: {config: [{subnet: 172.31.6.0/24}]}
 
 services:
@@ -94,8 +94,7 @@ services:
   gw-a:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: restricted
     networks:
       public-net: {ipv4_address: 172.30.0.21}
@@ -104,8 +103,7 @@ services:
   gw-b:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: restricted
     networks:
       public-net: {ipv4_address: 172.30.0.22}
@@ -115,8 +113,7 @@ services:
   gw-c-cgnat:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: symmetric
     networks:
       public-net: {ipv4_address: 172.30.0.23}
@@ -125,8 +122,8 @@ services:
   gw-c-home:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.31.4."
+      UPSTREAM_GW: 172.31.4.2
       NAT_MODE: symmetric
     networks:
       cgnat-c: {ipv4_address: 172.31.4.3}
@@ -135,8 +132,7 @@ services:
   gw-d-cgnat:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: symmetric
     networks:
       public-net: {ipv4_address: 172.30.0.24}
@@ -145,8 +141,8 @@ services:
   gw-d-home:
     <<: *nat
     environment:
-      PRIVATE_IF: eth1
-      UPSTREAM_IF: eth0
+      UPSTREAM_SUBNET: "172.31.6."
+      UPSTREAM_GW: 172.31.6.2
       NAT_MODE: symmetric
     networks:
       cgnat-d: {ipv4_address: 172.31.6.3}
@@ -159,7 +155,7 @@ services:
   peer-a:
     <<: *peer
     environment: {GATEWAY_IP: 172.31.1.2}
-    command: ["--help"]
+    command: ["idle"]
     networks: {lan-a: {ipv4_address: 172.31.1.10}}
 
   # Second peer on lan-a with no gateway in its path, for scenario 1's
@@ -168,23 +164,23 @@ services:
   peer-a2:
     <<: *peer
     environment: {}
-    command: ["--help"]
+    command: ["idle"]
     networks: {lan-a: {ipv4_address: 172.31.1.11}}
 
   peer-b:
     <<: *peer
     environment: {GATEWAY_IP: 172.31.2.2}
-    command: ["--help"]
+    command: ["idle"]
     networks: {lan-b: {ipv4_address: 172.31.2.10}}
 
   peer-c:
     <<: *peer
     environment: {GATEWAY_IP: 172.31.3.2}
-    command: ["--help"]
+    command: ["idle"]
     networks: {lan-c: {ipv4_address: 172.31.3.10}}
 
   peer-d:
     <<: *peer
     environment: {GATEWAY_IP: 172.31.5.2}
-    command: ["--help"]
+    command: ["idle"]
     networks: {lan-d: {ipv4_address: 172.31.5.10}}
