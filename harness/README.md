@@ -15,6 +15,7 @@ The tooling here is in two parts, and they are **not** equally verified.
 | Tier assertion (`dial --expect-tier`) | **Verified in both directions.** A correct expectation exits 0; a wrong one exits 1 with a conformance failure. |
 | Direct connection, tier 1 | **Verified.** Two real nodes over loopback, plus IPv6-before-IPv4 preference. |
 | Relay resource limits | **Verified.** 17 tests in `intranet-transport`. |
+| Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | **Docker NAT topology (`docker/`)** | **UNVERIFIED — never executed.** |
 | **Scenarios 1–5 (`run-scenario.sh`)** | **UNVERIFIED — never executed.** |
 
@@ -45,7 +46,7 @@ the above is the concrete form that takes.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 177 tests
+cargo test --workspace                      # 427 tests
 cargo run -p intranet-harness -- --help
 ```
 
@@ -97,4 +98,10 @@ eventually possible, even via the least efficient path.
 - Governance partition scenarios (§3) — fork reconciliation and finality are
   tested in-process in `intranet-governance`, but not across partitioned
   containers with real gossip.
-- Everything downstream of transport: storage, app hosting, real-time, search.
+- Harness CLI coverage for the layers built after transport. Storage, search,
+  the app registry and real-time are covered by the workspace test suite but are
+  not yet drivable from the command line, so they cannot participate in a
+  multi-container scenario.
+- Gossip actually moving governance entries and capability advertisements over
+  the transport layer. Both sides exist; nothing yet joins them, which is why
+  the partition scenarios above are not runnable.
