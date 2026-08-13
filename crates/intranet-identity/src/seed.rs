@@ -203,10 +203,21 @@ impl PerNetworkIdentity {
     /// timing correlation remain out of scope, so this closes the key/transport
     /// correlation channel, not every correlation channel.
     pub fn peer_id(&self) -> crate::PeerId {
-        let secret = libp2p_identity::ed25519::SecretKey::try_from_bytes(self.secret_bytes)
+        self.transport_keypair().public().to_peer_id()
+    }
+
+    /// The libp2p keypair this identity presents on the wire.
+    ///
+    /// Exposed so the transport layer never has to reach for raw secret bytes
+    /// to build a swarm: the per-network identity keypair *is* the transport
+    /// keypair, so this is the single place that correspondence is established,
+    /// and [`peer_id`](Self::peer_id) is derived from it rather than computed
+    /// separately — the two cannot drift apart.
+    pub fn transport_keypair(&self) -> libp2p_identity::Keypair {
+        let mut bytes = self.secret_bytes;
+        let secret = libp2p_identity::ed25519::SecretKey::try_from_bytes(&mut bytes)
             .expect("32 bytes is always a valid ed25519 secret key");
-        let keypair = libp2p_identity::ed25519::Keypair::from(secret);
-        libp2p_identity::PublicKey::from(keypair.public()).to_peer_id()
+        libp2p_identity::Keypair::from(libp2p_identity::ed25519::Keypair::from(secret))
     }
 
     /// Signs a canonical encoding with this keypair.

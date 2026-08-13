@@ -1,0 +1,23 @@
+[package]
+name = "intranet-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+intranet-crypto.workspace = true
+intranet-governance.workspace = true
+intranet-identity.workspace = true
+intranet-invite.workspace = true
+
+futures.workspace = true
+libp2p.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

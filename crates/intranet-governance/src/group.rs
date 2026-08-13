@@ -1,6 +1,6 @@
 //! Groups and membership — Core Protocol Spec §2.1, §2.3–2.5.
 
-use crate::CapabilitySet;
+use crate::{CapabilitySet, InviteProvenance};
 use intranet_crypto::{Enc, Timestamp};
 use intranet_identity::PerNetworkIdentityId;
 use std::collections::BTreeMap;
@@ -73,6 +73,8 @@ pub struct MembershipRecord {
     pub added_by: Option<PerNetworkIdentityId>,
     /// When this identity was added.
     pub added_at: Timestamp,
+    /// Which invite this membership came from, if any — §5.6.
+    pub via_invite: Option<InviteProvenance>,
 }
 
 /// A flat collection of identities holding a shared capability set.
@@ -120,6 +122,9 @@ impl Group {
             identity.encode(e);
             e.option(record.added_by.as_ref(), |e, adder| adder.encode(e));
             e.i64(record.added_at.as_millis());
+            e.option(record.via_invite.as_ref(), |e, provenance| {
+                provenance.encode(e);
+            });
         });
     }
 }
@@ -161,6 +166,7 @@ mod tests {
             MembershipRecord {
                 added_by: Some(adder),
                 added_at: Timestamp::from_millis(1_000),
+                via_invite: None,
             },
         );
 
@@ -187,6 +193,7 @@ mod tests {
                     MembershipRecord {
                         added_by: None,
                         added_at: Timestamp::from_millis(i as i64),
+                        via_invite: None,
                     },
                 );
             }

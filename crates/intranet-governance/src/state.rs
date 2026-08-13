@@ -94,6 +94,7 @@ impl GovernanceState {
             MembershipRecord {
                 added_by: None,
                 added_at: entry.timestamp,
+                via_invite: None,
             },
         );
 
@@ -252,6 +253,33 @@ impl GovernanceState {
         self.groups.values().any(|group| group.contains(identity))
     }
 
+    /// How many memberships were granted using a given invite — §5.6.
+    ///
+    /// Invites are use-count-limited, and this is what makes that limit
+    /// checkable rather than aspirational: because every membership records the
+    /// invite that produced it, the count is a computation over replayed state
+    /// that every node reaches the same answer for. A per-node private tally
+    /// could never be reconciled between nodes and would let a multi-use invite
+    /// be spent once against each node separately.
+    ///
+    /// Counts across all groups, since a single admission may place an identity
+    /// in more than one group; callers checking a use limit should count
+    /// distinct identities rather than raw records, which is what this returns.
+    pub fn invite_use_count(&self, invite_id: &Hash) -> usize {
+        let mut used_by: BTreeSet<PerNetworkIdentityId> = BTreeSet::new();
+        for group in self.groups.values() {
+            for (identity, record) in &group.members {
+                if record
+                    .via_invite
+                    .is_some_and(|provenance| provenance.invite_id == *invite_id)
+                {
+                    used_by.insert(*identity);
+                }
+            }
+        }
+        used_by.len()
+    }
+
     /// Whether `pointer` is currently delisted by moderation.
     ///
     /// This is the concrete answer to the check that Storage Spec §2.5, Search
@@ -299,6 +327,8 @@ impl GovernanceState {
         self.network.encode(&mut e);
         self.policy.encode(&mut e);
         e.seq(self.groups.values(), |e, group| group.encode(e));
+        // Invite use counts are derivable from membership provenance, so they
+        // need no separate state: see `invite_use_count`.
         e.seq(self.device_certificates.keys(), |e, device| {
             device.encode(e);
         });
@@ -432,7 +462,7 @@ impl GovernanceState {
                 identity,
                 action,
             } => match action {
-                MembershipAction::Add => {
+                MembershipAction::Add { via_invite } => {
                     let target = self
                         .groups
                         .get_mut(group)
@@ -442,6 +472,7 @@ impl GovernanceState {
                         MembershipRecord {
                             added_by: Some(entry.author),
                             added_at: entry.timestamp,
+                            via_invite: *via_invite,
                         },
                     );
                 }

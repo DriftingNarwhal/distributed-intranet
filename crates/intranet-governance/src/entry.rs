@@ -79,11 +79,45 @@ pub struct ModerationEntry {
     pub target_pointer_id: PointerId,
 }
 
+/// Which invite a membership came from — §5.6.
+///
+/// "The issuing identity, retained and attached to the resulting membership
+/// record" — required for waiting-room visibility under explicit intake, where
+/// an admin reviewing a joiner needs to see which invite was used and who
+/// issued it, and generally useful provenance regardless of admission mode.
+///
+/// It also makes invite use-counting answerable by replay: counting the
+/// membership records naming a given invite is a computation over the log,
+/// rather than a tally each node would otherwise have to keep privately and
+/// could never reconcile with anyone else's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InviteProvenance {
+    /// The invite that was used.
+    pub invite_id: Hash,
+    /// The identity that issued that invite.
+    pub issuer: PerNetworkIdentityId,
+}
+
+impl InviteProvenance {
+    /// Appends this provenance to a canonical encoding.
+    pub fn encode(&self, enc: &mut Enc) {
+        enc.fixed(self.invite_id.as_bytes());
+        self.issuer.encode(enc);
+    }
+}
+
 /// How a membership change alters a group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MembershipAction {
     /// Add the identity to the group.
-    Add,
+    Add {
+        /// The invite this membership came from, if any.
+        ///
+        /// `None` covers memberships that did not originate from an invite at
+        /// all — a founder at genesis, or an admin adding an existing member to
+        /// an additional group.
+        via_invite: Option<InviteProvenance>,
+    },
     /// Remove the identity from the group.
     Remove {
         /// Optional cascade, removing everyone this identity added — §2.5.
@@ -216,7 +250,7 @@ impl EntryBody {
             Self::Genesis { .. } => "genesis",
             Self::DefineGroup { .. } => "define-group",
             Self::MembershipChange {
-                action: MembershipAction::Add,
+                action: MembershipAction::Add { .. },
                 ..
             } => "membership-add",
             Self::MembershipChange {
@@ -259,8 +293,9 @@ impl EntryBody {
                 enc.variant(2).str(group.as_str());
                 identity.encode(enc);
                 match action {
-                    MembershipAction::Add => {
+                    MembershipAction::Add { via_invite } => {
                         enc.variant(0);
+                        enc.option(via_invite.as_ref(), |e, p| p.encode(e));
                     }
                     MembershipAction::Remove { cascade } => {
                         enc.variant(1);

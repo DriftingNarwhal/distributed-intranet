@@ -70,10 +70,18 @@ fn define_group(group: &str, capabilities: impl IntoIterator<Item = Capability>)
 }
 
 fn add_to(group: &str, who: &PerNetworkIdentity) -> EntryBody {
+    add_to_via(group, who, None)
+}
+
+fn add_to_via(
+    group: &str,
+    who: &PerNetworkIdentity,
+    via_invite: Option<InviteProvenance>,
+) -> EntryBody {
     EntryBody::MembershipChange {
         group: GroupId::new(group),
         identity: who.id(),
-        action: MembershipAction::Add,
+        action: MembershipAction::Add { via_invite },
     }
 }
 

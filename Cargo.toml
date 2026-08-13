@@ -4,6 +4,8 @@ members = [
     "crates/intranet-crypto",
     "crates/intranet-identity",
     "crates/intranet-governance",
+    "crates/intranet-invite",
+    "crates/intranet-transport",
 ]
 
 [workspace.package]
@@ -14,12 +16,18 @@ rust-version = "1.85"
 [workspace.dependencies]
 intranet-crypto = { path = "crates/intranet-crypto" }
 intranet-identity = { path = "crates/intranet-identity" }
+intranet-governance = { path = "crates/intranet-governance" }
+intranet-invite = { path = "crates/intranet-invite" }
 
 bip39 = "2.2"
+futures = "0.3"
+libp2p = { version = "0.56", features = ["tcp", "quic", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "tokio", "macros", "ed25519"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tracing = "0.1"
 blake3 = "1.8"
 ed25519-dalek = "3.0"
 getrandom = "0.3"
-libp2p-identity = { version = "0.3", features = ["ed25519", "peerid"] }
+libp2p-identity = { version = "0.2", features = ["ed25519", "peerid"] }
 slip10_ed25519 = "0.1"
 thiserror = "2"
 

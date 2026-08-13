@@ -49,8 +49,8 @@ mod vote;
 
 pub use capability::{Capability, CapabilitySet, Tier};
 pub use entry::{
-    Cascade, EntryBody, LogEntry, MembershipAction, ModerationAction, ModerationEntry, PointerId,
-    RotationReason,
+    Cascade, EntryBody, InviteProvenance, LogEntry, MembershipAction, ModerationAction,
+    ModerationEntry, PointerId, RotationReason,
 };
 pub use error::GovernanceError;
 pub use group::{EVERYONE, FOUNDERS, Group, GroupId, MembershipRecord};
