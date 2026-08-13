@@ -1,0 +1,16 @@
+[package]
+name = "intranet-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+intranet-crypto.workspace = true
+intranet-governance.workspace = true
+intranet-identity.workspace = true
+intranet-storage.workspace = true
+
+thiserror.workspace = true
+
+[lints]
+workspace = true

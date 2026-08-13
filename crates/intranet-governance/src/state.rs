@@ -18,15 +18,30 @@
 //! approximate check.
 
 use crate::{
-    Capability, CapabilitySet, ContentType, EntryBody, GovernanceError, Group, GroupId, LogEntry,
-    MembershipAction, MembershipRecord, ModerationAction, NetworkPolicy, PointerId, RotationReason,
-    Tier,
+    AppName, Capability, CapabilitySet, ContentType, EntryBody, GovernanceError, Group, GroupId,
+    LogEntry, MembershipAction, MembershipRecord, ModerationAction, NetworkPolicy, PointerId,
+    RECLAIM_APP_NAME, REGISTER_APP_NAME, RotationReason, Tier,
 };
 use intranet_crypto::{Enc, Hash, Timestamp, hash_bytes};
 use intranet_identity::{
     DeviceCertificate, DevicePublicKey, NetworkId, PerNetworkIdentityId,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Who owns an application name, and what it resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppNameRecord {
+    /// The app this name resolves to.
+    pub app_id: PointerId,
+    /// The identity that registered or last reclaimed it.
+    pub owner: PerNetworkIdentityId,
+    /// When the current registration was made.
+    ///
+    /// Taken from the governance entry, so it is ordered by the log rather than
+    /// self-attested. A submitter cannot backdate this to claim priority — the
+    /// attack that made a discovery-index-only registry unsafe.
+    pub registered_at: Timestamp,
+}
 
 /// The authorization state produced by replaying a governance log.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +68,13 @@ pub struct GovernanceState {
     pub delisted: BTreeSet<PointerId>,
     /// How many epoch rotations have occurred.
     pub epoch: u64,
+    /// Authoritative application name ownership — App Hosting Spec §4.3.
+    ///
+    /// Lives in replayed governance state rather than a discovery index,
+    /// because ownership needs a trustworthy total order and permanent
+    /// durability. A discovery index has neither: its ordering is
+    /// self-attested and its entries lapse without refresh.
+    pub app_names: BTreeMap<AppName, AppNameRecord>,
     /// Hash of the log entry that produced the current epoch.
     ///
     /// Storage Spec §5.3 requires DEK wrappings to reference this entry hash
@@ -113,6 +135,7 @@ impl GovernanceState {
             device_certificates: BTreeMap::new(),
             revoked_devices: BTreeSet::new(),
             delisted: BTreeSet::new(),
+            app_names: BTreeMap::new(),
             epoch: 0,
             epoch_rotation_ref: None,
         };
@@ -280,6 +303,15 @@ impl GovernanceState {
         used_by.len()
     }
 
+    /// Resolves an application name to its current owner and target — §4.3.
+    ///
+    /// Answered by replay, so it is deterministic and cannot be influenced by a
+    /// backdated claim or by whether anyone is currently re-announcing a
+    /// discovery entry. A name absent here is unclaimed.
+    pub fn resolve_app_name(&self, name: &AppName) -> Option<&AppNameRecord> {
+        self.app_names.get(name)
+    }
+
     /// Whether `pointer` is currently delisted by moderation.
     ///
     /// This is the concrete answer to the check that Storage Spec §2.5, Search
@@ -336,6 +368,11 @@ impl GovernanceState {
         e.seq(self.delisted.iter(), |e, pointer| {
             e.fixed(pointer.as_bytes());
         });
+        e.seq(self.app_names.iter(), |e, (name, record)| {
+            e.str(name.as_str()).fixed(record.app_id.as_bytes());
+            record.owner.encode(e);
+            e.i64(record.registered_at.as_millis());
+        });
         e.u64(self.epoch);
         e.option(self.epoch_rotation_ref.as_ref(), |e, hash| {
             e.fixed(hash.as_bytes());
@@ -354,6 +391,19 @@ impl GovernanceState {
             EntryBody::PolicyChange { .. } => Capability::DefinePolicy,
             EntryBody::ContentTypePolicy { .. } => Capability::DefineContentPolicy,
             EntryBody::Moderation(_) => Capability::ModerateContent,
+
+            // Which capability is required depends on current state, the same
+            // pattern `manage-membership` uses: claiming a free name is a
+            // low-bar ordinary action, while taking one somebody already holds
+            // is governance-tier. Deciding this from replayed state is what
+            // stops a broad grant of the former from also conferring the latter.
+            EntryBody::AppNameRegistration { name, .. } => {
+                if self.app_names.contains_key(name) {
+                    Capability::extension(RECLAIM_APP_NAME)
+                } else {
+                    Capability::extension(REGISTER_APP_NAME)
+                }
+            }
             EntryBody::MembershipChange { group, .. } => {
                 // The target group must exist before its membership can be
                 // managed, and refusing an unknown group here is what stops a
@@ -505,6 +555,17 @@ impl GovernanceState {
             EntryBody::DeviceRevocation(revocation) => {
                 self.device_certificates.remove(&revocation.device);
                 self.revoked_devices.insert(revocation.device);
+            }
+
+            EntryBody::AppNameRegistration { name, app_id } => {
+                self.app_names.insert(
+                    name.clone(),
+                    AppNameRecord {
+                        app_id: *app_id,
+                        owner: entry.author,
+                        registered_at: entry.timestamp,
+                    },
+                );
             }
 
             EntryBody::Moderation(moderation) => match moderation.action {

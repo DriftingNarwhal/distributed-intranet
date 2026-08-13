@@ -46,6 +46,40 @@ impl std::fmt::Display for PointerId {
     }
 }
 
+/// A human-shareable application name.
+///
+/// Names are compared exactly as given. Case folding or Unicode normalisation
+/// would be a security decision, not a convenience one — collapsing distinct
+/// names into one creates homograph confusion where a lookalike resolves to
+/// somebody else's app — so it is deliberately not done here, and any such
+/// policy belongs in a client's presentation layer where a human can see it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AppName(String);
+
+impl AppName {
+    /// Builds an application name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// The name text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for AppName {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl std::fmt::Display for AppName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Whether a moderation action delists or restores content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModerationAction {
@@ -210,6 +244,32 @@ pub enum EntryBody {
     DeviceRevocation(DeviceCertificateRevocation),
     /// Delist or relist published content.
     Moderation(ModerationEntry),
+
+    /// Claim or reassign a human-shareable application name.
+    ///
+    /// # Why this is a governance log entry rather than an append-set entry
+    ///
+    /// Two properties of the append-set primitive, both correct and desirable
+    /// for a discovery index, are actively wrong for authoritative ownership:
+    ///
+    /// - **No trustworthy ordering.** "First registration wins by timestamp"
+    ///   relies on a field the submitter attests to itself, so a squatter can
+    ///   simply backdate a claim. The governance log supplies a tamper-evident
+    ///   total order that cannot be backdated.
+    /// - **TTL-based liveness.** An append-set entry expires unless
+    ///   re-announced — right for search postings, dangerous for ownership,
+    ///   since a legitimate registrant whose node is merely offline would have
+    ///   their claim silently lapse and a standing competing entry would take
+    ///   over by default. Log entries never lapse.
+    ///
+    /// The append-set is still used, purely as a best-effort discovery index
+    /// (App Hosting Spec §4.4). It is never the source of truth for ownership.
+    AppNameRegistration {
+        /// The name being claimed or reassigned.
+        name: AppName,
+        /// The app this name should resolve to.
+        app_id: PointerId,
+    },
 }
 
 impl EntryBody {
@@ -240,7 +300,8 @@ impl EntryBody {
             | Self::MembershipChange { .. }
             | Self::PolicyChange { .. }
             | Self::ContentTypePolicy { .. }
-            | Self::Moderation(_) => true,
+            | Self::Moderation(_)
+            | Self::AppNameRegistration { .. } => true,
         }
     }
 
@@ -263,6 +324,7 @@ impl EntryBody {
             Self::DeviceEnrollment(_) => "device-enrollment",
             Self::DeviceRevocation(_) => "device-revocation",
             Self::Moderation(_) => "moderation",
+            Self::AppNameRegistration { .. } => "app-name-registration",
         }
     }
 
@@ -339,6 +401,11 @@ impl EntryBody {
                 revocation.device.encode(enc);
                 enc.i64(revocation.revoked_at.as_millis())
                     .fixed(revocation.signature.as_bytes());
+            }
+            Self::AppNameRegistration { name, app_id } => {
+                enc.variant(9)
+                    .str(name.as_str())
+                    .fixed(app_id.as_bytes());
             }
             Self::Moderation(moderation) => {
                 enc.variant(8)

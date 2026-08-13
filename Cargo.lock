@@ -1716,6 +1716,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "intranet-app"
+version = "0.1.0"
+dependencies = [
+ "intranet-crypto",
+ "intranet-governance",
+ "intranet-identity",
+ "intranet-storage",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "intranet-crypto"
 version = "0.1.0"
 dependencies = [

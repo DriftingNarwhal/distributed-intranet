@@ -4,6 +4,31 @@ use crate::{ContentType, GroupId};
 use intranet_crypto::Enc;
 use std::collections::BTreeSet;
 
+/// Capability name for claiming an unclaimed application name.
+///
+/// Defined by App Hosting Spec §4.3 and tagged **ordinary**, so claiming a fresh
+/// name stays low-friction and broadly grantable. Named here rather than in the
+/// app-hosting crate because the governance log's own authorization rule has to
+/// know which capability an `AppNameRegistration` entry requires — the same
+/// reason `PointerId` is defined at this layer.
+pub const REGISTER_APP_NAME: &str = "register-app-name";
+
+/// Capability name for reassigning an already-claimed application name.
+///
+/// Tagged **governance-tier**. Splitting this from claiming closes a hijack
+/// path: an earlier design let one capability do both via unrestricted
+/// supersession, which in a network granting registration broadly — an open
+/// sandbox, say — made stealing any existing name trivial for anyone holding
+/// that broad grant.
+pub const RECLAIM_APP_NAME: &str = "reclaim-app-name";
+
+/// Capability name for admitting a pending app version under reviewed publishing.
+///
+/// Tagged **governance-tier**, and deliberately distinct from
+/// `moderate-content`: one governs letting something in, the other taking
+/// something already live back out.
+pub const APPROVE_APP_PUBLISH: &str = "approve-app-publish";
+
 /// Whether a capability confers governance power.
 ///
 /// This tag is what the `everyone` denylist (§2.4) actually keys off, rather

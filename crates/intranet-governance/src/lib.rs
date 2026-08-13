@@ -47,9 +47,11 @@ mod policy;
 mod state;
 mod vote;
 
-pub use capability::{Capability, CapabilitySet, Tier};
+pub use capability::{
+    APPROVE_APP_PUBLISH, Capability, CapabilitySet, RECLAIM_APP_NAME, REGISTER_APP_NAME, Tier,
+};
 pub use entry::{
-    Cascade, EntryBody, InviteProvenance, LogEntry, MembershipAction, ModerationAction,
+    AppName, Cascade, EntryBody, InviteProvenance, LogEntry, MembershipAction, ModerationAction,
     ModerationEntry, PointerId, RotationReason,
 };
 pub use error::GovernanceError;
@@ -59,5 +61,5 @@ pub use policy::{
     AdmissionMode, ContentType, FinalityParams, GovernanceModel, HistoryAccess, NetworkPolicy,
     starter_content_types,
 };
-pub use state::GovernanceState;
+pub use state::{AppNameRecord, GovernanceState};
 pub use vote::{Ballot, QuorumCertificate, VoteOutcome, VoteProposal};
