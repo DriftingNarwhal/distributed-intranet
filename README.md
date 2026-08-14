@@ -12,7 +12,7 @@ rather than decided silently.
 
 ## Status
 
-Every specification document has an implementation. **441 tests, clippy clean.**
+Every specification document has an implementation. **444 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -21,21 +21,19 @@ Every specification document has an implementation. **441 tests, clippy clean.**
 | 03 App hosting — name registry, manifests, publishing policy | Implemented, **except the execution sandbox** |
 | 04 Real-time transport — calls, streams, VOD | Implemented |
 | 05 Search & indexing | Implemented |
-| 06 Reference test harness | CLI implemented; NAT scenarios executed, **4 of 5 passing** |
+| 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
 
-### The two things that are not done, and why
+### The one thing that is not done, and what tier 2 cost to verify
 
-**Hole-punching does not work, and tier 2 is unverified.** The Docker NAT
-scenarios have now been run. Scenarios 1, 2, 4 and 5 pass; **scenario 3, the
-only one asserting a hole-punched connection, fails** — DCUtR dials the peer's
-ephemeral NAT port rather than one mapped to its listener.
-
-Two causes have since been found and fixed in the transport layer — reserving a
-relay circuit straight after a wildcard bind lost port reuse, and a 10-second
-idle timeout tore the relayed connection down mid-upgrade. Both were protocol
-bugs rather than harness ones. With those fixed the traversal itself works and a
-real direct connection is made, but DCUtR still reports the upgrade as failed;
-see [`harness/README.md`](harness/README.md).
+**All five NAT scenarios now pass, including tier 2.** Getting there took four
+fixes, three of them protocol bugs rather than harness ones: reserving a relay
+circuit straight after a wildcard bind lost port reuse; a 10-second idle timeout
+tore the relayed connection down mid-upgrade; the NAT gateways answered the
+hole-punch SYN with an RST instead of dropping it, which removes the retransmit
+hole-punching depends on; and a successful upgrade was attributed from DCUtR's
+own dial rather than from the connection, so a real tier-2 upgrade was reported
+as tier 1. See [`harness/README.md`](harness/README.md) for the evidence behind
+each.
 
 First execution needed seven fixes, and the expectation that bugs would be
 confined to the harness was wrong — the most serious was in `intranet-transport`:
@@ -81,7 +79,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 441 tests
+cargo test --workspace      # 444 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```
@@ -101,7 +99,7 @@ build context is roughly 14 GB.
 ./harness/run-scenario.sh all     # or: ./harness/run-scenario.sh 5
 ```
 
-Scenario 3 currently fails; the other four pass. Read
+All five scenarios pass. Read
 [`harness/README.md`](harness/README.md) first — it separates what is verified
 from what is not, and records what the first execution found.
 

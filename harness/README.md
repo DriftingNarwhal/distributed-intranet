@@ -21,10 +21,10 @@ harness.
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2, 4, 5 | **Passing.** |
-| Scenario 3 (hole-punching) | **Fixed pending confirmation.** Traversal confirmed working in the last run; the remaining failure was tier attribution, now corrected. Needs one more run to confirm green. |
+| Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 441 tests and `cargo clippy --workspace --all-targets` reports no
+passes 444 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -89,6 +89,50 @@ assertion report the wrong answer:
 
 Building also requires a `.dockerignore` at the repo root excluding `target/`;
 without it the build context is roughly 14 GB.
+
+## What scenarios 4 and 5 do and do not prove
+
+They pass, and the relayed connection in them is real. `connected: peer=<target>
+tier=relayed via=…/p2p-circuit/p2p/<target>` is emitted on a libp2p
+`ConnectionEstablished` for the **target**, which requires a completed Noise
+handshake against the target's own static key plus a yamux negotiation, carried
+end to end through the circuit. The relay cannot forge that — it has no key. A
+circuit whose data path was broken could not produce the line at all.
+
+The `dial-failed` line that follows is a *different* dial: DCUtR's direct attempt
+at the peer's public address. It is supposed to fail here, and how it fails is
+the useful part — `Timeout has been reached`, not errno 111. Under CGNAT the SYN
+is silently dropped, which is what a real carrier NAT does; the INPUT-chain fix
+generalised to the CGNAT gateways rather than only fixing scenario 3.
+
+What they did **not** prove is that tier 3 stays bounded. §5.2 says tier 3 is a
+correctness guarantee and not a path to live on, and §5.3's circuit ceilings are
+the entire mechanism behind that sentence — so an unenforced ceiling turns tier 3
+into exactly what the spec says it must not be, silently and while every scenario
+still passes.
+
+`max_circuit_duration` and `max_circuit_bytes` had precisely the coverage
+`max_reservations` had before `relay_enforcement.rs` was written: thorough
+`RelayGuard` unit tests, plus `conformance.rs` asserting the numbers survive on
+the struct. Neither would notice a live relay enforcing none of it — the defect
+class that motivated this file in the first place. Three tests now drive a real
+relay:
+
+- `a_live_relay_cuts_a_circuit_off_at_its_duration_ceiling`
+- `a_live_relay_cuts_a_circuit_off_at_its_byte_ceiling`
+- `a_circuit_within_its_ceilings_stays_open` — the control that makes the other
+  two attributable rather than merely green
+
+Both ceilings turned out to be genuinely enforced; the tests exist so they stay
+that way. Two things had to be handled for them to mean anything. The target is
+given no direct listen address, because on loopback DCUtR would otherwise upgrade
+the connection, and a relayed connection that vanishes because it was *replaced*
+is indistinguishable from one the relay cut off. And every swarm is polled
+together while waiting for reservations: `await_reservation` drives only its own
+node, so waiting on the members one at a time leaves the relay unpolled, nothing
+is ever granted, and the byte-ceiling test passes having observed no ceiling at
+all. The first draft did exactly that, and the control caught it.
+
 
 ## Outstanding
 
@@ -268,7 +312,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 441 tests
+cargo test --workspace                      # 444 tests
 cargo run -p intranet-harness -- --help
 ```
 
