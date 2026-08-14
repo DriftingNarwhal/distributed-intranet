@@ -13,7 +13,10 @@ what an older summary or comment might imply.
 Rust workspace, one crate per layer, in `crates/`. See README.md for the map and for what
 is and is not verified. Every layer is implemented. The Docker NAT scenarios have now been
 executed and 4 of 5 pass; hole-punching (scenario 3) does not work, so tier 2 is unverified.
-The app execution sandbox is still not built or stubbed.
+The app execution sandbox is deliberately outside the protocol, not missing: App Hosting
+§3.2.1 states the boundary — the protocol decides which bytes are the app and whether it
+is servable, a client decides whether to execute them and under what isolation. Do not
+add a sandbox here.
 
 Governance log propagation is wired: a pull-based request/response sync protocol over
 libp2p (`intranet-transport::sync`, `intranet-governance::wire`), chosen because §2.7
@@ -91,8 +94,10 @@ Call media delivery is specified in §1.5 as **unreliable and unordered** (QUIC 
 or equivalent): a frame past its playout deadline is worthless, and a reliable ordered
 channel turns one lost packet into a multi-frame gap through head-of-line blocking. The
 current implementation uses request/response over a reliable stream, which §1.5 permits
-only as a fallback — it is the honest state, not the target. Replacing it needs datagram
-support libp2p's QUIC transport does not currently expose, so it is not a behaviour swap.
+only as a fallback — it is the honest state, not the target. Replacing it is blocked upstream:
+quinn supports datagrams but `libp2p-quic` disables them at construction
+(`datagram_receive_buffer_size(None)`, commented "Disable datagrams") and exposes no
+datagram API, so this needs a libp2p change rather than a local one.
 Signalling (§1.4) and live-stream chunks (§3.2) are both correctly reliable; do not
 collapse the three into one delivery model.
 
@@ -104,8 +109,8 @@ discards any that disagrees. A browser must merge its **own** locally-held colle
 entries before enumerating: enumeration finds other providers, so skipping local ones
 both hides what this node published and lets a hostile local entry escape validation.
 
-Every layer is now reachable over the network. The remaining gap is the app execution
-sandbox, which is unimplemented rather than unwired.
+Every layer is reachable over the network, and the specs are v1.0. The one implementation
+divergence from the specs is call media delivery (above); everything else matches.
 
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);

@@ -1,6 +1,7 @@
 # Search & Indexing Specification
 
-**Document status:** Draft v1 — architecture/design only, not implementation
+**Project:** Distributed Intranet
+**Document status:** v1.0 — stable. A reference implementation exists (see the repository root); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, capability ledger, governance policy, content-type policy), Storage & Replication Spec (mutable pointers, content addressing, Distributed Append-Sets)
 **Consumed by:** any future application-layer specs built on this platform
 
@@ -132,5 +133,5 @@ No new capability and no new record type is needed for this: `moderate-content` 
 ## 8. Explicitly Open Questions
 
 1. Exact tokenization/normalization rules (stemming, stop-words, language handling) — implementation-level tuning, not architectural.
-2. Exact posting-freshness TTL and re-announcement cadence (§3.2) — needs a concrete default, but is tuning rather than a structural decision.
+2. ~~Exact posting-freshness TTL and re-announcement cadence (§3.2).~~ **Resolved for v1.0: a 24-hour TTL, with re-announcement well inside it.** The value stays tuning rather than architecture, but it needed a concrete default and now has one. The constraint behind it is worth stating, because it is the same one the capability ledger has (Core Protocol Spec §4.5): re-announcement cadence must sit comfortably inside the TTL, or entries expire between refreshes and content silently drops out of the index while its publisher is still online and serving it. A long TTL costs only the staleness of a discovery index, which §3.2 already accepts; a cadence too close to the TTL costs availability, which it does not.
 3. Precise relevance-ranking algorithm (§5) — TF-IDF-style scoring is a reasonable default assumption, but the exact formula is an implementation task.

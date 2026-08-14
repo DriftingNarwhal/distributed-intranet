@@ -1,6 +1,7 @@
 # App Hosting Specification
 
-**Document status:** Draft v1 — architecture/design only, not implementation
+**Project:** Distributed Intranet
+**Document status:** v1.0 — stable. A reference implementation exists (see the repository root); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, capability ledger, governance policy, governance log), Storage & Replication Spec (mutable pointers, swarm-based serving, Distributed Append-Sets)
 **Consumed by:** any future application-layer specs built on this platform
 
@@ -182,6 +183,16 @@ Putting it together, a visitor accessing an app for the first time:
 - Human-shareable app names are **governance-log anchored for authoritative ownership** (Core Protocol Spec §2.7), with a Distributed Append-Set (Storage Spec §2.5) layered on top purely as a best-effort discovery index — not the other way around. Claiming an unclaimed name (`register-app-name`, ordinary) and reassigning an already-claimed one (`reclaim-app-name`, governance-tier) are separately-gated capabilities, closing a hijack path an earlier version of this section left open by treating them as one.
 - Publishing policy is network-wide: `open` (default, immediately live, purely reactive moderation) or `reviewed` (pending until `approve-app-publish`, re-checked on every new version, not just first publish) — §3.5.
 - Malicious apps are contained primarily by sandbox isolation (limits damage from code that already ran) and secondarily by moderation-driven delisting from discovery (limits further spread) — both mechanisms already exist elsewhere in this design and are applied here, not reinvented. Delisting is a **`ModerationEntry` appended to the governance log** (Core Protocol Spec §2.7), gated on `moderate-content` and answered by replay like every other governance fact — durable (it cannot lapse through non-refresh) and automatically honored by discovery-index consumers via the append-set validation requirement (Storage Spec §2.5, check (c)), with no separate takedown path for the index.
+
+---
+
+### 3.2.1 Where the Sandbox Is Implemented — a Conformance Boundary, Not a Gap
+
+**Stated explicitly at v1.0 because the division is easy to mistake for an omission.** §3.2 specifies the isolation a published app must run under. It does not, and cannot usefully, specify *how* — because the answer is a property of a particular browser engine on a particular platform, and the whole point of §1.2's choice of a webview is to inherit decades of hardened browser sandboxing rather than reinvent it.
+
+The boundary is therefore: **the protocol layer decides which bytes are the app and whether it is servable; a client decides whether to execute them and under what isolation.** A protocol implementation that ships no sandbox is complete as a protocol implementation — it has no business executing anything. A *client* that renders published apps is conformant only if it provides §3.2's isolation, and that obligation does not weaken because the protocol layer cannot enforce it.
+
+Two consequences worth being blunt about. Nothing in a protocol implementation will ever tell a caller that an app is safe to run, so a client that fetches an `app-bundle` and executes it without its own sandbox has not been let down by the protocol — it has skipped the step the protocol was never in a position to take. And a network operator choosing whether to allow `app-bundle` on its content-type allowlist (§1.1) is making a decision about what its members' *clients* will be asked to execute, which is why that allowlist entry is opt-in rather than default.
 
 ---
 

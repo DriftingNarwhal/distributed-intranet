@@ -1,6 +1,7 @@
 # Storage & Replication Specification
 
-**Document status:** Draft v1 — architecture/design only, not implementation
+**Project:** Distributed Intranet
+**Document status:** v1.0 — stable. A reference implementation exists (see the repository root); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, capability ledger, epoch-based encryption)
 **Consumed by:** App Hosting Spec (published apps are stored content), and any future application-layer specs
 

@@ -1,65 +1,136 @@
-# Distributed intranet
+# Distributed Intranet
 
-A protocol for many independent, mutually-unlinkable peer-to-peer networks, each
-with its own membership, governance, encryption, storage, and search. No
-required central authority: bootstrap relays exist only to solve cold start, and
-nothing in steady-state operation depends on one.
+**Protocol v1.0** · a specification and reference implementation for many
+independent, mutually-unlinkable peer-to-peer networks — each with its own
+membership, governance, encryption, storage, search, calls and app hosting.
+
+There is no required central authority. Bootstrap relays exist only to solve cold
+start between two peers behind NAT, and nothing in steady-state operation depends
+on one: a relay that vanishes costs a reconnection, not a network.
 
 The design lives in [`specs/`](specs/) across six documents. **They are
 authoritative** — the code implements them, and where an implementation choice
 was not covered by them it is flagged in a comment at the point of the choice
 rather than decided silently.
 
+## What this actually is
+
+A "network" here is a self-governing group — a household, a club, a workplace, a
+fandom — that shares content among its own members and nobody else. The protocol
+gives each one:
+
+- **Its own membership and governance.** Who is a member, who may do what, and
+  how those decisions are made is a per-network choice, recorded in a
+  hash-chained log every member can replay and verify independently. There is no
+  administrator to trust, because authorization is a computation over that log
+  rather than a question you ask someone.
+- **Its own encryption.** Content is encrypted to the network's current epoch
+  key, rotated when membership changes. Rotation is cheap by design: it re-wraps
+  a small number of keys, never re-encrypts content.
+- **Unlinkability between networks.** One person's identity in one network cannot
+  be correlated with their identity in another — not by key, and not by libp2p
+  PeerId, which is derived per network for exactly this reason. (IP-level and
+  timing correlation remain out of scope; the specs say so plainly rather than
+  implying a stronger guarantee.)
+- **Storage that spreads.** Content is chunked, content-addressed, and served by
+  whoever has it. Anyone who fetches something automatically becomes a source for
+  it, so a popular file does not pin its publisher's upload.
+- **Search without a search engine.** Publishing indexes as a side effect;
+  queries resolve against a distributed inverted index over the DHT. No crawler,
+  and no query ever leaves the network.
+- **Calls and live streams.** Small calls go direct; larger ones move to a relay
+  that carries encrypted media it cannot read. Streams propagate viewer-to-viewer
+  so a broadcaster's upload cost stays roughly flat as the audience grows.
+
+## What you can build on it
+
+Three shapes, in rough order of how most consumers would use it:
+
+1. **A native app using the protocol as a backend.** The common case, and what
+   the specs expect: your own client, distributed however you like, using the
+   core and storage layers for identity, membership, encrypted storage and
+   transfer. You never touch app hosting.
+2. **A published in-network app.** HTML/CSS/JS bundles published *to* a network
+   and rendered by a protocol-aware client, updatable by republishing. Opt-in per
+   network — a network that does not allow the `app-bundle` content type cannot
+   host them at all. See the sandbox boundary under Status.
+3. **A new layer on top.** The specs are written to be consumed: append-sets,
+   mutable pointers, the capability ledger and the governance log are general
+   primitives, and two consumers already share each of them.
+
+## What this is not
+
+- **Not a blockchain.** The governance log borrows tamper-evidence and
+  independent verifiability, and deliberately discards mining, tokens and
+  permissionless consensus. Every actor has a verified identity before they act,
+  so there are no strangers to establish trust among.
+- **Not anonymity software.** It unlinks your identities across networks. It does
+  not hide your IP address or your timing from a network observer, and does not
+  claim to.
+- **Not a global network.** There is no shared namespace, no cross-network
+  discovery, and no directory of networks. Each one is its own island by design.
+- **Not a finished product.** It is a protocol with a reference implementation
+  and a conformance harness — the thing you build a product against.
+
 ## Status
 
-Every specification document has an implementation. **540 tests, clippy clean.**
+**Protocol: v1.0, stable.** Every specification document has an implementation,
+and every layer is reachable over the network. **540 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
 | 01 Core protocol — identity, governance, epoch keying, transport | Implemented |
 | 02 Storage & replication | Implemented |
-| 03 App hosting — name registry, manifests, publishing policy | Implemented, **except the execution sandbox** |
-| 04 Real-time transport — calls, streams, VOD | Implemented |
+| 03 App hosting — name registry, manifests, publishing policy | Implemented; execution sandbox is an embedder concern, see below |
+| 04 Real-time transport — calls, streams, VOD | Implemented; media uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
 
-### What is not done
+### Two things to know before you build on it
 
-**All five NAT scenarios now pass, including tier 2.** Getting there took four
-fixes, three of them protocol bugs rather than harness ones: reserving a relay
-circuit straight after a wildcard bind lost port reuse; a 10-second idle timeout
-tore the relayed connection down mid-upgrade; the NAT gateways answered the
-hole-punch SYN with an RST instead of dropping it, which removes the retransmit
-hole-punching depends on; and a successful upgrade was attributed from DCUtR's
-own dial rather than from the connection, so a real tier-2 upgrade was reported
-as tier 1. See [`harness/README.md`](harness/README.md) for the evidence behind
-each.
+**The app execution sandbox is deliberately outside the protocol.** App Hosting
+Spec §3.2 specifies the isolation a published app must run under; §3.2.1 states
+why providing it belongs to a client rather than to a protocol implementation. It
+is a property of a particular browser engine on a particular platform, and the
+choice of a webview exists precisely to inherit hardened browser sandboxing
+rather than reinvent it. Concretely: nothing in `intranet-app` will tell you an
+app is safe to run — it settles which bytes are the app and whether it is
+servable, and stops. **A client that fetches an `app-bundle` and executes it
+without its own sandbox has skipped a step the protocol was never in a position
+to take.**
 
-First execution needed seven fixes, and the expectation that bugs would be
-confined to the harness was wrong — the most serious was in `intranet-transport`:
+**Call media uses the fallback delivery path.** Real-Time Spec §1.5 requires call
+media to be delivered unreliably and unordered: a frame past its playout deadline
+is worthless, and a reliable ordered channel turns one lost packet into a
+multi-frame gap through head-of-line blocking. What ships is request/response over
+a reliable stream, which §1.5 permits only as a fallback. It is correct and
+behaves well under negligible loss — which is what the tests exercise — and
+degrades badly under real loss. This is **blocked upstream, not merely
+unimplemented**: quinn supports QUIC datagrams, but `libp2p-quic` disables them at
+construction and exposes no datagram API, so closing it needs a libp2p change
+rather than a local one.
+
+### How much to trust "the tests pass"
+
+The NAT scenarios took four fixes to pass, three of them protocol bugs rather
+than harness ones: reserving a relay circuit straight after a wildcard bind lost
+port reuse; a 10-second idle timeout tore the relayed connection down mid-upgrade;
+the NAT gateways answered the hole-punch SYN with an RST instead of dropping it,
+which removes the retransmit hole-punching depends on; and a successful upgrade
+was attributed from DCUtR's own dial rather than from the connection, so a real
+tier-2 upgrade was reported as tier 1.
+
+The first execution needed seven fixes, and the expectation that bugs would be
+confined to the harness was wrong. The most serious was in `intranet-transport`:
 `RelayNode` never registered an external address, so it granted every reservation
-with an empty address list and no client could accept one. Tiers 2 and 3 were
+with an empty address list and no client could accept one — tiers 2 and 3 were
 dead while tier 1 worked and the relay's health check reported ready. Two more
 were in the harness's own tier assertion, which reported `direct` for connections
-it had not actually made to the target. Treat "the tests pass" here with the
-corresponding caution: passing scenarios validate connectivity and tier
-selection, not end-to-end behaviour.
+it had not actually made to the target.
 
-**The app execution sandbox is not implemented and not stubbed.** Nothing in
-`intranet-app` will tell a caller an app is safe to run — it settles which bytes
-are the app and whether it is servable, and stops there. Webview isolation,
-platform-enforced CSP, and capability prompts are an embedding job against a
-real browser engine, and depend on target platform.
-
-**Call media uses the fallback delivery path, not the specified one.** Real-Time
-Spec §1.5 requires call media to be delivered unreliably and unordered — a frame
-past its playout deadline is worthless, and a reliable ordered channel turns one
-lost packet into a multi-frame gap through head-of-line blocking. What is here is
-request/response over a reliable stream, which §1.5 permits only as a fallback.
-It is correct and behaves well under negligible loss, which is what the tests
-exercise; it degrades badly under real loss. Replacing it needs datagram support
-libp2p's QUIC transport does not currently expose, so it is not a matter of
-swapping a behaviour.
+Passing scenarios validate connectivity and tier selection, not end-to-end
+behaviour. [`harness/README.md`](harness/README.md) separates what is verified
+from what is not, and records the evidence behind each fix.
 
 ## Layout
 
@@ -109,9 +180,9 @@ build context is roughly 14 GB.
 ./harness/run-scenario.sh all     # or: ./harness/run-scenario.sh 5
 ```
 
-All five scenarios pass. Read
-[`harness/README.md`](harness/README.md) first — it separates what is verified
-from what is not, and records what the first execution found.
+All five pass. Roughly two minutes for the in-process suite versus minutes more
+for the Docker matrix, which is why the harness spec (§8) puts the first on every
+commit and the second on a slower cadence.
 
 ## Principles the code follows
 
@@ -148,4 +219,12 @@ other heavily, and several sections exist specifically to correct an earlier,
 subtly wrong version of themselves. Those corrections are usually load-bearing.
 
 Where the specs leave something open, the code says so inline. Searching for
-`Flagged` finds every such decision.
+`Flagged` finds every such decision — each one is a choice the specs did not
+make, recorded at the point it was made rather than buried in a commit message.
+
+The specs are versioned as a set. At v1.0 the remaining open questions in each
+document are genuinely deferred rather than unresolved: application-level
+questions nobody needs yet (concurrent-edit merge semantics), tuning that wants
+real deployment data (tokenisation rules, ranking formula), and enforcement
+surfaces for capabilities no app has requested. Anything that blocked
+implementation has been closed.

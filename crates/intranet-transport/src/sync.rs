@@ -78,11 +78,16 @@ pub const SIGNAL_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-
 /// (§2.2), which does not depend on the delivery model at all. Under real loss
 /// this degrades badly, in the specific way §1.5 describes.
 ///
-/// **Flagged: replacing this needs an unreliable path libp2p does not currently
-/// expose.** QUIC is already a required transport, but libp2p's QUIC transport
-/// surfaces streams rather than datagrams, so this is not a matter of swapping a
-/// behaviour — it needs datagram support underneath. Recorded here rather than
-/// left to be rediscovered by whoever benchmarks a lossy link.
+/// **Flagged: replacing this is blocked upstream, not merely unimplemented.**
+/// QUIC is already a required transport and quinn — the implementation libp2p
+/// builds on — supports datagrams (`quinn::Connection::send_datagram`). But
+/// `libp2p-quic` disables them outright at construction:
+/// `transport.datagram_receive_buffer_size(None)` in its `config.rs`, commented
+/// "Disable datagrams". Its `Connection` type surfaces no datagram API either.
+/// So an unreliable media path needs support added underneath rather than a
+/// behaviour swapped above, and anyone planning that work should budget for a
+/// libp2p change rather than a local one. Recorded precisely here so it is not
+/// rediscovered by whoever first benchmarks a lossy link.
 pub const MEDIA_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-media/1.0.0");
 
 /// The largest metadata message this build will read.

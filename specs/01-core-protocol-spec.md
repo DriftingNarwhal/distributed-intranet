@@ -1,7 +1,7 @@
 # Core Protocol Specification
 
-**Project codename:** (TBD)
-**Document status:** Draft v1 — architecture/design only, not implementation
+**Project:** Distributed Intranet
+**Document status:** v1.0 — stable. A reference implementation exists (see the repository root); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** nothing (this is the foundation layer)
 **Consumed by:** Storage & Replication Spec, App Hosting Spec, Real-Time Transport Spec
 
