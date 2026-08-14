@@ -30,7 +30,7 @@
 use futures::{AsyncReadExt, AsyncWriteExt};
 use intranet_governance::{SyncRequest, SyncResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
-use intranet_storage::{ChunkRequest, ChunkResponse};
+use intranet_storage::{ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse};
 use libp2p::StreamProtocol;
 use libp2p::request_response;
 use std::io;
@@ -49,6 +49,10 @@ pub const LEDGER_PROTOCOL: StreamProtocol =
 
 /// The chunk transfer protocol's libp2p identifier — Storage Spec §4.
 pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/1.0.0");
+
+/// The append-set collection protocol's libp2p identifier — Storage Spec §2.5.
+pub const COLLECTION_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/intranet/append-set/1.0.0");
 
 /// The largest metadata message this build will read.
 ///
@@ -114,6 +118,8 @@ wire_message!(LedgerRequest);
 wire_message!(LedgerResponse);
 wire_message!(ChunkRequest);
 wire_message!(ChunkResponse, MAX_CHUNK_MESSAGE_BYTES);
+wire_message!(CollectionRequest);
+wire_message!(CollectionResponse);
 
 /// Codec carrying any [`WireMessage`] pair.
 ///
@@ -142,6 +148,8 @@ pub type SyncCodec = WireCodec<SyncRequest, SyncResponse>;
 pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
 /// Codec for chunk transfer.
 pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
+/// Codec for append-set collection enumeration.
+pub type CollectionCodec = WireCodec<CollectionRequest, CollectionResponse>;
 
 async fn read_framed<T>(io: &mut T, max: u64) -> io::Result<Vec<u8>>
 where
@@ -236,4 +244,9 @@ pub fn ledger_behaviour() -> request_response::Behaviour<LedgerCodec> {
 /// Builds the chunk transfer behaviour.
 pub fn chunk_behaviour() -> request_response::Behaviour<ChunkCodec> {
     build(CHUNK_PROTOCOL)
+}
+
+/// Builds the append-set collection behaviour.
+pub fn collection_behaviour() -> request_response::Behaviour<CollectionCodec> {
+    build(COLLECTION_PROTOCOL)
 }

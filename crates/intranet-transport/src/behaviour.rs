@@ -9,7 +9,7 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{ChunkCodec, LedgerCodec, SyncCodec};
+use crate::sync::{ChunkCodec, CollectionCodec, LedgerCodec, SyncCodec};
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
 };
@@ -57,6 +57,12 @@ pub struct MemberBehaviour {
     /// backpressure story (§4.5) and the authorization gate (§5.4) are all
     /// specific to it.
     pub chunk: request_response::Behaviour<ChunkCodec>,
+    /// Append-set collection enumeration — Storage Spec §2.5.
+    ///
+    /// One primitive, several consumers: search postings (Search Spec §3.1) and
+    /// the app name registry (App Hosting Spec §4.3–4.4) both build on it, which
+    /// is why it carries opaque payloads rather than either consumer's type.
+    pub collection: request_response::Behaviour<CollectionCodec>,
 }
 
 /// The behaviour set a relay and bootstrap node runs.

@@ -26,7 +26,7 @@
 //! turning one refusal into a network-wide retry storm.
 
 use crate::Cid;
-use intranet_crypto::{Dec, DecodeError, Enc, Signature};
+use intranet_crypto::{Dec, DecodeError, Enc, Hash, Signature};
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 
 /// Domain tag for a chunk request signature.
@@ -320,5 +320,166 @@ mod tests {
             ChunkResponse::decode(&response.encode()).unwrap_err(),
             WireError::ChunkTooLarge { .. }
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Append-set collections — Storage Spec §2.5
+// ---------------------------------------------------------------------------
+
+/// Domain tag for a collection request on the wire.
+const COLLECTION_REQUEST_DOMAIN: &str = "intranet.wire.collection-request.v1";
+/// Domain tag for a collection response on the wire.
+const COLLECTION_RESPONSE_DOMAIN: &str = "intranet.wire.collection-response.v1";
+
+/// The most entries one collection response will carry.
+///
+/// **Flagged: §2.5 states enumeration is best-effort and gives no bound.** A cap
+/// is needed regardless, and unusually here it is not only a memory concern:
+/// §2.5 explicitly accepts that a popular collection may not be fully
+/// enumerable in one pass, so truncation is a *specified* outcome rather than a
+/// failure. 512 keeps a response bounded while being far above a typical term's
+/// posting count.
+pub const MAX_COLLECTION_ENTRIES: usize = 512;
+
+/// A request to enumerate one append-set collection — §2.5.
+///
+/// Signed and gated like a chunk request. **Flagged: the specs do not say
+/// whether enumeration requires `read-content`.** Requiring it is the
+/// fail-closed reading and matches §5.4's reasoning about explicit intake: a
+/// waiting-room node is supposed to receive essentially nothing, and a term
+/// index is a map from words to the pointers that contain them — enough to learn
+/// what a network is about without ever fetching a byte of content. Serving it
+/// ungated would undercut the posture the content gate exists to create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionRequest {
+    /// The collection to enumerate.
+    pub collection_id: Hash,
+    /// Who is asking.
+    pub requester: PerNetworkIdentityId,
+    /// The requester's signature over `(collection_id, requester)`.
+    pub signature: Signature,
+}
+
+impl CollectionRequest {
+    /// Builds and signs a request.
+    pub fn create(requester: &PerNetworkIdentity, collection_id: Hash) -> Self {
+        let requester_id = requester.id();
+        Self {
+            collection_id,
+            requester: requester_id,
+            signature: requester.sign(&Self::payload(&collection_id, &requester_id)),
+        }
+    }
+
+    /// Verifies that the named requester really made this request.
+    pub fn verify(&self) -> Result<(), WireError> {
+        self.requester
+            .verifying_key()
+            .verify(
+                &Self::payload(&self.collection_id, &self.requester),
+                &self.signature,
+            )
+            .map_err(|_| WireError::BadSignature)
+    }
+
+    fn payload(collection_id: &Hash, requester: &PerNetworkIdentityId) -> Enc {
+        let mut e = Enc::domain("intranet.collection-request.v1");
+        e.fixed(collection_id.as_bytes());
+        requester.encode(&mut e);
+        e
+    }
+
+    /// Encodes the request.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(COLLECTION_REQUEST_DOMAIN);
+        e.fixed(self.collection_id.as_bytes());
+        self.requester.encode(&mut e);
+        e.fixed(self.signature.as_bytes());
+        e.finish()
+    }
+
+    /// Decodes a request and verifies its signature.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, COLLECTION_REQUEST_DOMAIN)?;
+        let request = Self {
+            collection_id: intranet_crypto::Hash::from_bytes(d.fixed::<32>()?),
+            requester: get_identity(&mut d)?,
+            signature: Signature::from_bytes(d.fixed::<64>()?),
+        };
+        d.finish()?;
+        request.verify()?;
+        Ok(request)
+    }
+}
+
+/// A response to a collection enumeration — §2.5.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionResponse {
+    /// The entries this node holds for the collection.
+    ///
+    /// Payloads are opaque here: the append-set is one primitive serving
+    /// consumers whose entry shapes differ (search postings, the app name
+    /// registry), so decoding belongs to whichever crate owns the shape rather
+    /// than to the primitive carrying it.
+    Entries {
+        /// Encoded entries.
+        payloads: Vec<Vec<u8>>,
+        /// Whether more were held than one response could carry.
+        ///
+        /// §2.5 makes incompleteness a specified property of enumeration, not an
+        /// error — but a consumer that needs an authoritative answer has to know
+        /// it received a partial one, which is exactly the distinction that
+        /// makes it safe for search and unsafe for name ownership.
+        truncated: bool,
+    },
+    /// The requester may not enumerate this collection.
+    Refused {
+        /// Why.
+        reason: ChunkRefusal,
+    },
+}
+
+impl CollectionResponse {
+    /// Encodes the response.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(COLLECTION_RESPONSE_DOMAIN);
+        match self {
+            Self::Entries { payloads, truncated } => {
+                e.variant(0);
+                e.seq(payloads.iter(), |e, payload| {
+                    e.bytes(payload);
+                });
+                e.bool(*truncated);
+            }
+            Self::Refused { reason } => {
+                e.variant(1).u8(match reason {
+                    ChunkRefusal::NoReadContent => 0,
+                    ChunkRefusal::CannotEvaluate => 1,
+                });
+            }
+        }
+        e.finish()
+    }
+
+    /// Decodes a response.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, COLLECTION_RESPONSE_DOMAIN)?;
+        let response = match d.variant()? {
+            0 => Self::Entries {
+                payloads: d.seq::<_, WireError>(|d| Ok(d.bytes()?.to_vec()))?,
+                truncated: d.bool()?,
+            },
+            1 => Self::Refused {
+                reason: match d.u8()? {
+                    0 => ChunkRefusal::NoReadContent,
+                    1 => ChunkRefusal::CannotEvaluate,
+                    other => return Err(unknown("ChunkRefusal", other)),
+                },
+            },
+            other => return Err(unknown("CollectionResponse", other)),
+        };
+        d.finish()?;
+        Ok(response)
     }
 }

@@ -12,7 +12,8 @@ use intranet_ledger::{
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
 use intranet_storage::{
-    ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, FetchPlan, StorageError, may_serve,
+    ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
+    CollectionResponse, FetchPlan, MAX_COLLECTION_ENTRIES, StorageError, may_serve,
 };
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
@@ -209,6 +210,36 @@ pub enum NodeEvent {
         /// Chunks no known holder would produce.
         unavailable: Vec<Cid>,
     },
+    /// The DHT answered a collection provider lookup — Storage Spec §2.5.
+    ///
+    /// Reported before any entries, because enumerating a collection is two
+    /// steps: find who is announcing it, then ask them. A caller normally
+    /// responds by calling
+    /// [`request_collection`](MemberNode::request_collection) for each provider.
+    CollectionProviders {
+        /// The collection asked about.
+        collection_id: Hash,
+        /// Peers announcing it.
+        providers: Vec<PeerId>,
+    },
+    /// A collection enumeration returned entries — Storage Spec §2.5.
+    ///
+    /// Payloads are opaque: the append-set is one primitive with several
+    /// consumers, so decoding belongs to whichever crate owns the entry shape.
+    CollectionEnumerated {
+        /// The collection enumerated.
+        collection_id: Hash,
+        /// The peer that answered.
+        peer: PeerId,
+        /// Encoded entries.
+        payloads: Vec<Vec<u8>>,
+        /// Whether that peer held more than one response could carry.
+        ///
+        /// Surfaced because §2.5 makes incompleteness a specified property
+        /// rather than a failure, and a consumer needing an authoritative answer
+        /// has to be able to tell a partial result from a complete one.
+        truncated: bool,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -360,6 +391,17 @@ pub struct MemberNode {
     /// per-operation derivation rather than being held live so that a retry
     /// three round trips later can sign something.
     fetch_requests: BTreeMap<Cid, ChunkRequest>,
+    /// Append-set entries this node holds, by collection — Storage Spec §2.5.
+    ///
+    /// Keyed by entry identifier within each collection so a republish replaces
+    /// rather than duplicates: §2.5's freshness model is refresh-or-expire, and
+    /// a collection that accumulated a new copy on every refresh would grow
+    /// without bound for content that never changed.
+    collections: BTreeMap<Hash, BTreeMap<Hash, Vec<u8>>>,
+    /// Collection lookups in flight, and the providers found so far.
+    collection_queries: std::collections::HashMap<kad::QueryId, (Hash, std::collections::BTreeSet<PeerId>)>,
+    /// Enumeration requests outstanding, by request identifier.
+    collection_requests: BTreeMap<request_response::OutboundRequestId, Hash>,
 }
 
 impl MemberNode {
@@ -406,6 +448,7 @@ impl MemberNode {
                     sync: crate::sync::behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
                     chunk: crate::sync::chunk_behaviour(),
+                    collection: crate::sync::collection_behaviour(),
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
@@ -429,6 +472,9 @@ impl MemberNode {
             provider_queries: std::collections::HashMap::new(),
             fetch: None,
             fetch_requests: BTreeMap::new(),
+            collections: BTreeMap::new(),
+            collection_queries: std::collections::HashMap::new(),
+            collection_requests: BTreeMap::new(),
         })
     }
 
@@ -569,6 +615,107 @@ impl MemberNode {
         self.chunks.remove(cid)
     }
 
+    /// Publishes an entry into an append-set collection — Storage Spec §2.5.
+    ///
+    /// Stores the payload locally and announces this node as a provider of the
+    /// collection. Nothing is overwritten and no conflict resolution is needed:
+    /// independent publishers' entries simply coexist as separate announcements
+    /// under the same key, which is the whole reason the primitive is built on
+    /// provider records rather than on writing to a shared value.
+    ///
+    /// The same entry may be published into several collections — a search
+    /// posting is announced under every term it matched (Search Spec §3.1),
+    /// built and signed once and announced many times.
+    pub fn publish_to_collection(&mut self, collection_id: Hash, entry_id: Hash, payload: Vec<u8>) {
+        self.collections
+            .entry(collection_id)
+            .or_default()
+            .insert(entry_id, payload);
+        if let Err(error) = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .start_providing(kad::RecordKey::new(&collection_id.as_bytes()))
+        {
+            tracing::debug!(%error, "could not announce collection yet");
+        }
+    }
+
+    /// Entries this node holds for a collection.
+    pub fn collection_entries(&self, collection_id: &Hash) -> Vec<&[u8]> {
+        self.collections
+            .get(collection_id)
+            .map(|entries| entries.values().map(Vec::as_slice).collect())
+            .unwrap_or_default()
+    }
+
+    /// Enumerates a collection across the network — Storage Spec §2.5.
+    ///
+    /// Finds the collection's providers via the DHT and asks each for its
+    /// entries. Results arrive as [`NodeEvent::CollectionEnumerated`].
+    ///
+    /// **Best-effort by design, not by accident.** §2.5 is explicit that real
+    /// Kademlia implementations cap providers per key, so a popular collection
+    /// may not be fully enumerable in one pass. That is acceptable where partial
+    /// discovery is the actual requirement — search — and unacceptable where a
+    /// missing entry means a wrong answer rather than a shorter list, which is
+    /// why name ownership anchors elsewhere (App Hosting Spec §4.3).
+    pub fn enumerate_collection(&mut self, collection_id: Hash) -> kad::QueryId {
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .get_providers(kad::RecordKey::new(&collection_id.as_bytes()));
+        self.collection_queries
+            .insert(id, (collection_id, std::collections::BTreeSet::new()));
+        id
+    }
+
+    /// Asks one provider for its entries in a collection.
+    ///
+    /// Separate from [`enumerate_collection`](Self::enumerate_collection)
+    /// because §2.5 makes enumeration two steps — find the providers, then ask
+    /// them — and a caller may reasonably ask only some of them, which is the
+    /// difference between a cheap search and one that contacts every node
+    /// announcing a popular term.
+    pub fn request_collection(
+        &mut self,
+        peer: PeerId,
+        collection_id: Hash,
+        requester: &PerNetworkIdentity,
+    ) -> request_response::OutboundRequestId {
+        let id = self.swarm.behaviour_mut().collection.send_request(
+            &peer,
+            CollectionRequest::create(requester, collection_id),
+        );
+        self.collection_requests.insert(id, collection_id);
+        id
+    }
+
+    /// Answers a peer's enumeration request, applying the same gate as content.
+    fn serve_collection(&self, request: &CollectionRequest) -> CollectionResponse {
+        let Some(state) = self.governance_state() else {
+            return CollectionResponse::Refused {
+                reason: ChunkRefusal::CannotEvaluate,
+            };
+        };
+        if may_serve(&request.requester, &state).is_err() {
+            return CollectionResponse::Refused {
+                reason: ChunkRefusal::NoReadContent,
+            };
+        }
+        let held = self.collection_entries(&request.collection_id);
+        let truncated = held.len() > MAX_COLLECTION_ENTRIES;
+        CollectionResponse::Entries {
+            payloads: held
+                .into_iter()
+                .take(MAX_COLLECTION_ENTRIES)
+                .map(<[u8]>::to_vec)
+                .collect(),
+            truncated,
+        }
+    }
+
     /// Fetches chunks from the swarm — Storage Spec §4.4, end to end.
     ///
     /// Queries the DHT for holders of each chunk not already held, orders them
@@ -644,6 +791,16 @@ impl MemberNode {
         }
         self.drive_fetch();
         if let Some(done) = self.completed_fetch() {
+            // Buffered rather than returned, because this is called from an arm
+            // that is about to return the chunk outcome itself and only one
+            // event can be returned at a time.
+            //
+            // **Every caller must return immediately after calling this.**
+            // `next_swarm_event` drains `pending` only on entry, so an event
+            // buffered here is delivered on the *next* call — which never comes
+            // if the loop simply continues and nothing else happens. The
+            // collection provider path was written that way at first and hung
+            // exactly like that.
             self.pending.push_back(done);
         }
     }
@@ -1195,6 +1352,27 @@ impl MemberNode {
                     kad::Event::OutboundQueryProgressed { id, result, step, .. },
                 )) => {
                     if let kad::QueryResult::GetProviders(result) = result {
+                        if let Some((_, found)) = self.collection_queries.get_mut(&id) {
+                            if let Ok(kad::GetProvidersOk::FoundProviders { providers, .. }) =
+                                &result
+                            {
+                                found.extend(providers.iter().copied());
+                            }
+                        }
+                        if step.last
+                            && let Some((collection_id, found)) =
+                                self.collection_queries.remove(&id)
+                        {
+                            // Returned rather than buffered. `next_swarm_event`
+                            // only drains `pending` on entry, so an event pushed
+                            // from inside its loop waits for some *other* event
+                            // to return before it is ever delivered — which,
+                            // when nothing else is happening, is never.
+                            return NodeEvent::CollectionProviders {
+                                collection_id,
+                                providers: found.iter().copied().collect(),
+                            };
+                        }
                         if let Some((_, found)) = self.provider_queries.get_mut(&id) {
                             // Providers arrive incrementally, so they are
                             // accumulated and only reported when the query is
@@ -1233,6 +1411,62 @@ impl MemberNode {
                         }
                     }
                 }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Collection(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        let response = if request.requester.peer_id() != peer {
+                            CollectionResponse::Refused {
+                                reason: ChunkRefusal::NoReadContent,
+                            }
+                        } else {
+                            self.serve_collection(&request)
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .collection
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        let Some(collection_id) = self.collection_requests.remove(&request_id)
+                        else {
+                            continue;
+                        };
+                        match response {
+                            CollectionResponse::Entries {
+                                payloads,
+                                truncated,
+                            } => {
+                                return NodeEvent::CollectionEnumerated {
+                                    collection_id,
+                                    peer,
+                                    payloads,
+                                    truncated,
+                                };
+                            }
+                            // A refusal is reported as an empty enumeration
+                            // rather than as an error: the requester's next move
+                            // is the same either way, and a collection nobody
+                            // will serve it is, from where it stands, a
+                            // collection with nothing in it.
+                            CollectionResponse::Refused { .. } => {
+                                return NodeEvent::CollectionEnumerated {
+                                    collection_id,
+                                    peer,
+                                    payloads: Vec::new(),
+                                    truncated: false,
+                                };
+                            }
+                        }
+                    }
+                },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Identify(
                     identify::Event::Received { peer_id, info, .. },

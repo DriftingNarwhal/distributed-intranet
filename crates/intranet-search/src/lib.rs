@@ -42,12 +42,14 @@ pub mod index;
 pub mod posting;
 pub mod query;
 pub mod tokenize;
+pub mod wire;
 
 pub use document::{ContentMetadata, Field, IndexDocument, IndexableContent};
 pub use index::LocalIndex;
 pub use posting::{DEFAULT_POSTING_TTL_MILLIS, Posting, TermStats};
 pub use query::{SearchResult, SearchResults, search};
 pub use tokenize::{Term, tokenize};
+pub use wire::{MAX_TERMS_PER_POSTING, decode_posting, encode_posting};
 
 /// Errors produced by the search layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

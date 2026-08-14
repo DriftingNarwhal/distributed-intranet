@@ -62,6 +62,19 @@ then fetch. Kademlia also has no un-publish: `forget_chunk` stops republishing b
 already pushed persist until TTL, which is why `NotHeld` is an explicit response counting
 against nobody.
 
+Append-set collections (Storage §2.5) run over `/intranet/append-set/1.0.0` carrying opaque
+payloads, so the one primitive serves both search postings and — later — the app name
+registry without either shape leaking into the other. Enumeration is two steps: find
+providers, then ask each. Search postings ride it as **one signed object per publish
+announced under every matched term** (§3.1's efficiency note), not one object per term.
+Delisting is enforced by the *reader*: the announcing node has every reason not to, so
+`LocalIndex::insert` re-checks against replayed governance state.
+
+Note an event-loop invariant: `next_swarm_event` drains `pending` only on entry, so any
+event pushed there from inside its loop is delivered on the *next* call — which never
+comes if the arm falls through and nothing else happens. Push to `pending` only in an arm
+that returns immediately afterwards; otherwise return the event directly.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

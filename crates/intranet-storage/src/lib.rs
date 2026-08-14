@@ -64,7 +64,10 @@ pub use replication::{
 pub use serving::{ServingRefusal, SourceCandidate, may_serve, rarest_first, select_sources};
 pub use fetch::{DEFAULT_CONCURRENCY, FetchPlan};
 pub use store::ChunkStore;
-pub use wire::{ChunkRefusal, ChunkRequest, ChunkResponse, MAX_CHUNK_BYTES};
+pub use wire::{
+    ChunkRefusal, ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse,
+    MAX_CHUNK_BYTES, MAX_COLLECTION_ENTRIES,
+};
 
 /// Errors produced by the storage layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

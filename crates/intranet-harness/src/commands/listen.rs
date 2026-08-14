@@ -166,6 +166,28 @@ impl ListenArgs {
                         unavailable.len()
                     );
                 }
+                NodeEvent::CollectionProviders {
+                    collection_id,
+                    providers,
+                } => {
+                    println!(
+                        "collection-providers: id={} count={}",
+                        collection_id.short(),
+                        providers.len()
+                    );
+                }
+                NodeEvent::CollectionEnumerated {
+                    collection_id,
+                    peer,
+                    payloads,
+                    truncated,
+                } => {
+                    println!(
+                        "collection-entries: id={} peer={peer} entries={} more={truncated}",
+                        collection_id.short(),
+                        payloads.len()
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

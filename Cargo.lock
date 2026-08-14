@@ -1865,6 +1865,7 @@ dependencies = [
  "intranet-identity",
  "intranet-invite",
  "intranet-ledger",
+ "intranet-search",
  "intranet-storage",
  "libp2p",
  "thiserror 2.0.20",
