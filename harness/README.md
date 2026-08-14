@@ -295,6 +295,19 @@ relay fallback still connects and would otherwise look healthy.
 Scenario 5 is the one that must always succeed: a connection is always
 eventually possible, even via the least efficient path.
 
+**What a scenario 5 pass does and does not mean.** It confirms the correctness
+guarantee — a connection exists — not that the pair has a usable session. A
+bootstrap relay's job is connection-establishment assistance, not data transport
+(§4.4, §5.3), and the 120-second and 8MB circuit ceilings are enforced
+accordingly. Two peers behind CGNAT that can never hole-punch are expected to
+depend on **IPv6** for a direct path, not on the relay carrying their traffic.
+That is the intended design, and it is what reconciles §5.2's "sustained circuit
+for the duration of the session" with §5.3's explicit refusal to be sustained
+transport: tier 3 keeps the network correct, IPv6 keeps it usable.
+
+This makes the missing IPv6 scenario below more than a coverage gap — it is the
+only path that actually serves the CGNAT case.
+
 The suite tears the topology down on exit, including on failure, which makes
 diagnosis awkward — bring it up with `docker compose -f docker/compose.yml up -d`
 and drive the peers by hand instead.

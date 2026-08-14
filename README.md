@@ -122,6 +122,12 @@ These recur throughout and explain a lot of otherwise-surprising choices.
   observations are private per observer, so they may bias local source and relay
   selection but can never influence placement — enforced by the type signatures,
   not by convention.
+- **Relays establish connections; they do not carry traffic.** A bootstrap relay
+  helps two peers find each other and gets out of the way, which is why circuits
+  are capped at 120 seconds and 8MB and why a relay holds no state across
+  restarts. Peers that can never hole-punch — two behind CGNAT — are expected to
+  reach each other over IPv6, which needs no traversal at all. Tier 3 exists so
+  the network stays correct, not so anyone lives on it.
 - **Honest guarantees.** Where a limit is unavoidable it is stated rather than
   overclaimed: revocation blocks future access but cannot un-know a key already
   held; serving converges rather than blocking instantly; VOD opt-out prevents a
