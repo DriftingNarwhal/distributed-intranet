@@ -112,6 +112,25 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                // Joins are surfaced and never answered, for the same reason
+                // key deliveries are not: admitting somebody to a network is
+                // the operator's decision, not a connectivity harness's.
+                NodeEvent::JoinRequested { peer, joiner, invite, .. } => {
+                    println!(
+                        "join-requested: peer={peer} joiner={} invite={} (not answered)",
+                        joiner.short(),
+                        invite.short()
+                    );
+                }
+                NodeEvent::Admitted { peer, entry } => {
+                    println!("admitted: peer={peer} entry={}", entry.short());
+                }
+                NodeEvent::AwaitingAdmission { peer } => {
+                    println!("awaiting-admission: peer={peer}");
+                }
+                NodeEvent::JoinRefused { peer, reason } => {
+                    println!("join-refused: peer={peer} reason={reason}");
+                }
                 // Key delivery is surfaced but never answered here. Answering
                 // means admitting somebody to the network's MLS group, which is
                 // a decision for whoever runs the node, not something a

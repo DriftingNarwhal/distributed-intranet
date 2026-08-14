@@ -35,7 +35,9 @@ pub mod sync;
 pub use libp2p::{Multiaddr, PeerId};
 
 pub use dial::{AddressFamily, ConnectionTier};
-pub use node::{EpochRequestId, MemberNode, NodeEvent, RelayNode, default_listen_addresses};
+pub use node::{
+    EpochRequestId, JoinRequestId, MemberNode, NodeEvent, RelayNode, default_listen_addresses,
+};
 pub use relay_limits::{
     CircuitClosure, CircuitId, RelayDenied, RelayGuard, RelayLimits, ReservationId, Requester,
     TransportHandle,

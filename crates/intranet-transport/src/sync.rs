@@ -30,6 +30,7 @@
 use futures::{AsyncReadExt, AsyncWriteExt};
 use intranet_epoch::{EpochKeyRequest, EpochKeyResponse};
 use intranet_governance::{SyncRequest, SyncResponse};
+use intranet_invite::{JoinRequest, JoinResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
 use intranet_realtime::{MediaAck, MediaEnvelope, Signal, SignalAck};
 use intranet_storage::{ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse};
@@ -48,6 +49,17 @@ pub const SYNC_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/governa
 /// The capability ledger gossip protocol's libp2p identifier.
 pub const LEDGER_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/intranet/capability-ledger/1.0.0");
+
+/// The join handshake protocol's libp2p identifier — §5.6–5.7.
+///
+/// Separate from key delivery because the two answer different questions and a
+/// node may legitimately do one without the other. §5.7 is explicit that an
+/// invite's job ends at the first connection: this protocol turns a redeemed
+/// invite into membership or a waiting-room place, and everything after that —
+/// the log, the ledger, the epoch key — is ordinary steady-state operation over
+/// the protocols that already exist. Folding key delivery in here would make
+/// the join path a special case that gets exercised once per node lifetime.
+pub const JOIN_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/join/1.0.0");
 
 /// The epoch key delivery protocol's libp2p identifier — §3.5.
 ///
@@ -179,6 +191,8 @@ wire_message!(SyncRequest);
 wire_message!(SyncResponse);
 wire_message!(LedgerRequest);
 wire_message!(LedgerResponse);
+wire_message!(JoinRequest);
+wire_message!(JoinResponse);
 wire_message!(EpochKeyRequest);
 wire_message!(EpochKeyResponse, MAX_EPOCH_MESSAGE_BYTES);
 wire_message!(ChunkRequest);
@@ -215,6 +229,8 @@ impl<Req, Res> Clone for WireCodec<Req, Res> {
 pub type SyncCodec = WireCodec<SyncRequest, SyncResponse>;
 /// Codec for capability ledger gossip.
 pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
+/// Codec for the join handshake.
+pub type JoinCodec = WireCodec<JoinRequest, JoinResponse>;
 /// Codec for epoch key delivery.
 pub type EpochCodec = WireCodec<EpochKeyRequest, EpochKeyResponse>;
 /// Codec for chunk transfer.
@@ -314,6 +330,11 @@ pub fn behaviour() -> request_response::Behaviour<SyncCodec> {
 /// Builds the capability ledger gossip behaviour.
 pub fn ledger_behaviour() -> request_response::Behaviour<LedgerCodec> {
     build(LEDGER_PROTOCOL)
+}
+
+/// Builds the join handshake behaviour.
+pub fn join_behaviour() -> request_response::Behaviour<JoinCodec> {
+    build(JOIN_PROTOCOL)
 }
 
 /// Builds the epoch key delivery behaviour.

@@ -9,8 +9,12 @@ use intranet_epoch::{
     seal_history,
 };
 use intranet_governance::{
-    EntryBody, GovernanceError, GovernanceLog, GovernanceState, HistoryAccess, LogEntry,
-    MAX_ENTRIES_PER_RESPONSE, RotationReason, SyncRequest, SyncResponse,
+    AdmissionMode, EntryBody, GovernanceError, GovernanceLog, GovernanceState, GroupId,
+    HistoryAccess, LogEntry, MAX_ENTRIES_PER_RESPONSE, MembershipAction, RotationReason,
+    SyncRequest, SyncResponse,
+};
+use intranet_invite::{
+    Invite, JoinRefusal, JoinRequest, JoinResponse, WaitingRoom, WaitingRoomEntry,
 };
 use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
@@ -44,6 +48,13 @@ pub fn default_listen_addresses() -> Vec<Multiaddr> {
     .collect()
 }
 
+/// Identifies one inbound join awaiting this node's decision.
+///
+/// Opaque and node-local, like [`EpochRequestId`]: it names a request held
+/// between the event that surfaced it and the call that answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct JoinRequestId(u64);
+
 /// Identifies one inbound key delivery awaiting this node's decision.
 ///
 /// Opaque and node-local: it names a request held in memory between the event
@@ -56,6 +67,48 @@ pub struct EpochRequestId(u64);
 pub enum NodeEvent {
     /// The node began listening on an address.
     Listening(Multiaddr),
+    /// A peer presented an invite, and it passed every check this node can
+    /// make without a clock — §5.6.
+    ///
+    /// Surfaced rather than answered automatically because validating an invite
+    /// needs a clock and admitting needs a signature, neither of which this
+    /// layer holds. Requests failing a check are refused in the loop.
+    JoinRequested {
+        /// The peer that asked.
+        peer: PeerId,
+        /// The identity asking.
+        joiner: PerNetworkIdentityId,
+        /// The invite presented, for an admin deciding whether to admit.
+        invite: Hash,
+        /// Pass to [`MemberNode::answer_join`] or [`MemberNode::decline_join`].
+        request: JoinRequestId,
+    },
+    /// This node was admitted to the network — §2.4 auto-admit.
+    ///
+    /// Membership only. The epoch key is a separate, ordinary request (§5.7),
+    /// so a node that stops here can replay the log and read nothing.
+    Admitted {
+        /// The peer that admitted it.
+        peer: PeerId,
+        /// The governance entry recording the admission.
+        entry: Hash,
+    },
+    /// This node is in the waiting room — §2.4 explicit intake.
+    ///
+    /// A successful join, not a refusal: connectivity and a per-network identity
+    /// is exactly what explicit intake grants, and nothing more until an admin
+    /// acts.
+    AwaitingAdmission {
+        /// The peer holding the waiting-room place.
+        peer: PeerId,
+    },
+    /// A join was refused.
+    JoinRefused {
+        /// The peer that refused.
+        peer: PeerId,
+        /// Why.
+        reason: String,
+    },
     /// A peer asked to be keyed into the network, and passed every check —
     /// §3.5.
     ///
@@ -498,6 +551,23 @@ pub struct MemberNode {
     /// exposure; the swarm below already holds the same key material as its
     /// Noise transport identity, derived from this very keypair (§1.2).
     identity: PerNetworkIdentity,
+    /// Identities that presented an invite and are awaiting admission — §2.4.
+    ///
+    /// Node-local rather than a log entry, because waiting-room occupancy is not
+    /// an authorization fact but precisely the absence of one. Admission *is* an
+    /// authorized action and is recorded as an ordinary `MembershipChange`, at
+    /// which point the identity leaves here.
+    waiting_room: WaitingRoom,
+    /// Inbound joins that passed every check this node can make alone.
+    ///
+    /// Held for the same reason inbound key deliveries are: answering means
+    /// validating an invite against a clock and, under auto-admit, signing a
+    /// governance entry. This layer holds no clock by design.
+    inbound_joins: BTreeMap<JoinRequestId, (JoinRequest, ResponseChannel<JoinResponse>)>,
+    /// Source of the next [`JoinRequestId`].
+    next_join_request: u64,
+    /// Joins asked for and not yet answered, and who was asked.
+    join_requests: BTreeMap<request_response::OutboundRequestId, PerNetworkIdentityId>,
     /// This node's MLS group session, once it has one — §3.3.
     ///
     /// `None` covers two genuinely different states that behave identically
@@ -582,6 +652,7 @@ impl MemberNode {
                     relay_client,
                     dcutr: dcutr::Behaviour::new(peer),
                     sync: crate::sync::behaviour(),
+                    join: crate::sync::join_behaviour(),
                     epoch: crate::sync::epoch_behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
                     chunk: crate::sync::chunk_behaviour(),
@@ -616,6 +687,10 @@ impl MemberNode {
             collection_requests: BTreeMap::new(),
             identity_id: identity.id(),
             identity: identity.clone(),
+            waiting_room: WaitingRoom::new(),
+            inbound_joins: BTreeMap::new(),
+            next_join_request: 0,
+            join_requests: BTreeMap::new(),
             group: None,
             keyring: EpochKeyring::new(),
             pending_join: None,
@@ -1463,6 +1538,187 @@ impl MemberNode {
         id
     }
 
+    // -----------------------------------------------------------------------
+    // The join handshake — Core Protocol Spec §5.6–5.7, §2.4
+    // -----------------------------------------------------------------------
+
+    /// Identities awaiting explicit admission on this node — §2.4.
+    pub fn waiting_room(&self) -> &WaitingRoom {
+        &self.waiting_room
+    }
+
+    /// The waiting room as `requester` is entitled to see it — §2.4.
+    ///
+    /// `None` when they hold no `manage-membership:everyone`. Exposing the queue
+    /// more widely would leak who is trying to join to members who could do
+    /// nothing about it, and the capability that gates it is the one that lets
+    /// somebody actually act on what they see.
+    pub fn waiting_room_for(
+        &self,
+        requester: &PerNetworkIdentityId,
+    ) -> Option<Vec<&WaitingRoomEntry>> {
+        let state = self.governance_state()?;
+        self.waiting_room
+            .visible_to(requester, &state)
+            .then(|| self.waiting_room.occupants())
+    }
+
+    /// Presents an invite to a member, asking to join — §5.6.
+    pub fn request_join(
+        &mut self,
+        member: PerNetworkIdentityId,
+        invite: Invite,
+        identity: &PerNetworkIdentity,
+    ) -> request_response::OutboundRequestId {
+        let request = JoinRequest::create(identity, invite);
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .join
+            .send_request(&member.peer_id(), request);
+        self.join_requests.insert(id, member);
+        id
+    }
+
+    /// Answers a join this node accepted for consideration — §2.4, §5.6.
+    ///
+    /// Validates the invite against replayed governance state and the supplied
+    /// clock, then branches on the network's admission mode. Under auto-admit
+    /// this appends the `MembershipChange` that grants `everyone`; under
+    /// explicit intake it records a waiting-room place and grants nothing.
+    ///
+    /// Deliberately does **not** deliver an epoch key in either case. §5.7 says
+    /// an invite's job ends at the first connection, so a newly admitted member
+    /// asks for a key over the ordinary delivery protocol — the same path a
+    /// re-welcome uses, rather than a join-time special case exercised once per
+    /// node lifetime.
+    pub fn answer_join(
+        &mut self,
+        request: JoinRequestId,
+        identity: &PerNetworkIdentity,
+        now: Timestamp,
+    ) -> Result<JoinResponse, TransportError> {
+        let (request, channel) = self
+            .inbound_joins
+            .remove(&request)
+            .ok_or_else(|| TransportError::Dial("no such pending join".into()))?;
+
+        let response = self.decide_join(&request, identity, now);
+        let _ = self
+            .swarm
+            .behaviour_mut()
+            .join
+            .send_response(channel, response.clone());
+        Ok(response)
+    }
+
+    /// Refuses a join without evaluating it further.
+    pub fn decline_join(&mut self, request: JoinRequestId, reason: JoinRefusal) {
+        if let Some((_, channel)) = self.inbound_joins.remove(&request) {
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .join
+                .send_response(channel, JoinResponse::Refused { reason });
+        }
+    }
+
+    /// Works out what a validated join should produce.
+    fn decide_join(
+        &mut self,
+        request: &JoinRequest,
+        identity: &PerNetworkIdentity,
+        now: Timestamp,
+    ) -> JoinResponse {
+        let Some(state) = self.governance_state() else {
+            return JoinResponse::Refused {
+                reason: JoinRefusal::CannotEvaluate,
+            };
+        };
+
+        // One refusal for every way an invite can fail to validate. A joiner
+        // acts on all of them identically — get a better invite — while
+        // distinguishing them would let anyone holding a rejected invite probe
+        // governance state through the refusals.
+        let Ok(provenance) = request.invite.validate(&request.joiner, &state, now) else {
+            return JoinResponse::Refused {
+                reason: JoinRefusal::InviteInvalid,
+            };
+        };
+
+        match state.policy.admission_mode {
+            AdmissionMode::AutoAdmit => {
+                let entry = LogEntry::create(
+                    identity,
+                    self.log.canonical_chain().last().copied(),
+                    now,
+                    EntryBody::MembershipChange {
+                        group: GroupId::everyone(),
+                        identity: request.joiner,
+                        action: MembershipAction::Add {
+                            via_invite: Some(provenance),
+                        },
+                    },
+                );
+                match self.log.insert(entry) {
+                    Ok(hash) => {
+                        self.waiting_room.remove(&request.joiner);
+                        JoinResponse::Admitted { entry: hash }
+                    }
+                    // The commonest cause is this node not holding
+                    // `manage-membership:everyone`. Refusing is right: an
+                    // auto-admit network still requires the *admitting* node to
+                    // be authorized to admit, and a joiner should try a member
+                    // who is.
+                    Err(_) => JoinResponse::Refused {
+                        reason: JoinRefusal::CannotEvaluate,
+                    },
+                }
+            }
+            AdmissionMode::ExplicitIntake => {
+                self.waiting_room
+                    .admit_to_waiting(request.joiner, provenance, now);
+                JoinResponse::Waiting
+            }
+        }
+    }
+
+    /// Applies every §5.6 check this node can make without a clock.
+    fn screen_join(&self, request: &JoinRequest, peer: PeerId) -> Result<(), JoinRefusal> {
+        // A signed request proves the named joiner asked; it does not prove the
+        // peer delivering it is that joiner. This is the outermost door in the
+        // protocol, so the binding matters more here than anywhere else.
+        if request.joiner.peer_id() != peer {
+            return Err(JoinRefusal::NotConnectionOwner);
+        }
+
+        let Some(state) = self.governance_state() else {
+            return Err(JoinRefusal::CannotEvaluate);
+        };
+        if state.is_member(&request.joiner) {
+            return Err(JoinRefusal::AlreadyMember);
+        }
+
+        // §5.3's per-invite scoping. A waiting-room identity is free to mint
+        // under a bearer or multi-use invite, so per-identity limits meter
+        // nothing in this window — the invite is the scarce resource.
+        //
+        // **Flagged: §5.3 requires per-invite scoping but gives no number.** The
+        // ceiling is the invite's own *remaining* uses rather than an invented
+        // constant: an invite that can admit no more members has no legitimate
+        // reason to accumulate further pre-admission arrivals, and deriving the
+        // bound from the credential keeps it correct for a one-use invite and a
+        // hundred-use invite without tuning either.
+        let invite_id = request.invite.invite_id();
+        let used = state.invite_use_count(&invite_id);
+        let remaining = (request.invite.max_uses as usize).saturating_sub(used);
+        if self.waiting_room.arrivals_for_invite(&invite_id) >= remaining {
+            return Err(JoinRefusal::InviteCeiling);
+        }
+
+        Ok(())
+    }
+
     /// Applies every §3.5 check this node can make on its own.
     ///
     /// Ordered so that a refusal never depends on state a requester could probe
@@ -2180,6 +2436,56 @@ impl MemberNode {
                             .add_address(&peer_id, address);
                     }
                 }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Join(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => match self.screen_join(&request, peer) {
+                        Err(reason) => {
+                            let _ = self
+                                .swarm
+                                .behaviour_mut()
+                                .join
+                                .send_response(channel, JoinResponse::Refused { reason });
+                        }
+                        Ok(()) => {
+                            let id = JoinRequestId(self.next_join_request);
+                            self.next_join_request += 1;
+                            let joiner = request.joiner;
+                            let invite = request.invite.invite_id();
+                            self.inbound_joins.insert(id, (request, channel));
+                            return NodeEvent::JoinRequested {
+                                peer,
+                                joiner,
+                                invite,
+                                request: id,
+                            };
+                        }
+                    },
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        if self.join_requests.remove(&request_id).is_none() {
+                            continue;
+                        }
+                        return match response {
+                            JoinResponse::Admitted { entry } => {
+                                NodeEvent::Admitted { peer, entry }
+                            }
+                            // Recorded as waiting is a *successful* join under
+                            // explicit intake, not a failure: connectivity and
+                            // an identity is the entirety of what §2.4 promises.
+                            JoinResponse::Waiting => NodeEvent::AwaitingAdmission { peer },
+                            JoinResponse::Refused { reason } => NodeEvent::JoinRefused {
+                                peer,
+                                reason: reason.as_str().to_owned(),
+                            },
+                        };
+                    }
+                },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Epoch(
                     request_response::Event::Message { peer, message, .. },

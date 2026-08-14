@@ -31,8 +31,12 @@
 //!   group membership.
 
 mod waiting_room;
+pub mod wire;
 
 pub use waiting_room::{WaitingRoom, WaitingRoomEntry};
+pub use wire::{
+    JoinRefusal, JoinRequest, JoinResponse, MAX_ADDRESS_BYTES, MAX_BOOTSTRAP_ADDRESSES,
+};
 
 use intranet_crypto::{Enc, Hash, Signature, Timestamp, hash_bytes};
 use intranet_governance::{Capability, GovernanceState, InviteProvenance};

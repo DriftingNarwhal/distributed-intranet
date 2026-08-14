@@ -10,7 +10,8 @@
 )]
 
 use crate::sync::{
-    ChunkCodec, CollectionCodec, EpochCodec, LedgerCodec, MediaCodec, SignalCodec, SyncCodec,
+    ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, SignalCodec,
+    SyncCodec,
 };
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
@@ -52,6 +53,11 @@ pub struct MemberBehaviour {
     /// ancestry, the ledger by per-node freshness. Sharing a protocol would mean
     /// one version number covering two things that will not change together.
     pub ledger: request_response::Behaviour<LedgerCodec>,
+    /// The join handshake — §5.6–5.7.
+    ///
+    /// The one protocol a node speaks before it is a member of anything, which
+    /// is what makes its refusals the network's outermost door.
+    pub join: request_response::Behaviour<JoinCodec>,
     /// Epoch key delivery — §3.5.
     ///
     /// The one protocol here that moves key material, and therefore the one
