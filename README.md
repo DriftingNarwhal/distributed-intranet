@@ -12,7 +12,7 @@ rather than decided silently.
 
 ## Status
 
-Every specification document has an implementation. **536 tests, clippy clean.**
+Every specification document has an implementation. **540 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -79,7 +79,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 536 tests
+cargo test --workspace      # 540 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```

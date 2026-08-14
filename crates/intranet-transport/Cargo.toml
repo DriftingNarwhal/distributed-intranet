@@ -21,6 +21,7 @@ tracing.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+intranet-app.workspace = true
 intranet-search.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 

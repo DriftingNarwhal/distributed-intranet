@@ -87,6 +87,17 @@ both checks it is an open reflector. Routing metadata sits outside the AEAD beca
 relay must read it, so a malicious relay can misroute; the nonce binds the call, so a
 misrouted frame simply fails to open.
 
+The app name registry needed no transport of its own: ownership is a governance entry
+(App Hosting §4.3) and the directory is an append-set collection, and both already
+propagate. The split is the design — the log is authoritative, the index is a
+best-effort hint — so `browse` confirms every listing against replayed state and
+discards any that disagrees. A browser must merge its **own** locally-held collection
+entries before enumerating: enumeration finds other providers, so skipping local ones
+both hides what this node published and lets a hostile local entry escape validation.
+
+Every layer is now reachable over the network. The remaining gap is the app execution
+sandbox, which is unimplemented rather than unwired.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

@@ -66,7 +66,8 @@ pub use fetch::{DEFAULT_CONCURRENCY, FetchPlan};
 pub use store::ChunkStore;
 pub use wire::{
     ChunkRefusal, ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse,
-    MAX_CHUNK_BYTES, MAX_COLLECTION_ENTRIES,
+    MAX_CHUNK_BYTES, MAX_COLLECTION_ENTRIES, MAX_ENTRY_PAYLOAD_BYTES, decode_entry,
+    encode_entry,
 };
 
 /// Errors produced by the storage layer.

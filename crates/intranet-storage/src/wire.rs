@@ -483,3 +483,63 @@ impl CollectionResponse {
         Ok(response)
     }
 }
+
+/// Domain tag for an append-set entry on the wire.
+const ENTRY_WIRE_DOMAIN: &str = "intranet.wire.appendset-entry.v1";
+
+/// The largest append-set entry payload this build will accept.
+///
+/// **Flagged: §2.5 sets no payload bound.** One is needed because the length is
+/// publisher-chosen and a collection response carries many. 64 KiB is far above
+/// a directory listing or a search posting while keeping one response bounded.
+pub const MAX_ENTRY_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// Encodes an append-set entry for announcement — §2.5.
+pub fn encode_entry(entry: &crate::AppendSetEntry) -> Vec<u8> {
+    let mut e = Enc::domain(ENTRY_WIRE_DOMAIN);
+    e.fixed(entry.collection_id.as_bytes()).bytes(&entry.payload);
+    e.option(entry.references.as_ref(), |e, pointer| {
+        e.fixed(pointer.as_bytes());
+    });
+    entry.publisher_identity.encode(&mut e);
+    e.fixed(entry.signature.as_bytes());
+    e.finish()
+}
+
+/// Decodes an append-set entry and verifies its signature.
+///
+/// The signature is §2.5's first mandatory check. The other two — that the
+/// publisher is a *current* member, and that any pointer it references is not
+/// delisted — need replayed governance state and live in
+/// [`AppendSetEntry::validate`](crate::AppendSetEntry::validate). A caller that
+/// decodes without then validating has done one check of three, and §2.5 is
+/// explicit that all three are required of any node relying on the data.
+pub fn decode_entry(bytes: &[u8]) -> Result<crate::AppendSetEntry, WireError> {
+    let mut d = Dec::domain(bytes, ENTRY_WIRE_DOMAIN)?;
+    let collection_id = Hash::from_bytes(d.fixed::<32>()?);
+    let payload = d.bytes()?;
+    if payload.len() > MAX_ENTRY_PAYLOAD_BYTES {
+        return Err(WireError::ChunkTooLarge {
+            size: payload.len(),
+        });
+    }
+    let references = d
+        .option::<_, WireError>(|d| Ok(intranet_governance::PointerId::from_bytes(d.fixed::<32>()?)))?;
+    let publisher_identity = get_identity(&mut d)?;
+    let signature = Signature::from_bytes(d.fixed::<64>()?);
+    d.finish()?;
+
+    let entry = crate::AppendSetEntry {
+        collection_id,
+        payload: payload.to_vec(),
+        references,
+        publisher_identity,
+        signature,
+    };
+    // Signature only — see the doc comment. `validate` is where the other two
+    // checks live, and it needs state this layer does not have.
+    entry
+        .verify_signature()
+        .map_err(|_| WireError::BadSignature)?;
+    Ok(entry)
+}

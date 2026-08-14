@@ -1861,6 +1861,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "intranet-app",
  "intranet-crypto",
  "intranet-governance",
  "intranet-identity",

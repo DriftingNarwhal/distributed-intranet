@@ -149,6 +149,18 @@ impl AppendSetEntry {
     /// make moderation elsewhere cosmetic rather than effective, since it would
     /// depend on the malicious party's cooperation to take effect.
     pub fn validate(&self, state: &GovernanceState) -> Result<(), StorageError> {
+        self.verify_signature()?;
+        validate_entry_context(&self.publisher_identity, self.references.as_ref(), state)
+    }
+
+    /// Verifies the publisher's signature — the first of §2.5's three checks.
+    ///
+    /// Split out because it is the only one answerable without governance state,
+    /// so it is what a wire decode can do on its own. Callers must still run
+    /// [`validate`](Self::validate): §2.5 requires all three of any node relying
+    /// on the data, and a valid signature from a revoked member, or for content
+    /// that has since been delisted, is exactly what the other two catch.
+    pub fn verify_signature(&self) -> Result<(), StorageError> {
         let payload = Self::payload_bytes(
             &self.collection_id,
             &self.payload,
@@ -158,9 +170,7 @@ impl AppendSetEntry {
         self.publisher_identity
             .verifying_key()
             .verify(&payload, &self.signature)
-            .map_err(|_| StorageError::BadSignature)?;
-
-        validate_entry_context(&self.publisher_identity, self.references.as_ref(), state)
+            .map_err(|_| StorageError::BadSignature)
     }
 
     fn payload_bytes(
