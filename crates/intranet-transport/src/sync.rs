@@ -63,6 +63,26 @@ pub const SIGNAL_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-
 /// Separate from signalling so a blind relay can carry media without ever seeing
 /// a key envelope go past. A relay that spoke both protocols would be trusted
 /// rather than blind.
+///
+/// # This is the fallback path, not the production one
+///
+/// §1.5 requires call media to be delivered **unreliably and unordered** —
+/// QUIC datagrams or equivalent — because a frame past its playout deadline is
+/// worthless and retransmitting it head-of-line blocks every frame behind it. A
+/// request/response protocol over a reliable ordered stream is exactly what that
+/// section names as non-conformant for a production media path.
+///
+/// It is used here under the second of §1.5's two permitted fallback cases: a
+/// reference setting where loss is negligible and the property under test is
+/// something else — specifically that a relay carries media it cannot read
+/// (§2.2), which does not depend on the delivery model at all. Under real loss
+/// this degrades badly, in the specific way §1.5 describes.
+///
+/// **Flagged: replacing this needs an unreliable path libp2p does not currently
+/// expose.** QUIC is already a required transport, but libp2p's QUIC transport
+/// surfaces streams rather than datagrams, so this is not a matter of swapping a
+/// behaviour — it needs datagram support underneath. Recorded here rather than
+/// left to be rediscovered by whoever benchmarks a lossy link.
 pub const MEDIA_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-media/1.0.0");
 
 /// The largest metadata message this build will read.

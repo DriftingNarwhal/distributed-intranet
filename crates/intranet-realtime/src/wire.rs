@@ -20,6 +20,21 @@
 //! mechanism. Signing every frame would add a per-frame asymmetric operation to
 //! the one path in this system where latency is the whole product.
 //!
+//! # Delivery semantics
+//!
+//! §1.5 requires call media to be delivered unreliably and unordered: a frame
+//! past its playout deadline is worthless, and waiting for it stalls everything
+//! behind it. This module encodes frames; it does not choose how they travel.
+//! The transport currently carries them over a reliable ordered protocol, which
+//! §1.5 permits only as a fallback and which `intranet-transport`'s
+//! `MEDIA_PROTOCOL` documents as such.
+//!
+//! One consequence shows up here: [`MediaFrame`] carries an explicit sequence
+//! number rather than relying on arrival order. That is not redundancy — under
+//! the delivery model §1.5 actually asks for, frames arrive out of order and
+//! some never arrive at all, so the sequence is the only thing that says where a
+//! frame belongs.
+//!
 //! # What a relay can see, stated exactly
 //!
 //! A [`MediaEnvelope`] carries the call, the sender, the recipient and

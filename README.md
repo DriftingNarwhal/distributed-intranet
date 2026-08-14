@@ -23,7 +23,7 @@ Every specification document has an implementation. **540 tests, clippy clean.**
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
 
-### The one thing that is not done, and what tier 2 cost to verify
+### What is not done
 
 **All five NAT scenarios now pass, including tier 2.** Getting there took four
 fixes, three of them protocol bugs rather than harness ones: reserving a relay
@@ -50,6 +50,16 @@ selection, not end-to-end behaviour.
 are the app and whether it is servable, and stops there. Webview isolation,
 platform-enforced CSP, and capability prompts are an embedding job against a
 real browser engine, and depend on target platform.
+
+**Call media uses the fallback delivery path, not the specified one.** Real-Time
+Spec §1.5 requires call media to be delivered unreliably and unordered — a frame
+past its playout deadline is worthless, and a reliable ordered channel turns one
+lost packet into a multi-frame gap through head-of-line blocking. What is here is
+request/response over a reliable stream, which §1.5 permits only as a fallback.
+It is correct and behaves well under negligible loss, which is what the tests
+exercise; it degrades badly under real loss. Replacing it needs datagram support
+libp2p's QUIC transport does not currently expose, so it is not a matter of
+swapping a behaviour.
 
 ## Layout
 

@@ -87,6 +87,15 @@ both checks it is an open reflector. Routing metadata sits outside the AEAD beca
 relay must read it, so a malicious relay can misroute; the nonce binds the call, so a
 misrouted frame simply fails to open.
 
+Call media delivery is specified in §1.5 as **unreliable and unordered** (QUIC datagrams
+or equivalent): a frame past its playout deadline is worthless, and a reliable ordered
+channel turns one lost packet into a multi-frame gap through head-of-line blocking. The
+current implementation uses request/response over a reliable stream, which §1.5 permits
+only as a fallback — it is the honest state, not the target. Replacing it needs datagram
+support libp2p's QUIC transport does not currently expose, so it is not a behaviour swap.
+Signalling (§1.4) and live-stream chunks (§3.2) are both correctly reliable; do not
+collapse the three into one delivery model.
+
 The app name registry needed no transport of its own: ownership is a governance entry
 (App Hosting §4.3) and the directory is an append-set collection, and both already
 propagate. The split is the design — the log is authoritative, the index is a
