@@ -183,6 +183,25 @@ All five pass. Roughly two minutes for the in-process suite versus minutes more
 for the Docker matrix, which is why the harness spec (§8) puts the first on every
 commit and the second on a slower cadence.
 
+## Running a relay
+
+A network needs at least one bootstrap relay to solve cold start between two
+members who are both behind NAT. Relays are deliberately cheap: they hold no
+state, are never trusted with keys, and establish connections rather than
+carrying traffic, so circuits are capped at 120 seconds and 8 MB by default.
+
+**[DI-Relay](https://github.com/DriftingNarwhal/DI-Relay)** is a deployable
+relay built on `intranet_transport::RelayNode`, with step-by-step Railway
+instructions. It is a thin wrapper on purpose — the relay logic stays here, where
+the conformance suite exercises it against a live relay rather than a model of
+one.
+
+For a local run without deploying anything:
+
+```bash
+cargo run -p intranet-harness -- relay --seed 1 --network 42
+```
+
 ## Principles the code follows
 
 These recur throughout and explain a lot of otherwise-surprising choices.
