@@ -199,6 +199,26 @@ impl GroupSession {
         })
     }
 
+    /// Finds the tree position holding a given per-network identity.
+    ///
+    /// Revocation is expressed against an *identity* everywhere else in this
+    /// protocol — the governance log records who was removed, not which leaf —
+    /// so something has to translate. Matching on the credential is what makes
+    /// that translation safe: the credential is the identity's own public key
+    /// (see [`identity_label`]), so a leaf can only be claimed by the identity
+    /// that actually occupies it.
+    ///
+    /// Returns `None` when the identity is not in the group, which is an
+    /// ordinary answer rather than an error: a member admitted to the network
+    /// but never keyed in has no leaf, and revoking them needs no commit.
+    pub fn leaf_index_for(&self, identity: &PerNetworkIdentityId) -> Option<u32> {
+        let label = identity_label(identity);
+        self.group
+            .members()
+            .find(|member| member.credential.serialized_content() == label)
+            .map(|member| member.index.u32())
+    }
+
     /// Removes a member, advancing the epoch.
     ///
     /// The removed member holds only superseded keys and cannot derive the new

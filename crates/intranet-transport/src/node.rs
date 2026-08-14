@@ -680,6 +680,69 @@ impl MemberNode {
         id
     }
 
+    /// Rotates the epoch away from a revoked member — §3.1, §3.3.
+    ///
+    /// The cryptographic half of the revocation guarantee: the removed identity
+    /// holds only superseded keys and cannot derive the new one, so nothing
+    /// wrapped from here on is readable by them. The other half is the
+    /// `read-content` serving gate refusing them new ciphertext (Storage Spec
+    /// §5.4), and neither half is sufficient alone.
+    ///
+    /// # The membership removal must already be in the log
+    ///
+    /// This refuses while the target is still a current member, which enforces
+    /// the ordering rather than trusting a caller to get it right. Rotating
+    /// first and removing second leaves a window in which the revoked member is
+    /// entitled to the key that was just minted to exclude them — and because a
+    /// key cannot be un-known (§3.1), that window cannot be closed afterwards.
+    ///
+    /// Revoking an identity that was never keyed in is a no-op returning `None`:
+    /// there is no leaf to remove, and no commit is needed to exclude somebody
+    /// the tree never held.
+    pub fn revoke_epoch_member(
+        &mut self,
+        revoked: &PerNetworkIdentityId,
+        identity: &PerNetworkIdentity,
+        now: Timestamp,
+    ) -> Result<Option<Hash>, EpochError> {
+        let state = self
+            .governance_state()
+            .ok_or_else(|| EpochError::Mls("no governance state to check membership".into()))?;
+        if state.is_member(revoked) {
+            return Err(EpochError::Mls(format!(
+                "{} is still a current member: append the membership removal before rotating,                  or the rotation mints a key the revoked member is still entitled to",
+                revoked.short()
+            )));
+        }
+
+        let group = self
+            .group
+            .as_mut()
+            .ok_or_else(|| EpochError::Mls("this node holds no group".into()))?;
+        let Some(index) = group.leaf_index_for(revoked) else {
+            return Ok(None);
+        };
+        let rotation = group.remove_member(index)?;
+
+        let parent = self.log.canonical_chain().last().copied();
+        let entry = LogEntry::create(
+            identity,
+            parent,
+            now,
+            EntryBody::EpochRotation {
+                reason: RotationReason::MemberRevoked,
+                commit: rotation.commit,
+            },
+        );
+        let rotation_ref = self
+            .log
+            .insert(entry)
+            .map_err(|e| EpochError::Mls(format!("rotation entry rejected: {e}")))?;
+        self.keyring
+            .record(rotation_ref, rotation.epoch, rotation.key);
+        Ok(Some(rotation_ref))
+    }
+
     /// Rotates the epoch without a membership change — §1.3, point 6.
     ///
     /// The self-initiated rekey any member may request after a device
