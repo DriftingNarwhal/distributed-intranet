@@ -2,10 +2,14 @@
 
 use crate::dial::{ConnectionTier, classify};
 use crate::{RelayLimits, TransportError, behaviour::*};
+use intranet_crypto::Hash;
+use intranet_governance::{
+    GovernanceError, GovernanceLog, LogEntry, MAX_ENTRIES_PER_RESPONSE, SyncRequest, SyncResponse,
+};
 use intranet_identity::PerNetworkIdentity;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, identify, kad, mdns, ping, relay,
-    swarm::SwarmEvent,
+    request_response, swarm::SwarmEvent,
 };
 use std::collections::BTreeMap;
 
@@ -95,6 +99,37 @@ pub enum NodeEvent {
         /// Why it failed.
         error: String,
     },
+    /// A sync exchange with a peer completed.
+    ///
+    /// Reports what was actually taken up rather than what arrived. `rejected`
+    /// counts entries this node refused — an unknown parent, or a structural
+    /// check failing — which is the difference between "we are in step" and "we
+    /// received things we could not use", and is otherwise invisible.
+    Synced {
+        /// The peer synced with.
+        peer: PeerId,
+        /// Entries accepted into the log.
+        accepted: usize,
+        /// Entries received but refused.
+        rejected: usize,
+        /// Whether the peer had more to send than one response could carry.
+        ///
+        /// A follow-up `Fetch` is issued automatically; this is surfaced so a
+        /// caller can tell a completed sync from one still in progress rather
+        /// than concluding convergence too early.
+        truncated: bool,
+    },
+    /// A sync request to a peer failed.
+    ///
+    /// Not fatal — the protocol is pull-based, so the next reconnect retries in
+    /// full. Surfaced because a silently failing sync looks exactly like a
+    /// network with nothing to say.
+    SyncFailed {
+        /// The peer whose sync failed.
+        peer: PeerId,
+        /// Why.
+        error: String,
+    },
     /// A relay granted a reservation.
     ReservationGranted {
         /// The reserving peer.
@@ -162,6 +197,14 @@ pub struct MemberNode {
     /// One appearing is the only observable signal that a relay actually
     /// *granted* a reservation, as opposed to one having been asked for.
     circuit_listeners: std::collections::BTreeSet<Multiaddr>,
+    /// This node's replica of the network's governance log — §2.7.
+    ///
+    /// Held by the node rather than beside it because sync has to answer a
+    /// peer's request from inside the event loop. Keeping the log elsewhere
+    /// would mean either blocking the loop on a lock or answering from a stale
+    /// copy, and a sync that answers from a stale copy is a sync that quietly
+    /// fails to converge.
+    log: GovernanceLog,
 }
 
 impl MemberNode {
@@ -205,6 +248,7 @@ impl MemberNode {
                     ping: ping::Behaviour::default(),
                     relay_client,
                     dcutr: dcutr::Behaviour::new(peer),
+                    sync: crate::sync::behaviour(),
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
@@ -220,7 +264,37 @@ impl MemberNode {
             pending: std::collections::VecDeque::new(),
             direct_listeners: std::collections::BTreeSet::new(),
             circuit_listeners: std::collections::BTreeSet::new(),
+            log: GovernanceLog::new(),
         })
+    }
+
+    /// This node's replica of the governance log.
+    pub fn governance_log(&self) -> &GovernanceLog {
+        &self.log
+    }
+
+    /// Adds a locally authored entry to the log.
+    ///
+    /// Deliberately *not* followed by a push to connected peers. The protocol is
+    /// pull-based (§2.7, and see [`crate::sync`]): peers learn about this entry
+    /// the next time they sync, which is on their next connection or their next
+    /// [`Self::sync_with`]. Adding an eager push would create a second
+    /// propagation path that only runs while peers happen to be connected, and
+    /// the pull path would then be exercised far less often than it is relied
+    /// on — precisely the arrangement in which a heal-time bug hides.
+    pub fn append_entry(&mut self, entry: LogEntry) -> Result<Hash, GovernanceError> {
+        self.log.insert(entry)
+    }
+
+    /// Asks a peer for its branch tips, starting a sync.
+    ///
+    /// Runs automatically on every new connection, so this is only needed to
+    /// re-sync an already-connected peer.
+    pub fn sync_with(&mut self, peer: PeerId) {
+        self.swarm
+            .behaviour_mut()
+            .sync
+            .send_request(&peer, SyncRequest::Heads);
     }
 
     /// This node's PeerId for its network.
@@ -475,6 +549,14 @@ impl MemberNode {
                         _ => tier,
                     };
                     self.tiers.insert(peer_id, tier);
+                    // A heal is a reconnect, and a reconnect is a sync. Doing
+                    // this unconditionally is what means there is no separate
+                    // partition-recovery path to get wrong: a peer that has been
+                    // unreachable for an hour and a peer seen for the first time
+                    // take exactly the same code path. Peers that do not speak
+                    // the protocol — a relay, say — answer with an unsupported
+                    // protocol failure, which is ignored below.
+                    self.sync_with(peer_id);
                     return NodeEvent::Connected {
                         peer: peer_id,
                         tier,
@@ -522,6 +604,103 @@ impl MemberNode {
 
                 SwarmEvent::ExternalAddrConfirmed { address } => {
                     return NodeEvent::ExternalAddressConfirmed { address };
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Sync(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        let response = match request {
+                            SyncRequest::Heads => SyncResponse::Heads {
+                                heads: self.log.heads(),
+                            },
+                            SyncRequest::Fetch { wanted, have } => {
+                                // `ancestors_first` owns the ordering guarantee:
+                                // `insert` refuses an entry whose parent it has
+                                // not seen, so a receiver handed a child first
+                                // silently drops it.
+                                let (entries, truncated) = self.log.ancestors_first(
+                                    &wanted,
+                                    &have,
+                                    MAX_ENTRIES_PER_RESPONSE,
+                                );
+                                SyncResponse::Entries { entries, truncated }
+                            }
+                        };
+                        // Fails only if the peer disconnected mid-exchange, in
+                        // which case there is nothing to report and nothing to
+                        // do: the next connection syncs from scratch.
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .sync
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response { response, .. } => match response {
+                        SyncResponse::Heads { heads } => {
+                            let wanted: Vec<Hash> = heads
+                                .into_iter()
+                                .filter(|hash| self.log.get(hash).is_none())
+                                .collect();
+                            if !wanted.is_empty() {
+                                let have = self.log.heads();
+                                self.swarm.behaviour_mut().sync.send_request(
+                                    &peer,
+                                    SyncRequest::Fetch { wanted, have },
+                                );
+                            }
+                        }
+                        SyncResponse::Entries { entries, truncated } => {
+                            let mut accepted = 0;
+                            let mut rejected = 0;
+                            for entry in entries {
+                                match self.log.insert(entry) {
+                                    Ok(_) => accepted += 1,
+                                    // Counted rather than logged and forgotten.
+                                    // Every entry arriving here has already had
+                                    // its signature verified during decoding, so
+                                    // a rejection means a structural problem —
+                                    // most likely an ancestor this node still
+                                    // lacks — and that is worth surfacing.
+                                    Err(_) => rejected += 1,
+                                }
+                            }
+                            if truncated {
+                                // Restart the exchange rather than tracking what
+                                // is left. The log has grown, so the next `have`
+                                // is further along and progress is monotonic —
+                                // which makes resumption stateless and removes
+                                // any chance of the two sides disagreeing about
+                                // where a partial transfer stopped.
+                                self.sync_with(peer);
+                            }
+                            return NodeEvent::Synced {
+                                peer,
+                                accepted,
+                                rejected,
+                                truncated,
+                            };
+                        }
+                    },
+                },
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Sync(
+                    request_response::Event::OutboundFailure { peer, error, .. },
+                )) => {
+                    // A relay does not run this protocol, and every node syncs
+                    // on connect — including with relays. Reporting that as a
+                    // failure would mean an error on every relayed connection.
+                    if !matches!(
+                        error,
+                        request_response::OutboundFailure::UnsupportedProtocols
+                    ) {
+                        return NodeEvent::SyncFailed {
+                            peer,
+                            error: error.to_string(),
+                        };
+                    }
                 }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Mdns(mdns::Event::Discovered(

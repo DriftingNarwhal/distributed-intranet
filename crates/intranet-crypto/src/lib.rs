@@ -18,11 +18,13 @@
 //!   caller passes "now" in, because the harness must drive finality and ballot
 //!   close boundaries on a virtual clock.
 
+pub mod dec;
 pub mod enc;
 pub mod hash;
 pub mod sign;
 pub mod time;
 
+pub use dec::{Dec, DecodeError};
 pub use enc::Enc;
 pub use hash::{Hash, hash_bytes, hash_enc, keyed_hash, merkle_root};
 pub use sign::{SecretKey, Signature, VerifyingKey};

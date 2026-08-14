@@ -42,7 +42,7 @@ openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
-libp2p = { version = "0.56", features = ["tcp", "quic", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "tokio", "macros", "ed25519"] }
+libp2p = { version = "0.56", features = ["tcp", "quic", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "request-response", "tokio", "macros", "ed25519"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -53,6 +53,7 @@ libp2p-identity = { version = "0.2", features = ["ed25519", "peerid"] }
 slip10_ed25519 = "0.1"
 x25519-dalek = "3.0"
 thiserror = "2"
+async-trait = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

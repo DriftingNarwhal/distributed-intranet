@@ -186,6 +186,91 @@ impl GovernanceLog {
         }
     }
 
+    /// The tip of every branch this log holds.
+    ///
+    /// Every entry with no children, which is exactly what a peer needs in order
+    /// to work out what it is missing. Deliberately *all* tips rather than the
+    /// canonical one: during a partition the interesting entries are on branches
+    /// this node does not consider canonical, and a sync that offered only the
+    /// canonical tip would never hand the other side what it needs to reconcile.
+    pub fn heads(&self) -> Vec<Hash> {
+        let mut heads: Vec<Hash> = self
+            .entries
+            .keys()
+            .filter(|hash| self.children.get(*hash).is_none_or(BTreeSet::is_empty))
+            .copied()
+            .collect();
+        heads.sort_unstable();
+        heads
+    }
+
+    /// Entries leading to `wanted`, ordered so a receiver can insert them.
+    ///
+    /// Returns `(entries, truncated)`.
+    ///
+    /// # Why ordering is the whole point
+    ///
+    /// [`Self::insert`] refuses an entry whose parent it has not seen, so a
+    /// receiver handed a child before its parent silently drops the child — and
+    /// a dropped entry is indistinguishable from one that was never sent. The
+    /// order is established here, once, rather than being a property each caller
+    /// has to preserve.
+    ///
+    /// Entries are ordered by depth from the root, which puts every parent
+    /// before its children because the log is a tree. Ties break on hash so two
+    /// nodes serving the same request produce byte-identical responses —
+    /// determinism is load-bearing throughout this protocol and there is no
+    /// reason to make sync the exception.
+    ///
+    /// Truncation at `max` is therefore safe: a depth-ordered prefix is still
+    /// insertable, so a truncated response advances the receiver rather than
+    /// being wasted, and it asks again for the rest.
+    ///
+    /// `have` names tips the requester already holds; their ancestry is skipped.
+    /// Purely an optimization — sending too much is merely wasteful, since
+    /// re-inserting a known entry is idempotent — but without it every partition
+    /// heal would re-send the entire log.
+    pub fn ancestors_first(
+        &self,
+        wanted: &[Hash],
+        have: &[Hash],
+        max: usize,
+    ) -> (Vec<LogEntry>, bool) {
+        let mut excluded = BTreeSet::new();
+        for hash in have {
+            for ancestor in self.ancestry(*hash) {
+                excluded.insert(ancestor);
+            }
+        }
+
+        let mut needed = BTreeSet::new();
+        for hash in wanted {
+            if !self.entries.contains_key(hash) {
+                continue;
+            }
+            for ancestor in self.ancestry(*hash) {
+                if excluded.contains(&ancestor) {
+                    continue;
+                }
+                needed.insert(ancestor);
+            }
+        }
+
+        let mut ordered: Vec<(usize, Hash)> = needed
+            .into_iter()
+            .map(|hash| (self.ancestry(hash).len(), hash))
+            .collect();
+        ordered.sort_unstable();
+
+        let truncated = ordered.len() > max;
+        ordered.truncate(max);
+        let entries = ordered
+            .into_iter()
+            .filter_map(|(_, hash)| self.entries.get(&hash).cloned())
+            .collect();
+        (entries, truncated)
+    }
+
     /// The canonical chain without advancing finality.
     pub fn canonical_chain(&self) -> Vec<Hash> {
         let Some(root) = self.root else {

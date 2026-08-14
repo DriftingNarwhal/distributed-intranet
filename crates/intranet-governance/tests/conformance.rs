@@ -1627,3 +1627,145 @@ fn rotation_ref_tracks_the_entry_hash_not_a_bare_counter() {
     let state = GovernanceState::replay(&chain).unwrap();
     assert_eq!(state.epoch_rotation_ref, Some(chain.last().unwrap().hash()));
 }
+
+// ---------------------------------------------------------------------------
+// Sync queries (§2.7, §5.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn heads_reports_every_branch_tip_not_just_the_canonical_one() {
+    // A sync that offered only the canonical tip would be useless during exactly
+    // the situation it exists for: while partitioned, the entries the other side
+    // needs are on a branch this node does not consider canonical, so offering
+    // only the canonical tip would never hand it over and the two sides would
+    // never reconcile.
+    let founder = identity(1);
+    let mut log = GovernanceLog::new();
+    let root = log.insert(genesis(&founder)).unwrap();
+
+    let left = LogEntry::create(
+        &founder,
+        Some(root),
+        Timestamp::from_millis(10),
+        define_group("left", [Capability::ReadContent]),
+    );
+    let right = LogEntry::create(
+        &founder,
+        Some(root),
+        Timestamp::from_millis(11),
+        define_group("right", [Capability::ReadContent]),
+    );
+    let left_hash = log.insert(left).unwrap();
+    let right_hash = log.insert(right).unwrap();
+
+    let heads = log.heads();
+    assert_eq!(heads.len(), 2, "both branch tips should be offered");
+    assert!(heads.contains(&left_hash) && heads.contains(&right_hash));
+    assert!(
+        !heads.contains(&root),
+        "an entry with children is not a tip"
+    );
+}
+
+#[test]
+fn ancestors_first_orders_parents_before_children() {
+    // The ordering `GovernanceLog::insert` requires. A receiver handed a child
+    // before its parent drops the child, and a dropped entry is indistinguishable
+    // from one that was never sent — so this ordering is the difference between
+    // a sync that converges and one that silently stalls.
+    let founder = identity(1);
+    let mut log = GovernanceLog::new();
+    let mut parent = log.insert(genesis(&founder)).unwrap();
+    for i in 0..6 {
+        let entry = LogEntry::create(
+            &founder,
+            Some(parent),
+            Timestamp::from_millis(10 + i),
+            define_group(&format!("g{i}"), [Capability::ReadContent]),
+        );
+        parent = log.insert(entry).unwrap();
+    }
+
+    let (entries, truncated) = log.ancestors_first(&[parent], &[], 100);
+    assert!(!truncated);
+    assert_eq!(entries.len(), 7);
+
+    // Replaying into an empty log is the real test of the order: `insert` is
+    // what enforces it, so a wrongly ordered response fails here rather than
+    // merely looking odd.
+    let mut fresh = GovernanceLog::new();
+    for entry in entries {
+        fresh.insert(entry).expect("entries must arrive insertable");
+    }
+    assert_eq!(fresh.len(), 7);
+}
+
+#[test]
+fn ancestors_first_skips_what_the_requester_already_holds() {
+    // Without this, every partition heal would re-send the entire log. It is an
+    // optimization rather than a correctness property — re-inserting a known
+    // entry is idempotent — which is exactly why it needs its own test: if it
+    // silently stopped trimming, nothing else would fail.
+    let founder = identity(1);
+    let mut log = GovernanceLog::new();
+    let mut parent = log.insert(genesis(&founder)).unwrap();
+    let mut midpoint = parent;
+    for i in 0..6 {
+        let entry = LogEntry::create(
+            &founder,
+            Some(parent),
+            Timestamp::from_millis(10 + i),
+            define_group(&format!("g{i}"), [Capability::ReadContent]),
+        );
+        parent = log.insert(entry).unwrap();
+        if i == 2 {
+            midpoint = parent;
+        }
+    }
+
+    let (all, _) = log.ancestors_first(&[parent], &[], 100);
+    let (trimmed, _) = log.ancestors_first(&[parent], &[midpoint], 100);
+
+    assert_eq!(all.len(), 7);
+    assert_eq!(
+        trimmed.len(),
+        3,
+        "everything up to and including the requester's tip should be skipped"
+    );
+    assert!(
+        trimmed.iter().all(|entry| entry.timestamp.as_millis() > 12),
+        "the trimmed entries should be the ones after the requester's tip"
+    );
+}
+
+#[test]
+fn a_truncated_response_is_still_a_valid_prefix() {
+    // Truncation must leave the receiver better off, not merely leave it with
+    // fewer entries: a depth-ordered prefix is insertable, so a capped response
+    // advances the log and the requester asks again. A response truncated in
+    // some other order would be entirely wasted.
+    let founder = identity(1);
+    let mut log = GovernanceLog::new();
+    let mut parent = log.insert(genesis(&founder)).unwrap();
+    for i in 0..9 {
+        let entry = LogEntry::create(
+            &founder,
+            Some(parent),
+            Timestamp::from_millis(10 + i),
+            define_group(&format!("g{i}"), [Capability::ReadContent]),
+        );
+        parent = log.insert(entry).unwrap();
+    }
+
+    let (entries, truncated) = log.ancestors_first(&[parent], &[], 4);
+    assert!(truncated, "a cap of 4 against 10 entries should truncate");
+    assert_eq!(entries.len(), 4);
+
+    let mut fresh = GovernanceLog::new();
+    for entry in entries {
+        fresh
+            .insert(entry)
+            .expect("a truncated response must still be insertable in order");
+    }
+    assert_eq!(fresh.len(), 4);
+}

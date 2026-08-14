@@ -27,6 +27,7 @@ pub mod behaviour;
 pub mod dial;
 pub mod node;
 pub mod relay_limits;
+pub mod sync;
 
 pub use dial::{AddressFamily, ConnectionTier};
 pub use node::{MemberNode, NodeEvent, RelayNode, default_listen_addresses};

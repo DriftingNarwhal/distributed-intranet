@@ -96,6 +96,25 @@ impl ListenArgs {
                 NodeEvent::Disconnected { peer } => {
                     println!("disconnected: peer={peer}");
                 }
+                // Printed with the rejection count, not just the acceptance one.
+                // A sync that accepted nothing because every entry was refused
+                // and one that accepted nothing because there was nothing to
+                // send are the same line otherwise, and they mean opposite
+                // things about whether the network is converging.
+                NodeEvent::Synced {
+                    peer,
+                    accepted,
+                    rejected,
+                    truncated,
+                } => {
+                    println!(
+                        "synced: peer={peer} accepted={accepted} rejected={rejected} \
+                         more={truncated}"
+                    );
+                }
+                NodeEvent::SyncFailed { peer, error } => {
+                    println!("sync-failed: peer={peer} error={error}");
+                }
                 // The address a peer reports seeing us at is exactly what DCUtR
                 // will hand to a remote peer to dial. Printing it is what makes
                 // a hole-punch failure diagnosable: if this is not a port we

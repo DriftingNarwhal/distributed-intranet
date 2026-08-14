@@ -15,6 +15,17 @@ is and is not verified. Every layer is implemented. The Docker NAT scenarios hav
 executed and 4 of 5 pass; hole-punching (scenario 3) does not work, so tier 2 is unverified.
 The app execution sandbox is still not built or stubbed.
 
+Governance log propagation is wired: a pull-based request/response sync protocol over
+libp2p (`intranet-transport::sync`, `intranet-governance::wire`), chosen because §2.7
+allows the log no new transport primitive beyond §5.1 and because a broadcast has no
+history — entries appended during a partition would never reach the other side. A heal
+is a reconnect and a reconnect is a sync, so there is no separate catch-up path.
+Entries must be delivered ancestors-first (`GovernanceLog::ancestors_first`), since
+`insert` refuses an entry whose parent it has not seen and a dropped entry is
+indistinguishable from one never sent. The wire codec is hand-written and deliberately
+untrusted: every decoded entry is re-verified against its author's signature, so a codec
+bug is a rejected entry rather than silent divergence.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

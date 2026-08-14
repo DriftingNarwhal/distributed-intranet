@@ -47,6 +47,8 @@ mod policy;
 mod state;
 mod vote;
 
+pub mod wire;
+
 pub use capability::{
     APPROVE_APP_PUBLISH, Capability, CapabilitySet, RECLAIM_APP_NAME, REGISTER_APP_NAME, Tier,
 };
@@ -62,4 +64,7 @@ pub use policy::{
     starter_content_types,
 };
 pub use state::{AppNameRecord, GovernanceState};
+pub use wire::{
+    MAX_ENTRIES_PER_RESPONSE, SyncRequest, SyncResponse, WireError, decode_entry, encode_entry,
+};
 pub use vote::{Ballot, QuorumCertificate, VoteOutcome, VoteProposal};

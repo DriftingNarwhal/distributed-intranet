@@ -9,7 +9,10 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use libp2p::{dcutr, identify, kad, mdns, ping, relay, swarm::NetworkBehaviour};
+use crate::sync::SyncCodec;
+use libp2p::{
+    dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
+};
 
 /// The behaviour set every full member node runs.
 ///
@@ -31,6 +34,15 @@ pub struct MemberBehaviour {
     pub relay_client: relay::client::Behaviour,
     /// Hole-punch upgrade negotiation, for tier 2.
     pub dcutr: dcutr::Behaviour,
+    /// Governance log sync — §2.7.
+    ///
+    /// Pull-based rather than a broadcast, for both a spec reason and a
+    /// correctness one. §2.7 allows the log "no new storage or transport
+    /// primitive beyond what's already specified in §5.1", and §5.1 names no
+    /// pubsub. More importantly a broadcast has no history, so entries appended
+    /// during a partition would be lost to the other side forever; pulling makes
+    /// a heal indistinguishable from a reconnect. See [`crate::sync`].
+    pub sync: request_response::Behaviour<SyncCodec>,
 }
 
 /// The behaviour set a relay and bootstrap node runs.
