@@ -28,6 +28,28 @@
 //! bearer invite, can be minted freely — so per-identity limits alone provide no
 //! protection there. Pre-admission activity is therefore additionally metered
 //! per-invite, since the invite is the actual scarce resource in that window.
+//!
+//! # Where this metering can actually be enforced — §5.3.1
+//!
+//! Both keys assume somebody verified the thing being metered is real: that the
+//! identity was admitted, or that the invite's issuer holds `approve-node`. Both
+//! are governance-state questions, and **a stateless bootstrap relay holds no
+//! governance state by deliberate design (§5.4)**, so it can answer neither. It
+//! can check an invite's signature, which is self-contained, but not the
+//! authority behind it — an attacker self-signs an invite naming a keypair it
+//! just generated and gets a structurally perfect credential and a fresh bucket.
+//!
+//! So this type is enforceable in full only at a **member** node offering
+//! `relay_bootstrap_willing`, which replays the log anyway. A bootstrap relay
+//! uses the global ceilings — [`RelayLimits::max_reservations`],
+//! [`RelayLimits::max_circuits`], and the duration and byte ceilings — which need
+//! no state and bound what an attacker can consume without allocating it fairly.
+//!
+//! That is a decided limit rather than a gap awaiting work (§5.3.1). The failure
+//! mode is denial of cold start, not compromise: a forged invite is refused by
+//! the receiving member at redemption, and a relay never inspects a join. Giving
+//! relays governance state to close it would trade away the disposability that
+//! makes a relay replaceable, against an attack whose remedy is replacing it.
 
 use intranet_crypto::{Hash, Timestamp};
 use intranet_identity::PerNetworkIdentityId;

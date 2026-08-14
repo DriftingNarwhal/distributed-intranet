@@ -17,14 +17,14 @@ harness.
 | Relay + health/peer-id endpoints | **Verified, but see below.** Both endpoints answer and the peer id is returned. This is *not* evidence the relay is usable: it reported ready while granting reservations that no client could accept. |
 | Tier assertion (`dial --expect-tier`) | **Verified in both directions.** A correct expectation exits 0; a wrong one exits 1 with a conformance failure. |
 | Direct connection, tier 1 | **Verified.** Two real nodes over loopback, plus IPv6-before-IPv4 preference. |
-| Relay resource limits | **Enforced by a live relay.** `RelayLimits` now configures the relay behaviour, and `relay_enforcement.rs` drives a real `RelayNode` and asserts a reservation past the ceiling is refused. Two gaps remain, below. |
+| Relay resource limits | **Enforced by a live relay.** `RelayLimits` now configures the relay behaviour, and `relay_enforcement.rs` drives a real `RelayNode` and asserts a reservation past the ceiling is refused. Global ceilings only — see *Deliberate limits*. |
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2, 4, 5 | **Passing.** |
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 542 tests and `cargo clippy --workspace --all-targets` reports no
+passes 573 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -316,7 +316,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 542 tests
+cargo test --workspace                      # 573 tests
 cargo run -p intranet-harness -- --help
 ```
 
@@ -377,17 +377,35 @@ The suite tears the topology down on exit, including on failure, which makes
 diagnosis awkward — bring it up with `docker compose -f docker/compose.yml up -d`
 and drive the peers by hand instead.
 
+## Deliberate limits
+
+Recorded here so they are not repeatedly rediscovered as gaps and "fixed".
+
+**A bootstrap relay meters globally, not per identity or per invite.** §5.3 asked
+for both, and §5.3.1 now corrects it: verifying that an identity was admitted, or
+that an invite's issuer holds `approve-node`, is a governance-state question, and
+a bootstrap relay deliberately holds none (§5.4). It can check an invite's
+signature but not the authority behind it, so an attacker self-signs a fresh
+invite per connection and any per-invite bucket is theirs to mint. Metering
+against unverifiable credentials is the same protection §5.3 itself calls "only
+the appearance of it".
+
+What the relay does enforce — total reservations, concurrent circuits, circuit
+duration, bytes per circuit — needs no state and is verified against a live relay
+in `relay_enforcement.rs`. That bounds the total an attacker can consume without
+allocating it fairly, so the failure mode is denial of **cold start**, not a
+compromise of anything: a forged invite is refused by the receiving member at
+redemption against replayed state, and the relay never inspects a join at all.
+
+This is accepted rather than closed because closing it means giving relays
+governance state, which trades away the disposability that makes a relay
+replaceable — to defend against an attack whose remedy is replacing the relay.
+Per-identity and per-invite metering do apply at a **member** node offering
+`relay_bootstrap_willing`, which replays the log anyway; `join.rs` covers the
+per-invite case there.
+
 ## Not yet built
 
-- **Refusing service to identities that are not current members.** A live relay
-  now enforces its ceilings, and because a PeerId here is derived from a
-  per-network identity (§1.2) those ceilings cannot be shrugged off by rotating a
-  peer ID, as they could in a generic libp2p deployment. But nothing yet stops an
-  attacker presenting freshly generated keypairs that were never admitted, so the
-  cost the per-identity limit assumes is not actually being charged.
-- **Per-invite metering for pre-admission identities** (§5.3). `RelayGuard`
-  models it and is unit-tested, but a relay cannot apply it until it learns which
-  invite a connecting node used — a protocol addition, not a wiring one.
 - **Any IPv6 scenario.** The topology is IPv4 only — every network in
   `docker/compose.yml` is an IPv4 subnet and the peers bind `/ip4/...`. So the
   matrix cannot tell us whether §5.2's tier-1 IPv6 preference works, and cannot
