@@ -30,8 +30,7 @@ gives each one:
 - **Unlinkability between networks.** One person's identity in one network cannot
   be correlated with their identity in another — not by key, and not by libp2p
   PeerId, which is derived per network for exactly this reason. (IP-level and
-  timing correlation remain out of scope; the specs say so plainly rather than
-  implying a stronger guarantee.)
+  timing correlation remain out of scope.)
 - **Storage that spreads.** Content is chunked, content-addressed, and served by
   whoever has it. Anyone who fetches something automatically becomes a source for
   it, so a popular file does not pin its publisher's upload.
