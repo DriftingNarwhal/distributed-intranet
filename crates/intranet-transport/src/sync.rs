@@ -1,11 +1,12 @@
-//! Governance log sync over libp2p — Core Protocol Spec §2.7, §5.1.
+//! Pull-based sync protocols over libp2p — Core Protocol Spec §2.7, §4.5, §5.1.
 //!
-//! # Why request/response rather than a pubsub broadcast
+//! # Why pull rather than a pubsub broadcast
 //!
 //! §2.7 requires the governance log to need "no new storage or transport
 //! primitive beyond what's already specified in §5.1", and §5.1 names no pubsub
-//! mechanism — so this is a protocol over the libp2p streams already in use,
-//! not a new one.
+//! mechanism — so these are protocols over the libp2p streams already in use,
+//! not new ones. §4.5 says the same of the capability ledger, describing it as
+//! piggybacking on the mechanisms in §5.
 //!
 //! There is also a correctness reason, which matters more. The partition tests
 //! in Reference Test Harness Spec §3 have each side append entries *while
@@ -15,42 +16,101 @@
 //! **a heal is a reconnect, and a reconnect is a sync** — with no separate
 //! catch-up path that could rot from disuse.
 //!
-//! # Message size
+//! # Two protocols, one codec
 //!
-//! The codec caps what it will read. An unbounded read on a peer-supplied length
-//! is a memory-exhaustion vector, and a cap is the only thing standing between a
-//! sync and one — see [`MAX_MESSAGE_BYTES`].
+//! The governance log and the capability ledger propagate very differently — one
+//! is a hash-chained tree reconciled by ancestry, the other a set of per-node
+//! records replaced wholesale on refresh — but they move bytes identically. The
+//! codec is therefore generic over [`WireMessage`], and each protocol supplies
+//! its own message types and its own reconciliation logic in the crate that owns
+//! them. Keeping the encoding beside the types it encodes is what makes adding a
+//! variant and forgetting the codec a compile error rather than a runtime
+//! surprise.
 
 use futures::{AsyncReadExt, AsyncWriteExt};
 use intranet_governance::{SyncRequest, SyncResponse};
+use intranet_ledger::{LedgerRequest, LedgerResponse};
 use libp2p::StreamProtocol;
 use libp2p::request_response;
 use std::io;
+use std::marker::PhantomData;
 
-/// The sync protocol's libp2p identifier.
+/// The governance log sync protocol's libp2p identifier.
 ///
 /// Versioned, so a future incompatible change to the message set can be
 /// introduced as a second protocol rather than as a silent reinterpretation of
 /// the same bytes by two builds that disagree.
 pub const SYNC_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/governance-sync/1.0.0");
 
+/// The capability ledger gossip protocol's libp2p identifier.
+pub const LEDGER_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/intranet/capability-ledger/1.0.0");
+
 /// The largest sync message this build will read.
 ///
 /// **Flagged: the specs set no wire size limit.** One is required regardless,
-/// because both sides of this protocol read a length chosen by the peer. 8 MiB
-/// comfortably holds `MAX_ENTRIES_PER_RESPONSE` entries while keeping a hostile
+/// because both sides of these protocols read a length chosen by the peer. 8 MiB
+/// comfortably holds a full response of either kind while keeping a hostile
 /// peer's maximum allocation bounded; the pull-based design means a requester
 /// that needs more simply asks again.
 pub const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Codec carrying [`SyncRequest`] and [`SyncResponse`].
+/// A message that can travel over one of these protocols.
 ///
-/// The encoding itself lives in `intranet-governance`'s `wire` module, next to
-/// the types it encodes, so that adding a governance entry variant and
-/// forgetting the codec is a compile error rather than a runtime surprise. This
-/// type only moves the bytes.
-#[derive(Debug, Clone, Default)]
-pub struct SyncCodec;
+/// Implemented here for types owned by other crates so that the encoding stays
+/// next to the types it encodes, rather than the dependency running the other
+/// way and the transport layer growing opinions about governance and ledger
+/// internals.
+pub trait WireMessage: Sized + Send + 'static {
+    /// Encodes the message.
+    fn encode(&self) -> Vec<u8>;
+    /// Decodes the message, reporting why if it cannot.
+    fn decode(bytes: &[u8]) -> Result<Self, String>;
+}
+
+macro_rules! wire_message {
+    ($type:ty) => {
+        impl WireMessage for $type {
+            fn encode(&self) -> Vec<u8> {
+                <$type>::encode(self)
+            }
+            fn decode(bytes: &[u8]) -> Result<Self, String> {
+                <$type>::decode(bytes).map_err(|error| error.to_string())
+            }
+        }
+    };
+}
+
+wire_message!(SyncRequest);
+wire_message!(SyncResponse);
+wire_message!(LedgerRequest);
+wire_message!(LedgerResponse);
+
+/// Codec carrying any [`WireMessage`] pair.
+///
+/// The `PhantomData` is over `fn() -> (Req, Res)` rather than `(Req, Res)` so
+/// the codec is `Send` and `Sync` regardless of its message types, which a
+/// behaviour requires and which the message types themselves have no reason to
+/// guarantee.
+#[derive(Debug)]
+pub struct WireCodec<Req, Res>(PhantomData<fn() -> (Req, Res)>);
+
+impl<Req, Res> Default for WireCodec<Req, Res> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<Req, Res> Clone for WireCodec<Req, Res> {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// Codec for governance log sync.
+pub type SyncCodec = WireCodec<SyncRequest, SyncResponse>;
+/// Codec for capability ledger gossip.
+pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
 
 async fn read_framed<T>(io: &mut T) -> io::Result<Vec<u8>>
 where
@@ -63,21 +123,21 @@ where
     Ok(buffer)
 }
 
-fn malformed(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+fn malformed(error: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
 #[async_trait::async_trait]
-impl request_response::Codec for SyncCodec {
+impl<Req: WireMessage, Res: WireMessage> request_response::Codec for WireCodec<Req, Res> {
     type Protocol = StreamProtocol;
-    type Request = SyncRequest;
-    type Response = SyncResponse;
+    type Request = Req;
+    type Response = Res;
 
     async fn read_request<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Request>
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        SyncRequest::decode(&read_framed(io).await?).map_err(malformed)
+        Req::decode(&read_framed(io).await?).map_err(malformed)
     }
 
     async fn read_response<T>(
@@ -88,10 +148,11 @@ impl request_response::Codec for SyncCodec {
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // Every entry's signature is verified inside this decode, so an entry
-        // that reaches the swarm has already been authenticated against its
-        // author's key — a peer cannot inject an entry nobody signed.
-        SyncResponse::decode(&read_framed(io).await?).map_err(malformed)
+        // Signatures are verified inside these decodes, so anything reaching the
+        // swarm has already been authenticated against its author's key — a peer
+        // cannot inject a governance entry nobody signed, nor an advertisement
+        // claiming capacity on someone else's behalf.
+        Res::decode(&read_framed(io).await?).map_err(malformed)
     }
 
     async fn write_request<T>(
@@ -121,11 +182,22 @@ impl request_response::Codec for SyncCodec {
     }
 }
 
-/// Builds the sync behaviour.
-pub fn behaviour() -> request_response::Behaviour<SyncCodec> {
+fn build<Req: WireMessage, Res: WireMessage>(
+    protocol: StreamProtocol,
+) -> request_response::Behaviour<WireCodec<Req, Res>> {
     request_response::Behaviour::with_codec(
-        SyncCodec,
-        [(SYNC_PROTOCOL, request_response::ProtocolSupport::Full)],
+        WireCodec::default(),
+        [(protocol, request_response::ProtocolSupport::Full)],
         request_response::Config::default(),
     )
+}
+
+/// Builds the governance log sync behaviour.
+pub fn behaviour() -> request_response::Behaviour<SyncCodec> {
+    build(SYNC_PROTOCOL)
+}
+
+/// Builds the capability ledger gossip behaviour.
+pub fn ledger_behaviour() -> request_response::Behaviour<LedgerCodec> {
+    build(LEDGER_PROTOCOL)
 }

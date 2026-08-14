@@ -112,6 +112,17 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                NodeEvent::LedgerSynced {
+                    peer,
+                    accepted,
+                    rejected,
+                    truncated,
+                } => {
+                    println!(
+                        "ledger-synced: peer={peer} accepted={accepted} rejected={rejected} \
+                         more={truncated}"
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

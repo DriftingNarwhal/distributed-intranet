@@ -26,9 +26,14 @@
 mod advertisement;
 pub mod placement;
 pub mod reliability;
+pub mod wire;
 
 pub use advertisement::{BandwidthCap, CapabilityAdvertisement, ComputeClass, TimeOfDayWindow};
 pub use placement::{ScoredCandidate, WeightField};
+pub use wire::{
+    LedgerRequest, LedgerResponse, MAX_ADVERTISEMENTS_PER_RESPONSE, decode_advertisement,
+    encode_advertisement,
+};
 pub use reliability::{
     AuditRateLimit, AuditRequest, AuditResponse, PeerObservations, ReliabilityObservations,
 };
@@ -153,6 +158,60 @@ impl CapabilityLedger {
                 Ok(())
             }
         }
+    }
+
+    /// What this ledger holds, as `(node, issued_at)` pairs — §4.5.
+    ///
+    /// The timestamp is the part that matters. A digest carrying only identity
+    /// would let a peer tell whether it had *heard of* a node but never whether
+    /// its copy was current, so refreshes would never propagate: the ledger
+    /// would populate on first contact and then silently freeze, with every node
+    /// making placement decisions on whatever it happened to learn first.
+    pub fn digest(&self) -> Vec<(PerNetworkIdentityId, Timestamp)> {
+        self.entries
+            .iter()
+            .map(|(node, advertisement)| (*node, advertisement.issued_at))
+            .collect()
+    }
+
+    /// Which of a peer's digest entries are worth asking for.
+    ///
+    /// Both the never-seen case and the have-an-older-copy case, which is what
+    /// turns this from a one-shot population into an actual refresh mechanism.
+    /// Entries the peer holds a *staler* copy of are deliberately not requested:
+    /// [`Self::insert`] would discard them anyway, since an older advertisement
+    /// must never displace a newer one.
+    pub fn wanted_from(
+        &self,
+        digest: &[(PerNetworkIdentityId, Timestamp)],
+    ) -> Vec<PerNetworkIdentityId> {
+        digest
+            .iter()
+            .filter(|(node, issued_at)| {
+                self.entries
+                    .get(node)
+                    .is_none_or(|held| held.issued_at < *issued_at)
+            })
+            .map(|(node, _)| *node)
+            .collect()
+    }
+
+    /// Advertisements for `nodes`, capped at `max`.
+    ///
+    /// Returns `(advertisements, truncated)`. Unknown nodes are skipped rather
+    /// than reported: a peer asking for something this node has never held is
+    /// ordinary during propagation, not an error.
+    pub fn fetch(
+        &self,
+        nodes: &[PerNetworkIdentityId],
+        max: usize,
+    ) -> (Vec<CapabilityAdvertisement>, bool) {
+        let matched: Vec<CapabilityAdvertisement> = nodes
+            .iter()
+            .filter_map(|node| self.entries.get(node).cloned())
+            .collect();
+        let truncated = matched.len() > max;
+        (matched.into_iter().take(max).collect(), truncated)
     }
 
     /// Removes a node's advertisement, for instance on revocation.

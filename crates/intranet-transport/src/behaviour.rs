@@ -9,7 +9,7 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::SyncCodec;
+use crate::sync::{LedgerCodec, SyncCodec};
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
 };
@@ -43,6 +43,13 @@ pub struct MemberBehaviour {
     /// during a partition would be lost to the other side forever; pulling makes
     /// a heal indistinguishable from a reconnect. See [`crate::sync`].
     pub sync: request_response::Behaviour<SyncCodec>,
+    /// Capability ledger gossip — §4.5.
+    ///
+    /// A separate protocol from the governance log rather than a second message
+    /// type on the same one, because the two reconcile differently: the log by
+    /// ancestry, the ledger by per-node freshness. Sharing a protocol would mean
+    /// one version number covering two things that will not change together.
+    pub ledger: request_response::Behaviour<LedgerCodec>,
 }
 
 /// The behaviour set a relay and bootstrap node runs.

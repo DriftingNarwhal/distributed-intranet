@@ -4,7 +4,12 @@ use crate::dial::{ConnectionTier, classify};
 use crate::{RelayLimits, TransportError, behaviour::*};
 use intranet_crypto::Hash;
 use intranet_governance::{
-    GovernanceError, GovernanceLog, LogEntry, MAX_ENTRIES_PER_RESPONSE, SyncRequest, SyncResponse,
+    GovernanceError, GovernanceLog, GovernanceState, LogEntry, MAX_ENTRIES_PER_RESPONSE,
+    SyncRequest, SyncResponse,
+};
+use intranet_ledger::{
+    CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
+    MAX_ADVERTISEMENTS_PER_RESPONSE,
 };
 use intranet_identity::PerNetworkIdentity;
 use libp2p::{
@@ -119,6 +124,24 @@ pub enum NodeEvent {
         /// than concluding convergence too early.
         truncated: bool,
     },
+    /// A capability ledger exchange with a peer completed — §4.5.
+    ///
+    /// `rejected` is the interesting field on a node still catching up. An
+    /// advertisement is only accepted from a current member, so a node whose
+    /// governance replica has not converged yet rejects perfectly valid
+    /// advertisements. That is expected and self-correcting — a governance sync
+    /// that accepts anything triggers another ledger sync — but it is worth
+    /// seeing rather than inferring from an oddly empty ledger.
+    LedgerSynced {
+        /// The peer synced with.
+        peer: PeerId,
+        /// Advertisements accepted.
+        accepted: usize,
+        /// Advertisements received but refused.
+        rejected: usize,
+        /// Whether the peer had more to send than one response could carry.
+        truncated: bool,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -205,6 +228,12 @@ pub struct MemberNode {
     /// copy, and a sync that answers from a stale copy is a sync that quietly
     /// fails to converge.
     log: GovernanceLog,
+    /// This node's cached view of what peers have advertised — §4.5.
+    ///
+    /// Held beside the governance log because it cannot be validated without
+    /// it: an advertisement is only accepted from a current member, so the
+    /// ledger is meaningless until the log says who the members are.
+    ledger: CapabilityLedger,
 }
 
 impl MemberNode {
@@ -249,6 +278,7 @@ impl MemberNode {
                     relay_client,
                     dcutr: dcutr::Behaviour::new(peer),
                     sync: crate::sync::behaviour(),
+                    ledger: crate::sync::ledger_behaviour(),
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
@@ -265,6 +295,7 @@ impl MemberNode {
             direct_listeners: std::collections::BTreeSet::new(),
             circuit_listeners: std::collections::BTreeSet::new(),
             log: GovernanceLog::new(),
+            ledger: CapabilityLedger::new(*identity.network()),
         })
     }
 
@@ -284,6 +315,56 @@ impl MemberNode {
     /// on — precisely the arrangement in which a heal-time bug hides.
     pub fn append_entry(&mut self, entry: LogEntry) -> Result<Hash, GovernanceError> {
         self.log.insert(entry)
+    }
+
+    /// This node's cached view of the capability ledger — §4.5.
+    ///
+    /// The input to HRW replica placement and media-relay selection. Note what
+    /// determinism this does and does not give: the *ranking function* is
+    /// deterministic given a candidate set, but the candidate set is each node's
+    /// own cache, which depends on what has propagated and on each node's local
+    /// staleness judgment. Two nodes agree on placement once their ledgers
+    /// agree, not before — which is why the repair loop (Storage Spec §3.4)
+    /// exists rather than placement being assumed correct on first computation.
+    pub fn capability_ledger(&self) -> &CapabilityLedger {
+        &self.ledger
+    }
+
+    /// Publishes this node's own advertisement — §4.2.
+    ///
+    /// Inserted into this node's own ledger, from where peers pull it. Refusing
+    /// an advertisement this node cannot validate against its own governance
+    /// replica is deliberate: a node that cannot yet see itself as a member has
+    /// no business claiming capacity, and silently accepting it locally would
+    /// hide the fact that no peer will accept it either.
+    pub fn advertise(
+        &mut self,
+        advertisement: CapabilityAdvertisement,
+    ) -> Result<(), LedgerError> {
+        let state = self.governance_state().ok_or(LedgerError::NotAMember {
+            node: advertisement.node.short(),
+        })?;
+        self.ledger.insert(advertisement, &state)
+    }
+
+    /// Asks a peer what its ledger holds, starting a ledger sync.
+    ///
+    /// Runs automatically on every new connection, and again whenever a
+    /// governance sync accepted anything — see the handler for why.
+    pub fn sync_ledger_with(&mut self, peer: PeerId) {
+        self.swarm
+            .behaviour_mut()
+            .ledger
+            .send_request(&peer, LedgerRequest::Digest);
+    }
+
+    /// Replays the canonical governance chain, or `None` if it cannot be.
+    ///
+    /// `None` is ordinary rather than exceptional on a node that has not yet
+    /// synced: an empty or partial log has no replayable state, and the ledger
+    /// simply has nothing it can validate against until it does.
+    fn governance_state(&self) -> Option<GovernanceState> {
+        self.log.replay_canonical().ok()
     }
 
     /// Asks a peer for its branch tips, starting a sync.
@@ -557,6 +638,7 @@ impl MemberNode {
                     // the protocol — a relay, say — answer with an unsupported
                     // protocol failure, which is ignored below.
                     self.sync_with(peer_id);
+                    self.sync_ledger_with(peer_id);
                     return NodeEvent::Connected {
                         peer: peer_id,
                         tier,
@@ -676,6 +758,19 @@ impl MemberNode {
                                 // where a partial transfer stopped.
                                 self.sync_with(peer);
                             }
+                            if accepted > 0 {
+                                // Governance just moved, so membership may have
+                                // expanded — and an advertisement is only
+                                // accepted from a current member. Both syncs
+                                // start together on connect and there is no
+                                // ordering between them, so a fresh node will
+                                // routinely reject every advertisement it is
+                                // offered before its log catches up. Re-asking
+                                // here is what makes that self-correcting rather
+                                // than leaving the ledger empty until the next
+                                // reconnect.
+                                self.sync_ledger_with(peer);
+                            }
                             return NodeEvent::Synced {
                                 peer,
                                 accepted,
@@ -685,6 +780,96 @@ impl MemberNode {
                         }
                     },
                 },
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Ledger(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        let response = match request {
+                            LedgerRequest::Digest => LedgerResponse::Digest {
+                                entries: self.ledger.digest(),
+                            },
+                            LedgerRequest::Fetch { nodes } => {
+                                let (advertisements, truncated) =
+                                    self.ledger.fetch(&nodes, MAX_ADVERTISEMENTS_PER_RESPONSE);
+                                LedgerResponse::Advertisements {
+                                    advertisements,
+                                    truncated,
+                                }
+                            }
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .ledger
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response { response, .. } => match response {
+                        LedgerResponse::Digest { entries } => {
+                            // `wanted_from` asks for what is missing *and* for
+                            // what this node holds a staler copy of. The second
+                            // half is what makes refreshes propagate at all.
+                            let nodes = self.ledger.wanted_from(&entries);
+                            if !nodes.is_empty() {
+                                self.swarm
+                                    .behaviour_mut()
+                                    .ledger
+                                    .send_request(&peer, LedgerRequest::Fetch { nodes });
+                            }
+                        }
+                        LedgerResponse::Advertisements {
+                            advertisements,
+                            truncated,
+                        } => {
+                            let mut accepted = 0;
+                            let mut rejected = 0;
+                            // Replayed once for the whole batch rather than per
+                            // advertisement: replay walks the canonical chain,
+                            // and doing it per item would make a ledger sync
+                            // quadratic in the log.
+                            match self.governance_state() {
+                                Some(state) => {
+                                    for advertisement in advertisements {
+                                        match self.ledger.insert(advertisement, &state) {
+                                            Ok(()) => accepted += 1,
+                                            Err(_) => rejected += 1,
+                                        }
+                                    }
+                                }
+                                // No replayable governance state yet, so there is
+                                // nothing to validate membership against. Counted
+                                // rather than dropped silently, and retried once
+                                // the log catches up.
+                                None => rejected += advertisements.len(),
+                            }
+                            if truncated {
+                                self.sync_ledger_with(peer);
+                            }
+                            return NodeEvent::LedgerSynced {
+                                peer,
+                                accepted,
+                                rejected,
+                                truncated,
+                            };
+                        }
+                    },
+                },
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Ledger(
+                    request_response::Event::OutboundFailure { peer, error, .. },
+                )) => {
+                    if !matches!(
+                        error,
+                        request_response::OutboundFailure::UnsupportedProtocols
+                    ) {
+                        return NodeEvent::SyncFailed {
+                            peer,
+                            error: error.to_string(),
+                        };
+                    }
+                }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Sync(
                     request_response::Event::OutboundFailure { peer, error, .. },

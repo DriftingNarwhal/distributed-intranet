@@ -26,6 +26,20 @@ indistinguishable from one never sent. The wire codec is hand-written and delibe
 untrusted: every decoded entry is re-verified against its author's signature, so a codec
 bug is a rejected entry rather than silent divergence.
 
+The capability ledger gossips over the same machinery (`intranet-ledger::wire`,
+`/intranet/capability-ledger/1.0.0`), but reconciles differently: it is a set keyed by
+node, refreshed wholesale, so its digest is `(node, issued_at)` rather than branch tips.
+The timestamp is load-bearing — without it a peer could tell only whether it had heard
+of a node, never whether its copy was current, and refreshes would never propagate.
+An advertisement is only accepted from a current member, so the ledger depends on the
+governance log and a fresh node rejects advertisements until its log catches up; a
+governance sync that accepts anything re-triggers a ledger sync to correct that.
+
+Note what placement determinism actually claims: `placement::rank` is deterministic
+given a candidate set, but the candidate set is each node's own gossiped cache filtered
+by local staleness. Two nodes agree once their ledgers agree, not before — Storage §3.4's
+repair loop is what corrects the gap. Don't strengthen the docs beyond that.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

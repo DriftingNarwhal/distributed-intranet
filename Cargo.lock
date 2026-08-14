@@ -1864,6 +1864,7 @@ dependencies = [
  "intranet-governance",
  "intranet-identity",
  "intranet-invite",
+ "intranet-ledger",
  "libp2p",
  "thiserror 2.0.20",
  "tokio",
