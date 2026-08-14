@@ -16,9 +16,26 @@
 //! # Why HRW rather than weighted-random
 //!
 //! It is **deterministic**: any node can independently recompute the identical
-//! replica set from the key and the current ledger, with no gossip about "who
-//! was assigned what" and nothing to store. Placement becomes a pure function
-//! rather than a decision that has to be made once and remembered.
+//! replica set from the key and a given ledger, with no gossip about "who was
+//! assigned what" and nothing to store. Placement becomes a pure function rather
+//! than a decision that has to be made once and remembered.
+//!
+//! # What that determinism claims, precisely
+//!
+//! It is a property of this function, not of the network: *given the same ledger
+//! contents*, every node produces a byte-identical ranking. It is not a claim
+//! that every node holds the same ledger at every instant. There is no single
+//! authoritative ledger — each node holds its own cache, populated by gossip and
+//! filtered by its own staleness judgment (Core Protocol Spec §4.5) — so two
+//! nodes agree on placement once their ledgers agree, not before.
+//!
+//! That is weaker than the guarantee the `reliability_signal` restriction below
+//! protects, and the difference is why the two are treated differently.
+//! `reliability_signal` never converges, so a function reading it is permanently
+//! non-deterministic across nodes. Advertised capacity does converge, so
+//! disagreement is a bounded propagation window, which the repair loop (Storage
+//! Spec §3.4) exists to close. Tests asserting exact-match placement across nodes
+//! must fix the ledger snapshot first, or they assert a timing coincidence.
 //!
 //! # Why local reliability is not an input
 //!
