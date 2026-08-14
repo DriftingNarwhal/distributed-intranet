@@ -9,9 +9,12 @@ use intranet_governance::{
 };
 use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
-    MAX_ADVERTISEMENTS_PER_RESPONSE,
+    MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
-use intranet_identity::PerNetworkIdentity;
+use intranet_storage::{
+    ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, StorageError, may_serve,
+};
+use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, identify, kad, mdns, ping, relay,
     request_response, swarm::SwarmEvent,
@@ -142,6 +145,41 @@ pub enum NodeEvent {
         /// Whether the peer had more to send than one response could carry.
         truncated: bool,
     },
+    /// A chunk arrived and was verified against the identifier requested.
+    ///
+    /// The bytes are already in this node's store by the time this is reported,
+    /// which is also the moment it joins that chunk's swarm (§4.2).
+    ChunkReceived {
+        /// The peer that served it.
+        peer: PeerId,
+        /// The chunk.
+        cid: Cid,
+        /// How many bytes.
+        bytes: usize,
+    },
+    /// A chunk request did not produce usable bytes.
+    ///
+    /// Covers all three ways that happens — refused, not held, and failed
+    /// verification — because a requester's next move is the same in each case:
+    /// try another holder. They are distinguished in `reason` because they mean
+    /// very different things about *this* holder, and only one of them is that
+    /// peer's fault.
+    ChunkUnavailable {
+        /// The peer asked.
+        peer: PeerId,
+        /// The chunk.
+        cid: Cid,
+        /// What happened.
+        reason: String,
+        /// Whether this counted against the peer's local reliability signal.
+        ///
+        /// True only for a verification failure. A peer that does not hold a
+        /// chunk, or that declines to serve it, has done nothing wrong — holding
+        /// either against it would make an honest node that dropped a cached
+        /// copy look unreliable, and §4.6's signal is specifically about
+        /// verification failures.
+        counted_against_peer: bool,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -234,6 +272,22 @@ pub struct MemberNode {
     /// it: an advertisement is only accepted from a current member, so the
     /// ledger is meaningless until the log says who the members are.
     ledger: CapabilityLedger,
+    /// Chunks this node holds and will serve — Storage Spec §4.2.
+    chunks: ChunkStore,
+    /// This node's own verification observations — Core Protocol Spec §4.6.
+    ///
+    /// Local-only and never gossiped. It lives here because chunk verification
+    /// failures are the main thing that feeds it, and it feeds only local source
+    /// selection. Nothing exposes it to a cross-node computation, which the type
+    /// signatures in `intranet-ledger` are arranged to enforce.
+    observations: ReliabilityObservations,
+    /// Chunks requested but not yet answered, by request identifier.
+    ///
+    /// Needed because a response carries bytes but not the CID they are for, and
+    /// the arriving bytes must be checked against the identifier that was
+    /// *asked* for — checking them against an identifier derived from the bytes
+    /// themselves would verify nothing at all.
+    inflight: BTreeMap<request_response::OutboundRequestId, (PeerId, PerNetworkIdentityId, Cid)>,
 }
 
 impl MemberNode {
@@ -279,6 +333,7 @@ impl MemberNode {
                     dcutr: dcutr::Behaviour::new(peer),
                     sync: crate::sync::behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
+                    chunk: crate::sync::chunk_behaviour(),
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
@@ -296,6 +351,9 @@ impl MemberNode {
             circuit_listeners: std::collections::BTreeSet::new(),
             log: GovernanceLog::new(),
             ledger: CapabilityLedger::new(*identity.network()),
+            chunks: ChunkStore::new(),
+            observations: ReliabilityObservations::new(),
+            inflight: BTreeMap::new(),
         })
     }
 
@@ -345,6 +403,92 @@ impl MemberNode {
             node: advertisement.node.short(),
         })?;
         self.ledger.insert(advertisement, &state)
+    }
+
+    /// Chunks this node holds and will serve — Storage Spec §4.2.
+    pub fn chunk_store(&self) -> &ChunkStore {
+        &self.chunks
+    }
+
+    /// Mutable access to the chunk store.
+    ///
+    /// For eviction, for pre-seeding a durability replica, and for tests that
+    /// need to construct a peer behaving badly.
+    pub fn chunk_store_mut(&mut self) -> &mut ChunkStore {
+        &mut self.chunks
+    }
+
+    /// Stores locally produced content, joining its swarm.
+    ///
+    /// There is no separate "start serving" step: §4.2 makes swarm membership
+    /// automatic for any node holding the bytes, whether it published them,
+    /// was assigned them as a durability replica, or simply viewed the content.
+    pub fn store_chunk(&mut self, bytes: Vec<u8>) -> Cid {
+        self.chunks.put(bytes)
+    }
+
+    /// This node's own verification observations — Core Protocol Spec §4.6.
+    ///
+    /// Local-only, never gossiped, and usable only for local per-requester
+    /// decisions such as source selection. Exposed read-only because there is no
+    /// legitimate reason for anything outside this node to write to it.
+    pub fn reliability_observations(&self) -> &ReliabilityObservations {
+        &self.observations
+    }
+
+    /// Requests one chunk from a peer.
+    ///
+    /// `requester` signs the request, and is passed in rather than held by the
+    /// node because §1.3 has a per-network private key derived in memory for an
+    /// operation rather than kept live for the process lifetime. The signature
+    /// is what lets the serving node evaluate `read-content` (§5.4) against a
+    /// requester it can be sure actually asked.
+    /// The source is named by *identity* rather than by PeerId because that is
+    /// what selection produces — `select_sources` ranks capability ledger
+    /// entries, which are keyed by identity — and because a verification failure
+    /// has to be recorded against an identity (§4.6). Taking a PeerId here would
+    /// mean the caller resolving it one way and this node resolving it back
+    /// another, with nothing keeping the two in step.
+    pub fn request_chunk(
+        &mut self,
+        source: PerNetworkIdentityId,
+        cid: Cid,
+        requester: &PerNetworkIdentity,
+    ) -> request_response::OutboundRequestId {
+        let peer = source.peer_id();
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .chunk
+            .send_request(&peer, ChunkRequest::create(requester, cid));
+        // Remembered because the response carries bytes but not the identifier
+        // they were requested under, and verifying arriving bytes against an
+        // identifier derived from those same bytes would verify nothing.
+        self.inflight.insert(id, (peer, source, cid));
+        id
+    }
+
+    /// Answers a peer's chunk request, applying the §5.4 serving gate.
+    fn serve_chunk(&self, request: &ChunkRequest) -> ChunkResponse {
+        // The gate is evaluated before the store is consulted, so a refusal
+        // never depends on whether this node happens to hold the chunk — which
+        // would otherwise turn "refused" into a probe for what a node has.
+        let Some(state) = self.governance_state() else {
+            return ChunkResponse::Refused {
+                reason: ChunkRefusal::CannotEvaluate,
+            };
+        };
+        if may_serve(&request.requester, &state).is_err() {
+            return ChunkResponse::Refused {
+                reason: ChunkRefusal::NoReadContent,
+            };
+        }
+        match self.chunks.get(&request.cid) {
+            Some(bytes) => ChunkResponse::Chunk {
+                bytes: bytes.to_vec(),
+            },
+            None => ChunkResponse::NotHeld,
+        }
     }
 
     /// Asks a peer what its ledger holds, starting a ledger sync.
@@ -780,6 +924,122 @@ impl MemberNode {
                         }
                     },
                 },
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Chunk(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        // The request's signature was verified during decoding,
+                        // so `request.requester` really did ask. What that does
+                        // *not* establish is that the peer delivering it is that
+                        // requester — a signed request is replayable by anyone
+                        // who captured it. Binding it to the connection closes
+                        // that: a third party cannot borrow a member's standing
+                        // by replaying their request.
+                        let response = if request.requester.peer_id() != peer {
+                            ChunkResponse::Refused {
+                                reason: ChunkRefusal::NoReadContent,
+                            }
+                        } else {
+                            self.serve_chunk(&request)
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .chunk
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        let Some((peer, source, cid)) = self.inflight.remove(&request_id) else {
+                            continue;
+                        };
+                        match response {
+                            ChunkResponse::Chunk { bytes } => {
+                                let len = bytes.len();
+                                // Verified against the CID that was *asked for*
+                                // (§4.4 step 5). `insert` refuses on mismatch, so
+                                // a bad chunk never enters the store and can
+                                // never be passed on.
+                                match self.chunks.insert(cid, bytes) {
+                                    Ok(()) => {
+                                        self.observations.record_verified(source);
+                                        return NodeEvent::ChunkReceived {
+                                            peer,
+                                            cid,
+                                            bytes: len,
+                                        };
+                                    }
+                                    Err(StorageError::ChunkVerificationFailed { .. }) => {
+                                        // The one case that counts against the
+                                        // peer: it served bytes that are not
+                                        // what it said they were. §4.6 is
+                                        // specifically about verification
+                                        // failures, and this is one.
+                                        self.observations.record_failed(source);
+                                        return NodeEvent::ChunkUnavailable {
+                                            peer,
+                                            cid,
+                                            reason: "failed verification against its content id"
+                                                .into(),
+                                            counted_against_peer: true,
+                                        };
+                                    }
+                                    Err(error) => {
+                                        return NodeEvent::ChunkUnavailable {
+                                            peer,
+                                            cid,
+                                            reason: error.to_string(),
+                                            counted_against_peer: false,
+                                        };
+                                    }
+                                }
+                            }
+                            ChunkResponse::NotHeld => {
+                                return NodeEvent::ChunkUnavailable {
+                                    peer,
+                                    cid,
+                                    reason: "not held".into(),
+                                    counted_against_peer: false,
+                                };
+                            }
+                            ChunkResponse::Refused { reason } => {
+                                return NodeEvent::ChunkUnavailable {
+                                    peer,
+                                    cid,
+                                    reason: match reason {
+                                        ChunkRefusal::NoReadContent => {
+                                            "refused: requester holds no read-content".into()
+                                        }
+                                        ChunkRefusal::CannotEvaluate => {
+                                            "refused: responder cannot evaluate the gate yet".into()
+                                        }
+                                    },
+                                    counted_against_peer: false,
+                                };
+                            }
+                        }
+                    }
+                },
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Chunk(
+                    request_response::Event::OutboundFailure {
+                        peer, request_id, error, ..
+                    },
+                )) => {
+                    if let Some((_, _, cid)) = self.inflight.remove(&request_id) {
+                        return NodeEvent::ChunkUnavailable {
+                            peer,
+                            cid,
+                            reason: error.to_string(),
+                            counted_against_peer: false,
+                        };
+                    }
+                }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Ledger(
                     request_response::Event::Message { peer, message, .. },

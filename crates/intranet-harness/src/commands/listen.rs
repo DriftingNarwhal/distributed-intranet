@@ -123,6 +123,21 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                NodeEvent::ChunkReceived { peer, cid, bytes } => {
+                    println!("chunk-received: peer={peer} cid={} bytes={bytes}", cid.short());
+                }
+                NodeEvent::ChunkUnavailable {
+                    peer,
+                    cid,
+                    reason,
+                    counted_against_peer,
+                } => {
+                    println!(
+                        "chunk-unavailable: peer={peer} cid={} reason={reason} \
+                         counted={counted_against_peer}",
+                        cid.short()
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

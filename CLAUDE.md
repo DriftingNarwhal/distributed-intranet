@@ -40,6 +40,15 @@ given a candidate set, but the candidate set is each node's own gossiped cache f
 by local staleness. Two nodes agree once their ledgers agree, not before — Storage §3.4's
 repair loop is what corrects the gap. Don't strengthen the docs beyond that.
 
+Content moves over `/intranet/chunk/1.0.0` (`intranet-storage::wire`, `ChunkStore`).
+Requests are signed over the CID *and* bound to the connection: a signature proves the
+named identity made the request, not that whoever delivered it is that identity, so the
+serving node also checks `requester.peer_id() == peer`. Arriving bytes are verified
+against the CID that was *asked for*, never one derived from the bytes themselves, which
+is why in-flight requests are tracked. Only a verification failure feeds
+`reliability_signal` — not-held and refused are not the peer's fault. Provider discovery
+(who holds a chunk, Storage §4.4 step 1) is **not built**: callers must name the source.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

@@ -30,6 +30,7 @@
 use futures::{AsyncReadExt, AsyncWriteExt};
 use intranet_governance::{SyncRequest, SyncResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
+use intranet_storage::{ChunkRequest, ChunkResponse};
 use libp2p::StreamProtocol;
 use libp2p::request_response;
 use std::io;
@@ -46,14 +47,25 @@ pub const SYNC_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/governa
 pub const LEDGER_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/intranet/capability-ledger/1.0.0");
 
-/// The largest sync message this build will read.
+/// The chunk transfer protocol's libp2p identifier — Storage Spec §4.
+pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/1.0.0");
+
+/// The largest metadata message this build will read.
 ///
 /// **Flagged: the specs set no wire size limit.** One is required regardless,
 /// because both sides of these protocols read a length chosen by the peer. 8 MiB
-/// comfortably holds a full response of either kind while keeping a hostile
-/// peer's maximum allocation bounded; the pull-based design means a requester
-/// that needs more simply asks again.
-pub const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// comfortably holds a full governance or ledger response while keeping a
+/// hostile peer's maximum allocation bounded; the pull-based design means a
+/// requester that needs more simply asks again.
+pub const DEFAULT_MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The largest chunk response this build will read.
+///
+/// Derived from the storage layer's own chunk ceiling rather than chosen
+/// separately, plus a small allowance for framing, so the two cannot drift into
+/// a state where a chunk the storage layer accepts is one the transport layer
+/// refuses to read.
+pub const MAX_CHUNK_MESSAGE_BYTES: u64 = intranet_storage::MAX_CHUNK_BYTES as u64 + 1024;
 
 /// A message that can travel over one of these protocols.
 ///
@@ -62,6 +74,17 @@ pub const MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// way and the transport layer growing opinions about governance and ledger
 /// internals.
 pub trait WireMessage: Sized + Send + 'static {
+    /// The largest frame this message type will be read from.
+    ///
+    /// Per-type rather than one constant for the whole codec, because the limits
+    /// genuinely differ: metadata messages should never approach a megabyte,
+    /// while a chunk response legitimately carries bulk content. A single shared
+    /// ceiling would have to be the larger of the two, which would let a peer
+    /// send a 16 MiB "digest" — or, set to the smaller, would make a chunk at
+    /// the size the storage layer permits impossible to read, a bug that would
+    /// only appear on unusually large chunks.
+    const MAX_BYTES: u64 = DEFAULT_MAX_MESSAGE_BYTES;
+
     /// Encodes the message.
     fn encode(&self) -> Vec<u8>;
     /// Decodes the message, reporting why if it cannot.
@@ -70,7 +93,11 @@ pub trait WireMessage: Sized + Send + 'static {
 
 macro_rules! wire_message {
     ($type:ty) => {
+        wire_message!($type, DEFAULT_MAX_MESSAGE_BYTES);
+    };
+    ($type:ty, $max:expr) => {
         impl WireMessage for $type {
+            const MAX_BYTES: u64 = $max;
             fn encode(&self) -> Vec<u8> {
                 <$type>::encode(self)
             }
@@ -85,6 +112,8 @@ wire_message!(SyncRequest);
 wire_message!(SyncResponse);
 wire_message!(LedgerRequest);
 wire_message!(LedgerResponse);
+wire_message!(ChunkRequest);
+wire_message!(ChunkResponse, MAX_CHUNK_MESSAGE_BYTES);
 
 /// Codec carrying any [`WireMessage`] pair.
 ///
@@ -111,15 +140,17 @@ impl<Req, Res> Clone for WireCodec<Req, Res> {
 pub type SyncCodec = WireCodec<SyncRequest, SyncResponse>;
 /// Codec for capability ledger gossip.
 pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
+/// Codec for chunk transfer.
+pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
 
-async fn read_framed<T>(io: &mut T) -> io::Result<Vec<u8>>
+async fn read_framed<T>(io: &mut T, max: u64) -> io::Result<Vec<u8>>
 where
     T: futures::AsyncRead + Unpin + Send,
 {
     let mut buffer = Vec::new();
     // `take` bounds the read before any allocation grows without limit, which is
     // the difference between a large message and a remote OOM.
-    io.take(MAX_MESSAGE_BYTES).read_to_end(&mut buffer).await?;
+    io.take(max).read_to_end(&mut buffer).await?;
     Ok(buffer)
 }
 
@@ -137,7 +168,7 @@ impl<Req: WireMessage, Res: WireMessage> request_response::Codec for WireCodec<R
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        Req::decode(&read_framed(io).await?).map_err(malformed)
+        Req::decode(&read_framed(io, Req::MAX_BYTES).await?).map_err(malformed)
     }
 
     async fn read_response<T>(
@@ -152,7 +183,7 @@ impl<Req: WireMessage, Res: WireMessage> request_response::Codec for WireCodec<R
         // swarm has already been authenticated against its author's key — a peer
         // cannot inject a governance entry nobody signed, nor an advertisement
         // claiming capacity on someone else's behalf.
-        Res::decode(&read_framed(io).await?).map_err(malformed)
+        Res::decode(&read_framed(io, Res::MAX_BYTES).await?).map_err(malformed)
     }
 
     async fn write_request<T>(
@@ -200,4 +231,9 @@ pub fn behaviour() -> request_response::Behaviour<SyncCodec> {
 /// Builds the capability ledger gossip behaviour.
 pub fn ledger_behaviour() -> request_response::Behaviour<LedgerCodec> {
     build(LEDGER_PROTOCOL)
+}
+
+/// Builds the chunk transfer behaviour.
+pub fn chunk_behaviour() -> request_response::Behaviour<ChunkCodec> {
+    build(CHUNK_PROTOCOL)
 }

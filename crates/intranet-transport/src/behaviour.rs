@@ -9,7 +9,7 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{LedgerCodec, SyncCodec};
+use crate::sync::{ChunkCodec, LedgerCodec, SyncCodec};
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
 };
@@ -50,6 +50,13 @@ pub struct MemberBehaviour {
     /// ancestry, the ledger by per-node freshness. Sharing a protocol would mean
     /// one version number covering two things that will not change together.
     pub ledger: request_response::Behaviour<LedgerCodec>,
+    /// Chunk transfer — Storage Spec §4.
+    ///
+    /// Its own protocol rather than a message on either of the others, because
+    /// it moves bulk content rather than metadata: the size ceilings, the
+    /// backpressure story (§4.5) and the authorization gate (§5.4) are all
+    /// specific to it.
+    pub chunk: request_response::Behaviour<ChunkCodec>,
 }
 
 /// The behaviour set a relay and bootstrap node runs.

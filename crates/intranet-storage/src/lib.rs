@@ -49,6 +49,8 @@ pub mod object;
 pub mod pointer;
 pub mod replication;
 pub mod serving;
+pub mod store;
+pub mod wire;
 
 pub use appendset::{AppendSetEntry, AppendSetView, collection_id, validate_entry_context};
 pub use chunk::ChunkSpec;
@@ -59,6 +61,8 @@ pub use replication::{
     HoldingAnnouncement, RepairPlan, ReplicationHealth, ReplicationStatus, ReplicationView,
 };
 pub use serving::{ServingRefusal, may_serve};
+pub use store::ChunkStore;
+pub use wire::{ChunkRefusal, ChunkRequest, ChunkResponse, MAX_CHUNK_BYTES};
 
 /// Errors produced by the storage layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

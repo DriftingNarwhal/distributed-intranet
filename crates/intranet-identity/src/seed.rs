@@ -271,6 +271,21 @@ impl PerNetworkIdentityId {
         enc.fixed(self.0.as_bytes());
     }
 
+    /// The libp2p PeerId this identity presents on the wire.
+    ///
+    /// The public-key counterpart of
+    /// [`PerNetworkIdentity::peer_id`](PerNetworkIdentity::peer_id), and derived
+    /// the same way so the two cannot disagree. Needed wherever a node must
+    /// check that the identity named in a signed message is the one actually on
+    /// the other end of the connection — a signed request is proof the named
+    /// identity *made* it, but not proof that whoever delivered it is that
+    /// identity, and content serving cares about the difference.
+    pub fn peer_id(&self) -> crate::PeerId {
+        let public = libp2p_identity::ed25519::PublicKey::try_from_bytes(self.0.as_bytes())
+            .expect("a verified ed25519 key is always a valid libp2p public key");
+        libp2p_identity::PublicKey::from(public).to_peer_id()
+    }
+
     /// Renders the first 8 hex characters, for human-facing output.
     pub fn short(&self) -> String {
         to_hex(&self.0.as_bytes()[..4])
@@ -421,5 +436,34 @@ mod tests {
             MasterSeed::from_backup_phrase(&twelve),
             Err(IdentityError::WrongEntropyLength { got: 16 })
         ));
+    }
+}
+
+#[cfg(test)]
+mod peer_id_tests {
+    use super::*;
+    use crate::NetworkId;
+
+    #[test]
+    fn the_public_and_secret_sides_derive_the_same_peer_id() {
+        // These are computed by different routes — one from the secret key, one
+        // from the verifying key — so a divergence would mean a node checking
+        // "is the identity in this message the peer I am talking to" always says
+        // no, and every gated request is refused for a reason nobody can see.
+        let network = NetworkId::from_bytes([9u8; 32]);
+        for seed in [1u8, 2, 200] {
+            let identity = MasterSeed::from_entropy([seed; 32])
+                .identity_for(&network)
+                .unwrap();
+            assert_eq!(identity.peer_id(), identity.id().peer_id());
+        }
+    }
+
+    #[test]
+    fn different_identities_have_different_peer_ids() {
+        let network = NetworkId::from_bytes([9u8; 32]);
+        let a = MasterSeed::from_entropy([1u8; 32]).identity_for(&network).unwrap();
+        let b = MasterSeed::from_entropy([2u8; 32]).identity_for(&network).unwrap();
+        assert_ne!(a.id().peer_id(), b.id().peer_id());
     }
 }
