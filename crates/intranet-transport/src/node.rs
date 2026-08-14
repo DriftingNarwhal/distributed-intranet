@@ -132,6 +132,16 @@ const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// How long to wait for listen addresses to register before reserving.
 const LISTENER_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long to wait for a reservation to be granted before giving up on it.
+///
+/// Covers a dial to the relay plus the reservation round trip, so it is
+/// necessarily longer than [`LISTENER_SETTLE_TIMEOUT`], which waits only on
+/// local sockets. Observed reservations land well inside a second; this is a
+/// bound on a stuck relay, not a tuned value.
+///
+/// **Flagged: the specs do not name a value.**
+const RESERVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// A full member node.
 pub struct MemberNode {
     swarm: Swarm<MemberBehaviour>,
@@ -147,6 +157,11 @@ pub struct MemberNode {
     /// Tracked because their presence is what makes port reuse possible; see
     /// [`MemberNode::reserve_via_relay`].
     direct_listeners: std::collections::BTreeSet<Multiaddr>,
+    /// Circuit listen addresses seen so far.
+    ///
+    /// One appearing is the only observable signal that a relay actually
+    /// *granted* a reservation, as opposed to one having been asked for.
+    circuit_listeners: std::collections::BTreeSet<Multiaddr>,
 }
 
 impl MemberNode {
@@ -204,6 +219,7 @@ impl MemberNode {
             discovered: BTreeMap::new(),
             pending: std::collections::VecDeque::new(),
             direct_listeners: std::collections::BTreeSet::new(),
+            circuit_listeners: std::collections::BTreeSet::new(),
         })
     }
 
@@ -350,6 +366,60 @@ impl MemberNode {
         self.listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
     }
 
+    /// Waits until a relay has actually *granted* a reservation.
+    ///
+    /// Returns whether one was granted before [`RESERVATION_TIMEOUT`] elapsed.
+    ///
+    /// # Why a caller about to dial a circuit must await this
+    ///
+    /// [`MemberNode::reserve_via_relay`] only *starts* a reservation: it dials
+    /// the relay and asks. Dialling a `/p2p-circuit` address before the answer
+    /// arrives finds no transport willing to take it, and fails with "Failed to
+    /// negotiate transport protocol(s)".
+    ///
+    /// That error is actively misleading about its own cause. It names the
+    /// circuit address, so it reads as the relay being unsupported or
+    /// unreachable rather than as having been asked too early; and it takes out
+    /// tiers 2 and 3 together while tier 1 keeps working, so the node looks
+    /// selectively broken rather than early.
+    ///
+    /// # Why this is separate from `reserve_via_relay`
+    ///
+    /// Waiting here means driving this node's swarm and no other. That is right
+    /// when the relay is a different process, and wrong when a caller owns the
+    /// relay too — an in-process test drives its nodes in one loop, so a peer
+    /// that blocks internally waits for a grant from a relay that is not being
+    /// polled, and deadlocks until the timeout. Keeping the wait opt-in lets
+    /// such a caller drive every node itself, which is the only way it can work.
+    ///
+    /// Events observed while waiting are buffered and replayed, so a caller
+    /// loses nothing by awaiting this.
+    pub async fn await_reservation(&mut self) -> bool {
+        let deadline = tokio::time::Instant::now() + RESERVATION_TIMEOUT;
+        while self.circuit_listeners.is_empty() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, self.next_swarm_event()).await {
+                Ok(event) => self.pending.push_back(event),
+                Err(_) => break,
+            }
+        }
+
+        if self.circuit_listeners.is_empty() {
+            // Not fatal, for the same reason as a missing direct listener: tier
+            // 1 is unaffected, and a caller with a direct address to try should
+            // not be refused because a relay was slow.
+            tracing::warn!(
+                "no relay reservation granted within {RESERVATION_TIMEOUT:?}; \
+                 circuit dials will fail and tiers 2 and 3 are unavailable"
+            );
+            return false;
+        }
+        true
+    }
+
     /// Drives the swarm, bypassing the replay buffer.
     async fn next_swarm_event(&mut self) -> NodeEvent {
         loop {
@@ -358,7 +428,9 @@ impl MemberNode {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     // Circuit addresses are not local sockets, so they are not
                     // what port reuse can bind against.
-                    if !crate::dial::is_circuit(&address) {
+                    if crate::dial::is_circuit(&address) {
+                        self.circuit_listeners.insert(address.clone());
+                    } else {
                         self.direct_listeners.insert(address.clone());
                     }
                     return NodeEvent::Listening(address);

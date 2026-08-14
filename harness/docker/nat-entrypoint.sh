@@ -87,6 +87,33 @@ iptables -t nat -F
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A FORWARD -i "${PRIVATE_IF}" -o "${UPSTREAM_IF}" -j ACCEPT
 
+# A real NAT *drops* unsolicited inbound. This one was refusing it, and that
+# single difference is what made hole-punching impossible.
+#
+# A hole-punch SYN is addressed to the gateway's own public address, so the
+# kernel routes it to INPUT rather than FORWARD. FORWARD was set to DROP above;
+# INPUT was left at its default ACCEPT, and with nothing listening on the port
+# the kernel answered with an RST. The peer saw ECONNREFUSED (111) — which is
+# fatal and immediate, where a drop would not have been.
+#
+# That distinction is the whole mechanism. Hole-punching relies on the first SYN
+# being *lost*: the initiator dials first, its SYN reaches a NAT whose peer has
+# not dialled out yet and has no matching flow, and it is discarded. TCP then
+# retransmits, and by the time the retry arrives the peer has dialled out, the
+# conntrack entry exists, and the retry is forwarded. An RST removes the retry —
+# the dial fails permanently on the first packet, before the other side has had
+# any chance to open its side of the path.
+#
+# It also explains why relaxing conntrack window tracking changed nothing: these
+# packets never reached a conntrack-matched forwarding decision to be judged.
+#
+# Scenarios 4 and 5 still fall back to a relay, and still for the right reason:
+# under symmetric NAT the peer's external port differs per destination, so a
+# retransmitted SYN finds no matching flow either. They now take longer to reach
+# that verdict, since a timeout replaces an immediate refusal.
+iptables -A INPUT -i "${UPSTREAM_IF}" -p tcp -m conntrack --ctstate NEW -j DROP
+iptables -A INPUT -i "${UPSTREAM_IF}" -p udp -m conntrack --ctstate NEW -j DROP
+
 case "${NAT_MODE}" in
   restricted)
     # MASQUERADE keeps the source port stable where it can, giving
@@ -106,5 +133,6 @@ esac
 
 echo "nat-gateway: ready"
 iptables -t nat -L POSTROUTING -n
+iptables -L INPUT -n
 ip route
 exec sleep infinity

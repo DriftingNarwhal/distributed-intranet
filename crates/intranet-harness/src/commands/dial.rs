@@ -141,6 +141,18 @@ impl DialArgs {
         }
         let is_target = |peer| target.is_none_or(|target| target == peer);
 
+        // A circuit candidate cannot be dialled until this node's own
+        // reservation has been granted; doing so fails as an unsupported
+        // transport rather than as anything resembling "too early". Reserving
+        // only asks, so wait for the answer before dialling.
+        //
+        // Unconditional rather than only for circuit candidates: a scenario that
+        // passes `--relay` intends the relay to be usable, and a direct
+        // candidate that succeeds returns immediately anyway.
+        if self.relay.is_some() && !node.await_reservation().await {
+            println!("reservation: not granted; circuit candidates will fail");
+        }
+
         node.dial_candidates(candidates).map_err(|e| e.to_string())?;
 
         let upgrade_window = Duration::from_secs(self.upgrade_secs);

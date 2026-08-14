@@ -170,32 +170,41 @@ production but means **a loopback-only relay is unusable** — it hands back
 reservations containing no addresses. The test binds a routable interface
 instead.
 
-### Outstanding: one side's punch completes, the other never surfaces
+### Fixed: the gateway refused the punch instead of dropping it
 
-The reported symptom is that the target logs a successfully established
-`direct-ipv4` connection while the initiator never surfaces a direct connection
-at all. That rules out a plain dropped SYN — the target could not have reached
-`ConnectionEstablished` if nothing arrived — and it also rules out the previous
-theory here: `nf_conntrack_tcp_be_liberal=1` was tried and produced byte-for-byte
-the same result, so conntrack marking the reply SYN INVALID is not what is
-happening. The setting is left in place as harmless, but it is not the fix.
+`dial-failed: … /ip4/172.30.0.22/tcp/4001/… : 111` was the decisive evidence.
+Errno 111 is ECONNREFUSED — an RST came back, so the packet was not lost, it was
+actively rejected. And `172.30.0.22` is **gw-b's own public address**.
 
-Two things that were obscuring the evidence have been fixed:
+The gateway only ever configured `FORWARD`. A hole-punch SYN is addressed to the
+gateway's own address, so the kernel routes it to `INPUT`, which was left at its
+default ACCEPT — and with nothing listening on 4001 the kernel answered with an
+RST.
 
-- **`dial` returned as soon as DCUtR reported failure.** Only our *own* dial's
-  outcome reaches us; a punch has both peers dialling at once. If ours fails
-  while the peer's succeeds, their connection arrives as an ordinary inbound one
-  — moments after we had already returned `relayed`. That alone could produce
-  exactly the reported asymmetry. `dial` now waits out the upgrade window
-  instead, which costs nothing when the punch has genuinely failed.
-- **Dial failures were discarded.** `OutgoingConnectionError` never reached the
-  event stream, so "the punch failed" came with no account of *why*. It is now
-  reported as `dial-failed: peer=… error=…`, and refused, timed out and never
-  left are three different faults with three different fixes.
+That single difference is the whole mechanism. Hole-punching *depends* on the
+first SYN being lost: the initiator dials first, its SYN reaches a NAT whose peer
+has not dialled out yet and has no matching flow, and a real NAT discards it. TCP
+retransmits, and by then the peer has dialled out, the conntrack entry exists,
+and the retry is forwarded. An RST removes the retry — the dial fails
+permanently on the very first packet, before the other side has had any chance to
+open its half of the path.
 
-The next run should therefore show, on the initiator, either a late direct
-connection it previously never waited for, or a concrete dial error. Either is
-decisive; before, neither was observable.
+It also explains the two things that had resisted explanation:
+
+- **Why `be_liberal` changed nothing.** These packets never reached a
+  conntrack-matched forwarding decision, so window tracking never applied.
+- **The asymmetry.** Whoever dials second finds the other's conntrack entry
+  already present, so its SYN is forwarded and translated normally. Whoever
+  dials first is refused by the gateway itself.
+
+`nat-entrypoint.sh` now drops new inbound TCP and UDP arriving on the upstream
+interface, which is what a NAT actually does. **Unverified here** — this
+container has no Docker.
+
+Scenarios 4 and 5 should still fall back to a relay, and still for the right
+reason: under symmetric NAT the peer's external port differs per destination, so
+a retransmitted SYN finds no matching flow either. They will take longer to reach
+that verdict, since a timeout replaces an immediate refusal.
 
 ### Superseded: one side's SYN is being dropped
 
