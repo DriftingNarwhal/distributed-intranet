@@ -29,6 +29,11 @@ pub mod node;
 pub mod relay_limits;
 pub mod sync;
 
+/// Re-exported so a consumer that only drives nodes — a relay deployment, a
+/// client embedding — needs no direct libp2p dependency of its own, and cannot
+/// end up on a different version of it than this crate is built against.
+pub use libp2p::{Multiaddr, PeerId};
+
 pub use dial::{AddressFamily, ConnectionTier};
 pub use node::{MemberNode, NodeEvent, RelayNode, default_listen_addresses};
 pub use relay_limits::{

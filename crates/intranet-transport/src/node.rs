@@ -1066,6 +1066,31 @@ impl MemberNode {
     }
 
     /// Starts listening on the dual-stack defaults.
+    /// Announces an address peers should use to reach this relay.
+    ///
+    /// # Why listening is not enough
+    ///
+    /// A relay normally promotes its own non-loopback listen addresses, which is
+    /// right when the address the world uses is an address the relay is bound
+    /// to. Behind a load balancer or TCP proxy it is not: the public host *and*
+    /// port both differ from the container's, and nothing in the process can
+    /// infer them. libp2p builds the address list it returns in a reservation
+    /// from external addresses only, so without this a relay deployed behind a
+    /// proxy hands clients its private container address — reservations are
+    /// granted, circuits are unusable, and the health check reports ready
+    /// throughout.
+    ///
+    /// Call it once per public address before listening.
+    pub fn add_public_address(&mut self, address: Multiaddr) {
+        self.swarm.add_external_address(address);
+    }
+
+    /// Listens on the dual-stack defaults — TCP and QUIC over IPv4 and IPv6.
+    ///
+    /// §5.1 requires both families and both transports. Binding all four is what
+    /// gives two peers behind CGNAT a path at all: IPv6 needs no traversal, so
+    /// a pair that can never hole-punch over IPv4 may still reach each other
+    /// directly (§5.2).
     pub fn listen_default(&mut self) -> Result<(), TransportError> {
         for address in default_listen_addresses() {
             self.listen_on(address)?;
@@ -2048,6 +2073,29 @@ impl RelayNode {
     }
 
     /// Starts listening on the dual-stack defaults.
+    /// Announces an address peers should use to reach this relay.
+    ///
+    /// # Why listening is not enough
+    ///
+    /// A relay normally promotes its own non-loopback listen addresses, which is
+    /// right when the address the world uses is an address the relay is bound
+    /// to. Behind a load balancer or TCP proxy it is not: the public host *and*
+    /// port both differ from the container's, and nothing in the process can
+    /// infer them. libp2p builds the address list it returns in a reservation
+    /// from external addresses only, so without this a relay deployed behind a
+    /// proxy hands clients its private container address — reservations are
+    /// granted, circuits are unusable, and the health check reports ready
+    /// throughout.
+    ///
+    /// Call it once per public address before listening.
+    pub fn add_public_address(&mut self, address: Multiaddr) {
+        self.swarm.add_external_address(address);
+    }
+
+    /// Listens on the dual-stack defaults — TCP and QUIC over IPv4 and IPv6.
+    ///
+    /// A relay is reached by peers whose own connectivity varies, so it offers
+    /// every combination rather than assuming which one a given client can use.
     pub fn listen_default(&mut self) -> Result<(), TransportError> {
         for address in default_listen_addresses() {
             self.listen_on(address)?;

@@ -329,3 +329,89 @@ async fn a_live_relay_cuts_a_circuit_off_at_its_byte_ceiling() {
          at all, which is what lets tier 3 become a path peers can live on"
     );
 }
+
+/// Attempts a reservation against a relay listening only on loopback.
+///
+/// `RelayNode` promotes non-loopback listen addresses to external ones, so a
+/// loopback-only relay has an empty external address set — which is the
+/// condition being isolated.
+async fn reserves_against_loopback_only_relay(announce: Option<Multiaddr>) -> bool {
+    let relay_identity = identity(1);
+    let mut relay = RelayNode::new(&relay_identity).unwrap();
+    if let Some(address) = announce {
+        relay.add_public_address(address);
+    }
+    relay
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+
+    let dial_addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = relay.next_event().await
+                && address.iter().any(|p| matches!(p, Protocol::Tcp(_)))
+            {
+                return address;
+            }
+        }
+    })
+    .await
+    .expect("relay should listen")
+    .with(Protocol::P2p(relay_identity.peer_id()));
+
+    let mut member = MemberNode::new(&identity(2)).unwrap();
+    member
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    member.reserve_via_relay(dial_addr).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            tokio::select! {
+                event = member.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && is_circuit(&address)
+                    {
+                        return true;
+                    }
+                }
+                _ = relay.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn a_relay_with_no_external_address_cannot_grant_a_usable_reservation() {
+    // The failure this project already hit once, pinned so it cannot return.
+    // libp2p builds the address list it returns in a reservation from *external*
+    // addresses only, and a client refuses a reservation that names none. The
+    // relay still accepts the request and its health check still reports ready,
+    // so the symptom is that tiers 2 and 3 are dead while tier 1 works — which
+    // is a long way from where anyone looks first.
+    assert!(
+        !reserves_against_loopback_only_relay(None).await,
+        "a relay with no external address should not produce a usable reservation"
+    );
+}
+
+#[tokio::test]
+async fn announcing_a_public_address_makes_reservations_usable_again() {
+    // The fix, and the reason `add_public_address` exists: behind a proxy the
+    // public address is not one the relay listens on, so nothing in the process
+    // can infer it and it has to be supplied.
+    //
+    // Note what this does *not* claim. The announced address is what makes the
+    // reservation acceptable; it is not what the client then dials. A client
+    // builds its own circuit address from the address it used to reach the
+    // relay, so a relay behind a TCP proxy works as long as it announces
+    // *something* routable — the announcement's job is to make the address list
+    // non-empty, and getting that wrong was a wrong assumption caught by writing
+    // this test rather than reasoning about it.
+    let announced: Multiaddr = "/dns4/relay.example/tcp/9999".parse().unwrap();
+    assert!(
+        reserves_against_loopback_only_relay(Some(announced)).await,
+        "an announced public address should make the reservation usable"
+    );
+}
