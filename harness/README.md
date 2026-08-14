@@ -24,7 +24,7 @@ harness.
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 540 tests and `cargo clippy --workspace --all-targets` reports no
+passes 542 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -134,10 +134,14 @@ is ever granted, and the byte-ceiling test passes having observed no ceiling at
 all. The first draft did exactly that, and the control caught it.
 
 
-## Outstanding
+## What it took to make scenario 3 pass
 
-**Scenario 3 — hole-punching — still fails, but two causes have been found and
-fixed, and the remaining failure is narrower.**
+**Scenario 3 — hole-punching — now passes, confirmed in the container and
+manually re-verified.** It took four fixes, and the split matters more than the
+count: three were defects in `intranet-transport` rather than in the harness, so
+a passing matrix is not evidence that the bugs a NAT scenario finds live in the
+NAT scenario. Each is recorded below with the evidence behind it, because the
+reasoning is what stops a fix from being undone later.
 
 ### Fixed: reserving after a wildcard bind lost port reuse
 
@@ -285,7 +289,7 @@ in a working relayed circuit.
 
 Logging is now wired up. `RUST_LOG` reaches the transport layer, and swarm
 events the node has no opinion on are traced rather than silently discarded —
-that silence is why defect 7 below was invisible.
+that silence is why defect 7 above was invisible.
 
 ```bash
 RUST_LOG=intranet_transport=trace,libp2p_dcutr=debug,libp2p_relay=debug \
@@ -312,7 +316,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 540 tests
+cargo test --workspace                      # 542 tests
 cargo run -p intranet-harness -- --help
 ```
 
@@ -349,7 +353,7 @@ relay fallback still connects and would otherwise look healthy.
 |---|---|---|---|
 | 1 | Both peers on one LAN, no NAT | `direct` | pass |
 | 2 | NAT'd peer to public relay | `direct` | pass |
-| 3 | Two independent restricted-cone NATs | `hole-punched` | **fail** |
+| 3 | Two independent restricted-cone NATs | `hole-punched` | pass |
 | 4 | Restricted NAT vs CGNAT chain | `relayed` | pass |
 | 5 | Two independent CGNAT chains | `relayed` | pass |
 
@@ -393,11 +397,11 @@ and drive the peers by hand instead.
   (`dial.rs`, and `conformance.rs` over loopback), but end to end it is unproven.
 - Governance partition scenarios (§3) — fork reconciliation and finality are
   tested in-process in `intranet-governance`, but not across partitioned
-  containers with real gossip.
+  containers with real gossip. The blocker is no longer the transport: governance
+  entries and capability advertisements do move over it now
+  (`intranet-transport::sync`, exercised by `governance_sync.rs` and
+  `ledger_gossip.rs`). What is missing is the harness CLI surface below.
 - Harness CLI coverage for the layers built after transport. Storage, search,
   the app registry and real-time are covered by the workspace test suite but are
   not yet drivable from the command line, so they cannot participate in a
-  multi-container scenario.
-- Gossip actually moving governance entries and capability advertisements over
-  the transport layer. Both sides exist; nothing yet joins them, which is why
-  the partition scenarios above are not runnable.
+  multi-container scenario — which is what a partition scenario would need.
