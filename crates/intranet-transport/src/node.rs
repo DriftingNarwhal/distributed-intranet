@@ -12,7 +12,7 @@ use intranet_ledger::{
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
 use intranet_storage::{
-    ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, StorageError, may_serve,
+    ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, FetchPlan, StorageError, may_serve,
 };
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
@@ -180,6 +180,35 @@ pub enum NodeEvent {
         /// verification failures.
         counted_against_peer: bool,
     },
+    /// The DHT answered a provider lookup — Storage Spec §4.4 step 1.
+    ///
+    /// Carries identities rather than PeerIds because everything downstream —
+    /// ledger lookup, source selection, reliability observations — is keyed on
+    /// identity, and resolving once here keeps that conversion in one place.
+    ProvidersFound {
+        /// The chunk asked about.
+        cid: Cid,
+        /// Who holds it, as far as the DHT knows.
+        providers: Vec<PerNetworkIdentityId>,
+        /// How many holders were found, for rarest-first ordering (§4.4 step 2).
+        ///
+        /// The same as `providers.len()`, reported explicitly because it is the
+        /// input to a specified decision rather than an incidental property of
+        /// the list.
+        holder_count: usize,
+    },
+    /// A multi-source fetch finished — Storage Spec §4.4.
+    ///
+    /// Reports both halves, because a partial fetch is a real and useful
+    /// outcome: an object missing one chunk is still worth knowing about, and a
+    /// caller that only learned "the fetch ended" would have to work out which
+    /// chunks it actually got.
+    FetchComplete {
+        /// Chunks that arrived and verified.
+        received: Vec<Cid>,
+        /// Chunks no known holder would produce.
+        unavailable: Vec<Cid>,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -238,6 +267,25 @@ const LISTENER_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// **Flagged: the specs do not name a value.**
 const RESERVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// The observed failure rate at which a source is deprioritized.
+///
+/// **Flagged: §4.6 says a peer observed failing verification is deprioritized
+/// and gives no threshold.** Half is deliberately forgiving — a peer has to fail
+/// as often as it succeeds before it drops behind unobserved peers — because the
+/// signal is per-observer and a strict threshold would let ordinary transport
+/// flakiness look like misbehaviour. Deprioritization is never exclusion: the
+/// peer is still tried when nobody better is available.
+const UNRELIABLE_FAILURE_RATE: f64 = 0.5;
+
+/// The DHT key a chunk is announced under.
+///
+/// The content identifier's own digest, so the key is derived rather than
+/// invented and two nodes cannot disagree about where a chunk should be
+/// announced.
+fn provider_key(cid: &Cid) -> kad::RecordKey {
+    kad::RecordKey::new(&cid.hash().as_bytes())
+}
+
 /// A full member node.
 pub struct MemberNode {
     swarm: Swarm<MemberBehaviour>,
@@ -288,6 +336,30 @@ pub struct MemberNode {
     /// *asked* for — checking them against an identifier derived from the bytes
     /// themselves would verify nothing at all.
     inflight: BTreeMap<request_response::OutboundRequestId, (PeerId, PerNetworkIdentityId, Cid)>,
+    /// Provider lookups in flight, and what has been found so far — §4.4 step 1.
+    ///
+    /// Accumulated rather than reported per batch because Kademlia delivers
+    /// providers incrementally across several results, and the holder *count* is
+    /// what rarest-first ordering needs. Reporting each batch separately would
+    /// make a chunk look scarcer than it is, purely because its providers
+    /// happened to arrive spread out.
+    provider_queries: std::collections::HashMap<kad::QueryId, (Cid, std::collections::BTreeSet<PeerId>)>,
+    /// The multi-source fetch in progress, if any — §4.4.
+    ///
+    /// One plan rather than one per call: a second fetch extends the first, so
+    /// concurrency stays bounded by the local limit across everything a node is
+    /// pulling rather than per caller, which is the only way the limit means
+    /// anything.
+    fetch: Option<FetchPlan>,
+    /// Requests signed once per chunk when a fetch starts.
+    ///
+    /// A request's signature covers the chunk and the requester, **not** the
+    /// source, so one signature serves every holder that chunk is tried
+    /// against. That is what lets the event loop retry elsewhere without a key:
+    /// the identity is used once, at the start of the operation, matching §1.3's
+    /// per-operation derivation rather than being held live so that a retry
+    /// three round trips later can sign something.
+    fetch_requests: BTreeMap<Cid, ChunkRequest>,
 }
 
 impl MemberNode {
@@ -354,6 +426,9 @@ impl MemberNode {
             chunks: ChunkStore::new(),
             observations: ReliabilityObservations::new(),
             inflight: BTreeMap::new(),
+            provider_queries: std::collections::HashMap::new(),
+            fetch: None,
+            fetch_requests: BTreeMap::new(),
         })
     }
 
@@ -423,8 +498,189 @@ impl MemberNode {
     /// There is no separate "start serving" step: §4.2 makes swarm membership
     /// automatic for any node holding the bytes, whether it published them,
     /// was assigned them as a durability replica, or simply viewed the content.
+    /// Announcing to the DHT is part of that, not a further opt-in — a node that
+    /// holds bytes but never says so is in the swarm in name only.
     pub fn store_chunk(&mut self, bytes: Vec<u8>) -> Cid {
-        self.chunks.put(bytes)
+        let cid = self.chunks.put(bytes);
+        self.announce_chunk(cid);
+        cid
+    }
+
+    /// Forces this node to serve DHT queries, rather than only issuing them.
+    ///
+    /// libp2p keeps Kademlia in client mode until the node has a *confirmed*
+    /// external address, on the sound reasoning that a node nobody can dial
+    /// makes a poor DHT server. That default is right in production and has a
+    /// consequence worth knowing: a member behind NAT stays a client, and the
+    /// nodes actually holding provider records are the ones with public
+    /// addresses — which is exactly why [`RelayNode`] runs Kademlia too, as §5.5
+    /// describes, serving as the rendezvous point for the members around it.
+    ///
+    /// It also means that on a network with **no** publicly addressable node —
+    /// a LAN, or a test on loopback — nothing ever confirms an external address,
+    /// every node stays a client, and the DHT answers every provider query with
+    /// "nobody". That is indistinguishable from content genuinely having no
+    /// holders, which is why this exists rather than leaving callers to discover
+    /// it.
+    pub fn set_dht_server_mode(&mut self, enabled: bool) {
+        self.swarm.behaviour_mut().kad.set_mode(Some(if enabled {
+            kad::Mode::Server
+        } else {
+            kad::Mode::Client
+        }));
+    }
+
+    /// Announces that this node holds `cid` — §4.4 step 1.
+    ///
+    /// Failure is logged rather than returned: Kademlia refuses to start
+    /// providing when it has no peers to publish to, which on a node that has
+    /// not yet connected to anything is ordinary rather than exceptional. The
+    /// announcement is retried whenever the chunk is stored again.
+    pub fn announce_chunk(&mut self, cid: Cid) {
+        if let Err(error) = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .start_providing(provider_key(&cid))
+        {
+            tracing::debug!(cid = %cid.short(), %error, "could not announce chunk yet");
+        }
+    }
+
+    /// Stops announcing `cid`, and drops it.
+    ///
+    /// Both together, because they are the same event: §4.2 makes holding the
+    /// bytes the whole of swarm membership.
+    ///
+    /// **Withdrawal is not immediate, and cannot be.** Kademlia has no
+    /// un-publish: this drops the local record and stops republishing, but
+    /// copies already pushed to other peers persist until they expire. So this
+    /// node keeps being advertised for a while after it has stopped holding
+    /// anything, and provider records are a hint rather than a promise. That is
+    /// why a request for a chunk this node does not hold answers
+    /// [`ChunkResponse::NotHeld`] explicitly and why that outcome counts against
+    /// nobody — following a stale record has to cost a requester one round trip
+    /// and nothing more.
+    pub fn forget_chunk(&mut self, cid: &Cid) -> Option<Vec<u8>> {
+        self.swarm
+            .behaviour_mut()
+            .kad
+            .stop_providing(&provider_key(cid));
+        self.chunks.remove(cid)
+    }
+
+    /// Fetches chunks from the swarm — Storage Spec §4.4, end to end.
+    ///
+    /// Queries the DHT for holders of each chunk not already held, orders them
+    /// rarest-first, selects a source per chunk by the §4.3 criteria, and keeps
+    /// several requests outstanding at once. Failures retry against the next
+    /// holder. Completion is reported as [`NodeEvent::FetchComplete`].
+    ///
+    /// Chunks already in the store are skipped rather than re-fetched — the
+    /// point of §4.2's automatic swarm membership is that holding the bytes
+    /// already is the common case for anything popular.
+    ///
+    /// Calling this while a fetch is running extends it, so the concurrency
+    /// limit bounds everything this node is pulling rather than each call
+    /// separately.
+    pub fn fetch_chunks(
+        &mut self,
+        cids: impl IntoIterator<Item = Cid>,
+        requester: &PerNetworkIdentity,
+        concurrency: usize,
+    ) {
+        let wanted: Vec<Cid> = cids
+            .into_iter()
+            .filter(|cid| !self.chunks.has(cid))
+            .collect();
+        for cid in &wanted {
+            self.fetch_requests
+                .entry(*cid)
+                .or_insert_with(|| ChunkRequest::create(requester, *cid));
+        }
+        match &mut self.fetch {
+            Some(plan) => plan.extend(wanted),
+            None => self.fetch = Some(FetchPlan::new(wanted, concurrency)),
+        }
+        for cid in self
+            .fetch
+            .as_ref()
+            .map(FetchPlan::providers_needed)
+            .unwrap_or_default()
+        {
+            self.find_providers(cid);
+        }
+        self.drive_fetch();
+    }
+
+    /// Issues whatever the plan says to issue next.
+    fn drive_fetch(&mut self) {
+        let Some(plan) = &mut self.fetch else {
+            return;
+        };
+        let next = plan.next_requests();
+        for (cid, source) in next {
+            let Some(request) = self.fetch_requests.get(&cid).cloned() else {
+                continue;
+            };
+            self.send_chunk_request(source, request);
+        }
+    }
+
+    /// Records a chunk outcome against the running plan and issues what is next.
+    ///
+    /// Every outcome feeds the plan, including refusals and not-helds. A plan
+    /// that only heard about verification failures would leave a chunk in flight
+    /// forever whenever a holder simply had nothing to give, and the fetch would
+    /// never complete.
+    fn note_fetch_outcome(&mut self, cid: Cid, received: bool) {
+        let Some(plan) = &mut self.fetch else {
+            return;
+        };
+        if received {
+            plan.record_received(cid);
+        } else {
+            plan.record_failed(cid);
+        }
+        self.drive_fetch();
+        if let Some(done) = self.completed_fetch() {
+            self.pending.push_back(done);
+        }
+    }
+
+    /// Takes the completion event if the fetch has just finished.
+    fn completed_fetch(&mut self) -> Option<NodeEvent> {
+        let plan = self.fetch.as_ref()?;
+        if !plan.is_complete() {
+            return None;
+        }
+        let event = NodeEvent::FetchComplete {
+            received: plan.received(),
+            unavailable: plan.unavailable(),
+        };
+        self.fetch = None;
+        self.fetch_requests.clear();
+        Some(event)
+    }
+
+    /// Whether a fetch is running.
+    pub fn fetch_in_progress(&self) -> bool {
+        self.fetch.as_ref().is_some_and(|plan| !plan.is_complete())
+    }
+
+    /// Asks the DHT who holds `cid` — §4.4 step 1.
+    ///
+    /// Results arrive as [`NodeEvent::ProvidersFound`], which also carries the
+    /// holder count rarest-first ordering needs.
+    pub fn find_providers(&mut self, cid: Cid) -> kad::QueryId {
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .get_providers(provider_key(&cid));
+        self.provider_queries
+            .insert(id, (cid, std::collections::BTreeSet::new()));
+        id
     }
 
     /// This node's own verification observations — Core Protocol Spec §4.6.
@@ -455,12 +711,22 @@ impl MemberNode {
         cid: Cid,
         requester: &PerNetworkIdentity,
     ) -> request_response::OutboundRequestId {
+        self.send_chunk_request(source, ChunkRequest::create(requester, cid))
+    }
+
+    /// Sends a prepared request and remembers what it was for.
+    fn send_chunk_request(
+        &mut self,
+        source: PerNetworkIdentityId,
+        request: ChunkRequest,
+    ) -> request_response::OutboundRequestId {
         let peer = source.peer_id();
+        let cid = request.cid;
         let id = self
             .swarm
             .behaviour_mut()
             .chunk
-            .send_request(&peer, ChunkRequest::create(requester, cid));
+            .send_request(&peer, request);
         // Remembered because the response carries bytes but not the identifier
         // they were requested under, and verifying arriving bytes against an
         // identifier derived from those same bytes would verify nothing.
@@ -925,6 +1191,65 @@ impl MemberNode {
                     },
                 },
 
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Kad(
+                    kad::Event::OutboundQueryProgressed { id, result, step, .. },
+                )) => {
+                    if let kad::QueryResult::GetProviders(result) = result {
+                        if let Some((_, found)) = self.provider_queries.get_mut(&id) {
+                            // Providers arrive incrementally, so they are
+                            // accumulated and only reported when the query is
+                            // done. Reporting each batch would understate the
+                            // holder count, which is precisely the number
+                            // rarest-first ordering depends on.
+                            if let Ok(kad::GetProvidersOk::FoundProviders { providers, .. }) =
+                                &result
+                            {
+                                found.extend(providers.iter().copied());
+                            }
+                        }
+                        if step.last && let Some((cid, found)) = self.provider_queries.remove(&id) {
+                            let providers: Vec<PerNetworkIdentityId> = found
+                                .iter()
+                                .filter_map(PerNetworkIdentityId::from_peer_id)
+                                .collect();
+                            if let Some(plan) = &mut self.fetch {
+                                plan.record_providers(
+                                    cid,
+                                    providers.clone(),
+                                    &self.ledger,
+                                    &self.observations,
+                                    UNRELIABLE_FAILURE_RATE,
+                                );
+                                self.drive_fetch();
+                                if let Some(done) = self.completed_fetch() {
+                                    self.pending.push_back(done);
+                                }
+                            }
+                            return NodeEvent::ProvidersFound {
+                                cid,
+                                holder_count: providers.len(),
+                                providers,
+                            };
+                        }
+                    }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Identify(
+                    identify::Event::Received { peer_id, info, .. },
+                )) => {
+                    // Kademlia only routes to peers it has an address for, and
+                    // nothing else populates that. Without this the DHT is a
+                    // behaviour that compiles and answers every query with
+                    // "nobody" — which looks exactly like content genuinely
+                    // having no providers.
+                    for address in info.listen_addrs {
+                        self.swarm
+                            .behaviour_mut()
+                            .kad
+                            .add_address(&peer_id, address);
+                    }
+                }
+
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Chunk(
                     request_response::Event::Message { peer, message, .. },
                 )) => match message {
@@ -968,6 +1293,15 @@ impl MemberNode {
                                 match self.chunks.insert(cid, bytes) {
                                     Ok(()) => {
                                         self.observations.record_verified(source);
+                                        // §4.2 again: having the bytes *is*
+                                        // swarm membership, and a holder the
+                                        // DHT does not know about is a holder
+                                        // no requester can reach. Announcing
+                                        // here is what makes the fetcher a real
+                                        // source for the next requester rather
+                                        // than only in principle.
+                                        self.announce_chunk(cid);
+                                        self.note_fetch_outcome(cid, true);
                                         return NodeEvent::ChunkReceived {
                                             peer,
                                             cid,
@@ -981,6 +1315,7 @@ impl MemberNode {
                                         // specifically about verification
                                         // failures, and this is one.
                                         self.observations.record_failed(source);
+                                        self.note_fetch_outcome(cid, false);
                                         return NodeEvent::ChunkUnavailable {
                                             peer,
                                             cid,
@@ -990,6 +1325,7 @@ impl MemberNode {
                                         };
                                     }
                                     Err(error) => {
+                                        self.note_fetch_outcome(cid, false);
                                         return NodeEvent::ChunkUnavailable {
                                             peer,
                                             cid,
@@ -1000,6 +1336,7 @@ impl MemberNode {
                                 }
                             }
                             ChunkResponse::NotHeld => {
+                                self.note_fetch_outcome(cid, false);
                                 return NodeEvent::ChunkUnavailable {
                                     peer,
                                     cid,
@@ -1008,6 +1345,7 @@ impl MemberNode {
                                 };
                             }
                             ChunkResponse::Refused { reason } => {
+                                self.note_fetch_outcome(cid, false);
                                 return NodeEvent::ChunkUnavailable {
                                     peer,
                                     cid,
@@ -1032,6 +1370,7 @@ impl MemberNode {
                     },
                 )) => {
                     if let Some((_, _, cid)) = self.inflight.remove(&request_id) {
+                        self.note_fetch_outcome(cid, false);
                         return NodeEvent::ChunkUnavailable {
                             peer,
                             cid,

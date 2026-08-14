@@ -286,6 +286,31 @@ impl PerNetworkIdentityId {
         libp2p_identity::PublicKey::from(public).to_peer_id()
     }
 
+    /// Recovers an identity from the PeerId it presents on the wire.
+    ///
+    /// The inverse of [`peer_id`](Self::peer_id), and possible at all because an
+    /// ed25519 PeerId inlines the public key rather than hashing it — the key is
+    /// short enough that libp2p embeds it directly.
+    ///
+    /// Needed because peer discovery deals in PeerIds while everything that
+    /// decides what to do with a peer — capability ledger lookups, source
+    /// selection, reliability observations — is keyed on identity. Without this
+    /// the two halves could only be joined by a table someone had to remember to
+    /// populate, and a missing entry would silently drop a usable peer.
+    ///
+    /// Returns `None` for a PeerId that does not carry a recoverable ed25519
+    /// key, which is not an error: it simply is not one of this network's
+    /// identities.
+    pub fn from_peer_id(peer: &crate::PeerId) -> Option<Self> {
+        let multihash = peer.as_ref();
+        if multihash.code() != 0 {
+            return None;
+        }
+        let public = libp2p_identity::PublicKey::try_decode_protobuf(multihash.digest()).ok()?;
+        let bytes = public.try_into_ed25519().ok()?.to_bytes();
+        VerifyingKey::from_bytes(bytes).ok().map(Self)
+    }
+
     /// Renders the first 8 hex characters, for human-facing output.
     pub fn short(&self) -> String {
         to_hex(&self.0.as_bytes()[..4])
@@ -456,6 +481,24 @@ mod peer_id_tests {
                 .identity_for(&network)
                 .unwrap();
             assert_eq!(identity.peer_id(), identity.id().peer_id());
+        }
+    }
+
+    #[test]
+    fn a_peer_id_round_trips_back_to_the_identity_that_presents_it() {
+        // Peer discovery deals in PeerIds; everything that acts on a peer is
+        // keyed on identity. This is the join between them, so a failure here
+        // would mean discovered peers could never be looked up in the ledger,
+        // ranked, or held responsible for a verification failure.
+        let network = NetworkId::from_bytes([9u8; 32]);
+        for seed in [1u8, 2, 77, 200] {
+            let identity = MasterSeed::from_entropy([seed; 32])
+                .identity_for(&network)
+                .unwrap();
+            assert_eq!(
+                PerNetworkIdentityId::from_peer_id(&identity.peer_id()),
+                Some(identity.id())
+            );
         }
     }
 

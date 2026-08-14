@@ -45,6 +45,7 @@
 pub mod appendset;
 pub mod chunk;
 pub mod crypto;
+pub mod fetch;
 pub mod object;
 pub mod pointer;
 pub mod replication;
@@ -60,7 +61,8 @@ pub use pointer::{DekWrapping, MutablePointer, new_pointer_id};
 pub use replication::{
     HoldingAnnouncement, RepairPlan, ReplicationHealth, ReplicationStatus, ReplicationView,
 };
-pub use serving::{ServingRefusal, may_serve};
+pub use serving::{ServingRefusal, SourceCandidate, may_serve, rarest_first, select_sources};
+pub use fetch::{DEFAULT_CONCURRENCY, FetchPlan};
 pub use store::ChunkStore;
 pub use wire::{ChunkRefusal, ChunkRequest, ChunkResponse, MAX_CHUNK_BYTES};
 

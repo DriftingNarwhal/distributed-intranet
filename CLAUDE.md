@@ -46,8 +46,21 @@ named identity made the request, not that whoever delivered it is that identity,
 serving node also checks `requester.peer_id() == peer`. Arriving bytes are verified
 against the CID that was *asked for*, never one derived from the bytes themselves, which
 is why in-flight requests are tracked. Only a verification failure feeds
-`reliability_signal` — not-held and refused are not the peer's fault. Provider discovery
-(who holds a chunk, Storage §4.4 step 1) is **not built**: callers must name the source.
+`reliability_signal` — not-held and refused are not the peer's fault. Provider discovery uses Kademlia
+provider records keyed on the CID digest, and `FetchPlan` (`intranet-storage::fetch`) holds
+the §4.4 policy — rarest-first, per-chunk source selection, bounded concurrency, retry
+elsewhere on failure — as testable state rather than a loop in the event loop.
+
+Two consequences worth knowing before debugging a fetch that finds nothing. libp2p keeps
+Kademlia in **client mode** until a node has a confirmed external address, so on a LAN or
+on loopback nothing answers provider queries and every lookup returns "nobody"; use
+`set_dht_server_mode(true)`, and note that in production the publicly addressable nodes
+(relays, per §5.5) carry the records. And a holder that has not advertised upload capacity
+is dropped by `select_sources` as not having volunteered, so the ledger must be populated
+before a fetch can use a source the DHT found — the layering is governance, then ledger,
+then fetch. Kademlia also has no un-publish: `forget_chunk` stops republishing but records
+already pushed persist until TTL, which is why `NotHeld` is an explicit response counting
+against nobody.
 
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);

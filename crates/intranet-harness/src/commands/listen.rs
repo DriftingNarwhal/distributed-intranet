@@ -138,6 +138,34 @@ impl ListenArgs {
                         cid.short()
                     );
                 }
+                NodeEvent::ProvidersFound {
+                    cid,
+                    providers,
+                    holder_count,
+                } => {
+                    println!(
+                        "providers: cid={} holders={holder_count} [{}]",
+                        cid.short(),
+                        providers
+                            .iter()
+                            .map(|p| p.short())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                }
+                NodeEvent::FetchComplete {
+                    received,
+                    unavailable,
+                } => {
+                    // Both halves, because a partial fetch is a real outcome and
+                    // "the fetch finished" alone would hide which chunks are
+                    // actually missing.
+                    println!(
+                        "fetch-complete: received={} unavailable={}",
+                        received.len(),
+                        unavailable.len()
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }
