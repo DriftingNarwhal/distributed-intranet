@@ -12,7 +12,14 @@ what an older summary or comment might imply.
 
 Rust workspace, one crate per layer, in `crates/`. See README.md for the map and for what
 is and is not verified. Every layer is implemented. The Docker NAT scenarios have now been
-executed and 4 of 5 pass; hole-punching (scenario 3) does not work, so tier 2 is unverified.
+executed and all 5 pass, so tier 2 is verified in the container. Note what that does and
+does not establish: the scenarios validate connectivity and tier selection, not end-to-end
+behaviour. Three of the four fixes it took were protocol bugs rather than harness ones, so
+do not read a passing matrix as evidence the transport is exercised. One finding is worth
+carrying: a NAT gateway must `DROP` unsolicited inbound packets, never reject them — a
+hole-punch SYN is addressed to the gateway's own address and so hits `INPUT`, and an RST
+removes the retransmit that hole-punching depends on. A gateway that rejects is broken,
+not stricter.
 The app execution sandbox is deliberately outside the protocol, not missing: App Hosting
 §3.2.1 states the boundary — the protocol decides which bytes are the app and whether it
 is servable, a client decides whether to execute them and under what isolation. Do not

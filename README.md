@@ -13,6 +13,34 @@ authoritative** — the code implements them, and where an implementation choice
 was not covered by them it is flagged in a comment at the point of the choice
 rather than decided silently.
 
+## Why this exists
+
+To be the backbone of applications that have no server to trust — two goals,
+which are the same goal from different angles.
+
+**Privacy that does not rest on an operator's good behaviour.** Most "private"
+software is private in the sense that a company promises not to look. There is
+nobody in that position here: no server, no operator, no account. A network's
+content is encrypted to a key only its members hold, and who holds it is decided
+by the members. Note the scope carefully, because it is easy to overread —
+**this makes a network private from everyone outside it, not its members private
+from each other.** Members can read what their network publishes; that is what
+membership means. What nobody gets is a vantage point above the network.
+
+**Censorship resistance as a structural property rather than a policy.**
+Content is served by whoever has it, so there is no host to pressure, no domain
+to seize, and no one node whose removal takes anything down — a publisher can go
+offline for good and their content stays servable by everyone who fetched it.
+Moderation still exists, but it belongs to each network's own members through
+its governance log, and it reaches only that network. There is no operator above
+them to overrule it, and no lever outside it to pull.
+
+**"Serverless" here means no servers, not someone else's.** The word usually
+means managed infrastructure with the operations hidden; this is the literal
+reading. Peers talk to peers. The only always-on component is a bootstrap relay,
+which holds no state, is never trusted with keys, and can disappear at any time
+without costing an established network more than a reconnection.
+
 ## What this actually is
 
 A "network" here is a self-governing group — a household, a club, a workplace, a
