@@ -34,10 +34,14 @@ pub mod call;
 pub mod keying;
 pub mod relay;
 pub mod stream;
+pub mod wire;
 
 pub use call::{CallSession, ProposalOutcome, RenegotiationTrigger, Topology, TopologyProposal};
 pub use keying::{CallId, CallKey, CallKeyEnvelope, MediaFrame};
 pub use relay::{RelayChoice, RelayObservation};
+pub use wire::{
+    MAX_FRAME_BYTES, MediaAck, MediaEnvelope, Signal, SignalAck, SignalBody,
+};
 pub use stream::{LiveStream, StreamConfidentiality, StreamId, VodRetention, assign_tier};
 
 /// Errors produced by the real-time layer.

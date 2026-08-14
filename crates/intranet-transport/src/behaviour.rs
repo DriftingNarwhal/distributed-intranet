@@ -9,7 +9,7 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{ChunkCodec, CollectionCodec, LedgerCodec, SyncCodec};
+use crate::sync::{ChunkCodec, CollectionCodec, LedgerCodec, MediaCodec, SignalCodec, SyncCodec};
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
 };
@@ -63,6 +63,18 @@ pub struct MemberBehaviour {
     /// the app name registry (App Hosting Spec §4.3–4.4) both build on it, which
     /// is why it carries opaque payloads rather than either consumer's type.
     pub collection: request_response::Behaviour<CollectionCodec>,
+    /// Call signalling — Real-Time Spec §1.4.
+    ///
+    /// The session-scoped channel §1.4 says participants already need for the
+    /// initial mesh and that renegotiation reuses rather than duplicating.
+    pub signal: request_response::Behaviour<SignalCodec>,
+    /// Call media — Real-Time Spec §2.2.
+    ///
+    /// Deliberately a separate protocol from signalling. A blind relay speaks
+    /// this and not the other, which is what makes "architecturally incapable of
+    /// decrypting" true rather than a promise: key envelopes travel on a channel
+    /// the relay is never asked to carry.
+    pub media: request_response::Behaviour<MediaCodec>,
 }
 
 /// The behaviour set a relay and bootstrap node runs.

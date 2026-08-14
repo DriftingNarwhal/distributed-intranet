@@ -11,6 +11,7 @@ use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
+use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Signal, SignalAck, SignalBody};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
     CollectionResponse, FetchPlan, MAX_COLLECTION_ENTRIES, StorageError, may_serve,
@@ -240,6 +241,38 @@ pub enum NodeEvent {
         /// has to be able to tell a partial result from a complete one.
         truncated: bool,
     },
+    /// A call signalling message arrived — Real-Time Spec §1.4.
+    ///
+    /// Its signature was verified during decoding, so the sender named really
+    /// sent it. Whether they are *entitled* to be in this call is the receiving
+    /// application's decision, not the transport's.
+    SignalReceived {
+        /// The signed message.
+        signal: Signal,
+    },
+    /// A media frame arrived for this node — Real-Time Spec §2.2.
+    ///
+    /// Carries the sealed frame, not its contents: this node still has to open
+    /// it with the call key, and a frame that fails to open is a frame that was
+    /// tampered with or misrouted.
+    MediaReceived {
+        /// The envelope, still sealed.
+        envelope: MediaEnvelope,
+    },
+    /// This node forwarded a frame as a blind relay — Real-Time Spec §2.2.
+    ///
+    /// Reported so relaying is observable without being decodable. Note what is
+    /// *not* here: no plaintext, no key, no frame contents. A relay operator can
+    /// see that they carried traffic and for whom, which is exactly the routing
+    /// metadata §2.2 says a relay sees, and nothing more.
+    MediaForwarded {
+        /// The call.
+        call: CallId,
+        /// Who sent the frame.
+        from: PerNetworkIdentityId,
+        /// Who it was forwarded to.
+        to: PerNetworkIdentityId,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -402,6 +435,20 @@ pub struct MemberNode {
     collection_queries: std::collections::HashMap<kad::QueryId, (Hash, std::collections::BTreeSet<PeerId>)>,
     /// Enumeration requests outstanding, by request identifier.
     collection_requests: BTreeMap<request_response::OutboundRequestId, Hash>,
+    /// This node's own public identifier.
+    ///
+    /// The public half only — no key material. Kept because the media path has
+    /// to answer "is this frame for me or am I forwarding it", and deriving it
+    /// from the PeerId on every frame would be wasted work on the one path where
+    /// latency is the product.
+    identity_id: PerNetworkIdentityId,
+    /// Calls this node is relaying media for, and who is in them — §2.2.
+    ///
+    /// A relay needs the participant set so it can refuse to forward to someone
+    /// outside the call; it needs nothing else, and deliberately holds nothing
+    /// else. There is no key here and no place to put one, which is what
+    /// "architecturally incapable of decrypting" means concretely.
+    relayed_calls: BTreeMap<CallId, std::collections::BTreeSet<PerNetworkIdentityId>>,
 }
 
 impl MemberNode {
@@ -449,6 +496,8 @@ impl MemberNode {
                     ledger: crate::sync::ledger_behaviour(),
                     chunk: crate::sync::chunk_behaviour(),
                     collection: crate::sync::collection_behaviour(),
+                    signal: crate::sync::signal_behaviour(),
+                    media: crate::sync::media_behaviour(),
                 }
             })
             .map_err(|e| TransportError::Build(e.to_string()))?
@@ -475,6 +524,8 @@ impl MemberNode {
             collections: BTreeMap::new(),
             collection_queries: std::collections::HashMap::new(),
             collection_requests: BTreeMap::new(),
+            identity_id: identity.id(),
+            relayed_calls: BTreeMap::new(),
         })
     }
 
@@ -613,6 +664,62 @@ impl MemberNode {
             .kad
             .stop_providing(&provider_key(cid));
         self.chunks.remove(cid)
+    }
+
+    /// Sends a signed signalling message to a participant — §1.4.
+    pub fn send_signal(
+        &mut self,
+        to: PerNetworkIdentityId,
+        sender: &PerNetworkIdentity,
+        body: SignalBody,
+    ) -> request_response::OutboundRequestId {
+        self.swarm
+            .behaviour_mut()
+            .signal
+            .send_request(&to.peer_id(), Signal::create(sender, body))
+    }
+
+    /// Sends one media frame — §2.2.
+    ///
+    /// `via` is the node that should receive the envelope: the recipient
+    /// themselves in a mesh call, or the relay in a relayed one. The envelope's
+    /// `to` field is the participant it is ultimately for, which is what lets
+    /// the relay forward without the sender needing a different message shape
+    /// for the two topologies.
+    pub fn send_media(
+        &mut self,
+        via: PerNetworkIdentityId,
+        envelope: MediaEnvelope,
+    ) -> request_response::OutboundRequestId {
+        self.swarm
+            .behaviour_mut()
+            .media
+            .send_request(&via.peer_id(), envelope)
+    }
+
+    /// Agrees to relay media for a call — §2.2.
+    ///
+    /// The participant set is the entirety of what a relay is told. It exists so
+    /// the relay can refuse to forward to a non-participant, which stops a relay
+    /// being used as an open reflector; it is not, and must not become, a place
+    /// to accumulate anything about the call's content.
+    pub fn relay_call(
+        &mut self,
+        call: CallId,
+        participants: impl IntoIterator<Item = PerNetworkIdentityId>,
+    ) {
+        self.relayed_calls
+            .insert(call, participants.into_iter().collect());
+    }
+
+    /// Stops relaying a call.
+    pub fn stop_relaying(&mut self, call: &CallId) {
+        self.relayed_calls.remove(call);
+    }
+
+    /// Whether this node is relaying `call`.
+    pub fn is_relaying(&self, call: &CallId) -> bool {
+        self.relayed_calls.contains_key(call)
     }
 
     /// Publishes an entry into an append-set collection — Storage Spec §2.5.
@@ -1408,6 +1515,65 @@ impl MemberNode {
                                 holder_count: providers.len(),
                                 providers,
                             };
+                        }
+                    }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Signal(
+                    request_response::Event::Message { peer, message, .. },
+                )) => {
+                    if let request_response::Message::Request {
+                        request, channel, ..
+                    } = message
+                    {
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .signal
+                            .send_response(channel, SignalAck);
+                        // Bound to the connection for the same reason a chunk
+                        // request is: the signature proves the sender composed
+                        // the message, not that whoever delivered it is them,
+                        // and a replayed `Leave` would drop someone from a call
+                        // they are still in.
+                        if request.sender.peer_id() == peer {
+                            return NodeEvent::SignalReceived { signal: request };
+                        }
+                    }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Media(
+                    request_response::Event::Message { message, .. },
+                )) => {
+                    if let request_response::Message::Request {
+                        request, channel, ..
+                    } = message
+                    {
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .media
+                            .send_response(channel, MediaAck);
+
+                        if request.to == self.identity_id {
+                            return NodeEvent::MediaReceived { envelope: request };
+                        }
+                        // Not for us — forward it if we agreed to relay this
+                        // call, and drop it otherwise. Refusing to forward for a
+                        // call this node never agreed to carry is what stops a
+                        // media relay being usable as an open reflector by
+                        // anyone who knows its address.
+                        let carries = self
+                            .relayed_calls
+                            .get(&request.call)
+                            .is_some_and(|participants| {
+                                participants.contains(&request.to)
+                                    && participants.contains(&request.from)
+                            });
+                        if carries {
+                            let (call, from, to) = (request.call, request.from, request.to);
+                            self.send_media(to, request);
+                            return NodeEvent::MediaForwarded { call, from, to };
                         }
                     }
                 }

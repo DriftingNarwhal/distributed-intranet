@@ -10,6 +10,7 @@ intranet-governance.workspace = true
 intranet-identity.workspace = true
 intranet-invite.workspace = true
 intranet-ledger.workspace = true
+intranet-realtime.workspace = true
 intranet-storage.workspace = true
 
 async-trait.workspace = true

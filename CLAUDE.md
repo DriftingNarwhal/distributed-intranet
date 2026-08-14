@@ -75,6 +75,18 @@ event pushed there from inside its loop is delivered on the *next* call — whic
 comes if the arm falls through and nothing else happens. Push to `pending` only in an arm
 that returns immediately afterwards; otherwise return the event directly.
 
+Calls run over two protocols, and their separation is load-bearing:
+`/intranet/call-signal/1.0.0` (signed, carries key envelopes and topology proposals) and
+`/intranet/call-media/1.0.0` (unsigned — frames are AEAD-sealed, so authenticity comes
+from opening them, and a per-frame signature would put an asymmetric op on the latency
+path). A blind relay speaks media and **not** signalling, which is what makes §2.2's
+"architecturally incapable of decrypting" true rather than a promise: key envelopes never
+travel a channel the relay carries. A relay is told only the call id and its participant
+set, and forwards only for calls it agreed to carry and only to participants — without
+both checks it is an open reflector. Routing metadata sits outside the AEAD because the
+relay must read it, so a malicious relay can misroute; the nonce binds the call, so a
+misrouted frame simply fails to open.
+
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
   a run that skips it has checked only half the gate, so say so rather than reporting clean.

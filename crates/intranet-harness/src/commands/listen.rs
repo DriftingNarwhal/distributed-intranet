@@ -188,6 +188,35 @@ impl ListenArgs {
                         payloads.len()
                     );
                 }
+                NodeEvent::SignalReceived { signal } => {
+                    println!("call-signal: from={} kind={}",
+                        signal.sender.short(),
+                        match &signal.body {
+                            intranet_realtime::SignalBody::Invite { .. } => "invite",
+                            intranet_realtime::SignalBody::Propose { .. } => "propose",
+                            intranet_realtime::SignalBody::Leave { .. } => "leave",
+                        });
+                }
+                NodeEvent::MediaReceived { envelope } => {
+                    // Bytes and sequence only. Printing anything derived from
+                    // the frame's contents would require opening it, which this
+                    // layer neither can nor should do.
+                    println!(
+                        "call-media: call={} from={} seq={} bytes={}",
+                        envelope.call.short(),
+                        envelope.from.short(),
+                        envelope.frame.sequence,
+                        envelope.frame.ciphertext.len()
+                    );
+                }
+                NodeEvent::MediaForwarded { call, from, to } => {
+                    println!(
+                        "call-relayed: call={} from={} to={}",
+                        call.short(),
+                        from.short(),
+                        to.short()
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

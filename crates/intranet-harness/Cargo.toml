@@ -13,6 +13,7 @@ intranet-crypto.workspace = true
 intranet-governance.workspace = true
 intranet-identity.workspace = true
 intranet-invite.workspace = true
+intranet-realtime.workspace = true
 intranet-transport.workspace = true
 
 clap.workspace = true

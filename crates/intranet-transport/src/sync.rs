@@ -30,6 +30,7 @@
 use futures::{AsyncReadExt, AsyncWriteExt};
 use intranet_governance::{SyncRequest, SyncResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
+use intranet_realtime::{MediaAck, MediaEnvelope, Signal, SignalAck};
 use intranet_storage::{ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse};
 use libp2p::StreamProtocol;
 use libp2p::request_response;
@@ -54,6 +55,16 @@ pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/
 pub const COLLECTION_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/intranet/append-set/1.0.0");
 
+/// The call signalling protocol's libp2p identifier — Real-Time Spec §1.4.
+pub const SIGNAL_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-signal/1.0.0");
+
+/// The call media protocol's libp2p identifier — Real-Time Spec §2.2.
+///
+/// Separate from signalling so a blind relay can carry media without ever seeing
+/// a key envelope go past. A relay that spoke both protocols would be trusted
+/// rather than blind.
+pub const MEDIA_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-media/1.0.0");
+
 /// The largest metadata message this build will read.
 ///
 /// **Flagged: the specs set no wire size limit.** One is required regardless,
@@ -70,6 +81,13 @@ pub const DEFAULT_MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// a state where a chunk the storage layer accepts is one the transport layer
 /// refuses to read.
 pub const MAX_CHUNK_MESSAGE_BYTES: u64 = intranet_storage::MAX_CHUNK_BYTES as u64 + 1024;
+
+/// The largest media envelope this build will read.
+///
+/// Derived from the realtime layer's own frame ceiling for the same reason the
+/// chunk one is: two independently chosen limits eventually disagree, and the
+/// failure is a legal frame that cannot be read.
+pub const MAX_MEDIA_MESSAGE_BYTES: u64 = intranet_realtime::MAX_FRAME_BYTES as u64 + 1024;
 
 /// A message that can travel over one of these protocols.
 ///
@@ -120,6 +138,10 @@ wire_message!(ChunkRequest);
 wire_message!(ChunkResponse, MAX_CHUNK_MESSAGE_BYTES);
 wire_message!(CollectionRequest);
 wire_message!(CollectionResponse);
+wire_message!(Signal);
+wire_message!(SignalAck);
+wire_message!(MediaEnvelope, MAX_MEDIA_MESSAGE_BYTES);
+wire_message!(MediaAck);
 
 /// Codec carrying any [`WireMessage`] pair.
 ///
@@ -150,6 +172,10 @@ pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
 pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
 /// Codec for append-set collection enumeration.
 pub type CollectionCodec = WireCodec<CollectionRequest, CollectionResponse>;
+/// Codec for call signalling.
+pub type SignalCodec = WireCodec<Signal, SignalAck>;
+/// Codec for call media.
+pub type MediaCodec = WireCodec<MediaEnvelope, MediaAck>;
 
 async fn read_framed<T>(io: &mut T, max: u64) -> io::Result<Vec<u8>>
 where
@@ -249,4 +275,14 @@ pub fn chunk_behaviour() -> request_response::Behaviour<ChunkCodec> {
 /// Builds the append-set collection behaviour.
 pub fn collection_behaviour() -> request_response::Behaviour<CollectionCodec> {
     build(COLLECTION_PROTOCOL)
+}
+
+/// Builds the call signalling behaviour.
+pub fn signal_behaviour() -> request_response::Behaviour<SignalCodec> {
+    build(SIGNAL_PROTOCOL)
+}
+
+/// Builds the call media behaviour.
+pub fn media_behaviour() -> request_response::Behaviour<MediaCodec> {
+    build(MEDIA_PROTOCOL)
 }
