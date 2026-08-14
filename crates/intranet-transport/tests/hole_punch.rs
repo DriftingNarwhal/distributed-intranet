@@ -73,6 +73,8 @@ async fn start_relay() -> (Multiaddr, RelayNode) {
 /// Returns the tier finally attributed to the target peer, plus whether DCUtR
 /// reported a successful upgrade.
 async fn attempt_hole_punch() -> (Option<ConnectionTier>, bool, Vec<String>) {
+    // Tracks the tier carried by the *connection event* itself, separately from
+    // DCUtR's later verdict, so the two can be asserted independently.
     let (relay_addr, mut relay) = start_relay().await;
 
     let target_identity = identity(2);
@@ -114,6 +116,7 @@ async fn attempt_hole_punch() -> (Option<ConnectionTier>, bool, Vec<String>) {
     let mut log = Vec::new();
     let mut punched = false;
     let mut tier = None;
+    let mut upgraded_on_connect = false;
 
     let _ = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
@@ -122,6 +125,9 @@ async fn attempt_hole_punch() -> (Option<ConnectionTier>, bool, Vec<String>) {
                     NodeEvent::Connected { peer, tier: t, .. } if peer == target_peer => {
                         log.push(format!("dialer connected tier={}", t.label()));
                         tier = Some(t);
+                        if t == ConnectionTier::HolePunched {
+                            upgraded_on_connect = true;
+                        }
                     }
                     NodeEvent::HolePunchSucceeded { peer } if peer == target_peer => {
                         log.push("dialer hole-punch succeeded".into());
@@ -153,6 +159,9 @@ async fn attempt_hole_punch() -> (Option<ConnectionTier>, bool, Vec<String>) {
     })
     .await;
 
+    if upgraded_on_connect {
+        log.push("upgrade attributed on the connection itself".into());
+    }
     (tier, punched, log)
 }
 
@@ -171,4 +180,65 @@ async fn dcutr_upgrades_a_relayed_connection_on_loopback() {
          loopback the problem is the upgrade path itself, not NAT traversal."
     );
     assert_eq!(tier, Some(ConnectionTier::HolePunched));
+    assert!(
+        log.iter().any(|line| line == "upgrade attributed on the connection itself"),
+        "the upgrade must be attributed when the direct connection replaces the relayed \
+         one, not only when DCUtR later reports its own dial succeeded — a caller that \
+         settles on the first direct connection would otherwise record tier 1 for a \
+         genuine tier 2 upgrade, which is exactly how a passing hole punch failed a \
+         conformance check"
+    );
+}
+
+#[tokio::test]
+async fn a_direct_connection_with_no_relay_behind_it_is_not_called_an_upgrade() {
+    // The negative half of the attribution rule, and the one that keeps tiers 1
+    // and 3 honest: the relayed-to-direct transition is what marks an upgrade,
+    // so a plain direct connection must stay tier 1 and a relayed connection
+    // that never upgrades must stay tier 3 — which is what scenarios 4 and 5
+    // assert. Without this, the rule could quietly turn every relayed
+    // connection into a reported success.
+    let mut listener = MemberNode::new(&identity(4)).unwrap();
+    let mut dialer = MemberNode::new(&identity(5)).unwrap();
+    let listener_peer = identity(4).peer_id();
+
+    listener
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+
+    let addr = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = listener.next_event().await
+                && has_tcp(&address)
+            {
+                return address;
+            }
+        }
+    })
+    .await
+    .expect("listener should listen");
+
+    dialer.dial_candidates([addr]).unwrap();
+
+    let tier = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = dialer.next_event() => {
+                    if let NodeEvent::Connected { peer, tier, .. } = event
+                        && peer == listener_peer
+                    {
+                        return tier;
+                    }
+                }
+                _ = listener.next_event() => {}
+            }
+        }
+    })
+    .await
+    .expect("the nodes should connect");
+
+    assert!(
+        matches!(tier, ConnectionTier::Direct(_)),
+        "a direct connection with no relayed connection before it is tier 1, not an upgrade"
+    );
 }

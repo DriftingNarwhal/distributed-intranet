@@ -21,10 +21,10 @@ harness.
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2, 4, 5 | **Passing.** |
-| **Scenario 3 (hole-punching)** | **FAILING.** See *Outstanding*. |
+| Scenario 3 (hole-punching) | **Fixed pending confirmation.** Traversal confirmed working in the last run; the remaining failure was tier attribution, now corrected. Needs one more run to confirm green. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 440 tests and `cargo clippy --workspace --all-targets` reports no
+passes 441 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -181,30 +181,47 @@ gateway's own address, so the kernel routes it to `INPUT`, which was left at its
 default ACCEPT — and with nothing listening on 4001 the kernel answered with an
 RST.
 
-That single difference is the whole mechanism. Hole-punching *depends* on the
-first SYN being lost: the initiator dials first, its SYN reaches a NAT whose peer
-has not dialled out yet and has no matching flow, and a real NAT discards it. TCP
-retransmits, and by then the peer has dialled out, the conntrack entry exists,
-and the retry is forwarded. An RST removes the retry — the dial fails
-permanently on the very first packet, before the other side has had any chance to
-open its half of the path.
+Hole-punching *depends* on that first SYN being lost: the initiator dials first,
+its SYN reaches a NAT whose peer has not dialled out yet and has no matching
+flow, and a real NAT discards it. TCP retransmits, and by then the peer has
+dialled out, the conntrack entry exists, and the retry is forwarded. An RST
+removes the retry — the dial fails permanently on the very first packet.
 
-It also explains the two things that had resisted explanation:
+It also explains why `nf_conntrack_tcp_be_liberal=1` changed nothing: these
+packets never reached a conntrack-matched forwarding decision, so window tracking
+never applied.
 
-- **Why `be_liberal` changed nothing.** These packets never reached a
-  conntrack-matched forwarding decision, so window tracking never applied.
-- **The asymmetry.** Whoever dials second finds the other's conntrack entry
-  already present, so its SYN is forwarded and translated normally. Whoever
-  dials first is refused by the gateway itself.
+`nat-entrypoint.sh` now drops new inbound TCP and UDP on the upstream interface.
+**Confirmed working**: the next run showed no `dial-failed` line at all and a
+direct connection established to `172.30.0.22:4001` through both NATs.
 
-`nat-entrypoint.sh` now drops new inbound TCP and UDP arriving on the upstream
-interface, which is what a NAT actually does. **Unverified here** — this
-container has no Docker.
+### Fixed: a successful upgrade was reported as tier 1
 
-Scenarios 4 and 5 should still fall back to a relay, and still for the right
-reason: under symmetric NAT the peer's external port differs per destination, so
-a retransmitted SYN finds no matching flow either. They will take longer to reach
-that verdict, since a timeout replaces an immediate refusal.
+With traversal working, scenario 3 still failed — on the tier, not on
+connectivity:
+
+```
+connected: peer=<target> tier=relayed     via=…/p2p-circuit/p2p/<target>
+connected: peer=<target> tier=direct-ipv4 via=/ip4/172.30.0.22/tcp/4001/…
+error: expected tier HolePunched, got direct-ipv4
+```
+
+The upgrade had happened; it was attributed from the wrong signal. DCUtR's event
+reports only *our own* dial's fate, and both peers dial at once — so if theirs
+lands first, or the connection simply arrives before the event does, a genuine
+tier-2 upgrade gets recorded as tier 1.
+
+§5.2 defines tier 2 by what happens to the *connection*: a relayed connection
+that became direct. `MemberNode` now attributes it that way. The transition is
+unambiguous, because nothing else in this stack produces it — mDNS discovery
+never auto-dials (§5.1), so a direct connection cannot appear behind a relay by
+accident.
+
+This does not soften the distinction the suite exists to make, and
+`hole_punch.rs` pins both halves: an upgrade must be attributed on the connection
+that replaces the relayed one, and a direct connection with no relayed connection
+before it must stay tier 1. Where no upgrade occurs the connection stays relayed
+and is still reported as tier 3 — which is what scenarios 4 and 5 assert.
 
 ### Superseded: one side's SYN is being dropped
 
@@ -251,7 +268,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 440 tests
+cargo test --workspace                      # 441 tests
 cargo run -p intranet-harness -- --help
 ```
 
