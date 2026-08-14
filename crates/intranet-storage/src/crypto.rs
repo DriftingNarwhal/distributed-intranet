@@ -170,6 +170,26 @@ impl EpochKey {
         hash_bytes(&input)
     }
 
+    /// Exposes the raw key, for delivery to a member entitled to it.
+    ///
+    /// # Why this exists at all, given every other key type refuses
+    ///
+    /// Key material in this system deliberately implements no `Debug` and no
+    /// serialization, so that confidentiality cannot leak through a log line or
+    /// a derive. This is the single sanctioned exception, and it is narrow:
+    /// Core Protocol Spec §3.5 requires *superseded* epoch keys to be delivered
+    /// point-to-point to a joining member under a full-history policy (§3.4),
+    /// and a key that cannot be read cannot be sealed for that delivery.
+    ///
+    /// It is named to be conspicuous at the call site. The only correct use is
+    /// sealing under an authenticated channel to an identity already entitled to
+    /// the key; anything else — logging it, storing it unsealed, sending it to a
+    /// peer that has not passed the `read-content` gate — defeats the guarantee
+    /// the rest of this module exists to provide.
+    pub const fn expose_for_delivery(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// Wraps a DEK for storage alongside a pointer.
     ///
     /// **Deterministic by requirement, not convenience** (§5.3). Multiple

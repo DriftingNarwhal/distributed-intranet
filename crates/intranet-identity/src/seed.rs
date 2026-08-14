@@ -175,6 +175,12 @@ impl DeviceSeed {
 /// network) or by [`DeviceSeed::key_for`] (a device's key in that network). The
 /// two are structurally identical — what distinguishes them is whether a
 /// [`DeviceCertificate`](crate::DeviceCertificate) binds one to the other.
+///
+/// `Clone` is derived so a long-lived component can hold its own identity —
+/// a running node needs one to answer §3.5 key deliveries from inside its event
+/// loop. It remains deliberately without `Debug` or any serialization: copying
+/// key material within a process is not the hazard those absences guard against.
+#[derive(Clone)]
 pub struct PerNetworkIdentity {
     network: NetworkId,
     secret_bytes: [u8; 32],

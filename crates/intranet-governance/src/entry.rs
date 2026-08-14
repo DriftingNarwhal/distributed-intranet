@@ -179,10 +179,28 @@ pub struct Cascade {
 }
 
 /// Why an epoch rotation was triggered — §3.3, §1.3 point 6.
+///
+/// # Why admission and revocation are separate reasons
+///
+/// §3.3 says "membership changes advance the epoch" and names `revoke-node` as
+/// the trigger, but it says that in the context of *revocation*. Admission
+/// advances the epoch too, and unavoidably: adding a member to an MLS group is
+/// itself a commit. Collapsing both into one reason gated on `revoke-node`
+/// would mean a group holding `approve-node` but not `revoke-node` — exactly
+/// the delegated-moderation arrangement §2.6 describes — could admit a member
+/// and then be unauthorized to deliver them a key, leaving the joiner admitted
+/// and permanently unable to read anything.
+///
+/// **Flagged: the specs do not name the capability for an admission-driven
+/// rotation.** Gating it on `approve-node` is the reading consistent with §2.2's
+/// split between admitting and removing, and it keeps the rotation's authority
+/// identical to the authority for the membership change that caused it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationReason {
+    /// Rotation admitting a new member, requiring `approve-node`.
+    MemberAdmitted,
     /// Rotation following a membership removal, requiring `revoke-node`.
-    MembershipChange,
+    MemberRevoked,
     /// A member's own request to rotate, requiring no capability.
     ///
     /// Any identity may request this — it addresses the risk that one of their
@@ -237,6 +255,29 @@ pub enum EntryBody {
     EpochRotation {
         /// Why the rotation happened, which determines what authorizes it.
         reason: RotationReason,
+        /// The MLS commit this rotation produced.
+        ///
+        /// # Why the commit travels in the log entry
+        ///
+        /// Core Protocol Spec §3.3 replaces MLS's Delivery Service with this
+        /// log, and a Delivery Service's whole job is imposing a strict *order*
+        /// on commits. The log can only do that job for a commit it actually
+        /// carries: two members applying the same set of commits in different
+        /// orders derive different epoch keys, and MLS offers no way to
+        /// reconcile that after the fact. §3.3 says as much directly — a
+        /// rotation produces "one commit that gets appended to the log like any
+        /// other governance action".
+        ///
+        /// Carrying it here also makes voiding coherent. A rotation on a losing
+        /// branch is voided as an entry (§2.7.1, point 4), and because the
+        /// commit *is* that entry, the commit is voided with it rather than
+        /// surviving out-of-band as an orphan a member might still apply.
+        ///
+        /// Opaque bytes rather than a parsed type: this crate deliberately knows
+        /// nothing about MLS, and validating the commit is the epoch layer's
+        /// job. An unparseable commit is therefore a rejected *rotation* at that
+        /// layer, never a rejected log entry here.
+        commit: Vec<u8>,
     },
     /// Record a device certificate — capability-free.
     DeviceEnrollment(DeviceCertificate),
@@ -292,8 +333,8 @@ impl EntryBody {
             // Genesis is always the shared root, never on a competing branch.
             Self::Genesis { .. } => false,
             Self::DeviceEnrollment(_) | Self::DeviceRevocation(_) => false,
-            Self::EpochRotation { reason } => match reason {
-                RotationReason::MembershipChange => true,
+            Self::EpochRotation { reason, .. } => match reason {
+                RotationReason::MemberAdmitted | RotationReason::MemberRevoked => true,
                 RotationReason::SelfInitiated => false,
             },
             Self::DefineGroup { .. }
@@ -379,11 +420,21 @@ impl EntryBody {
                     e.str(t.as_str());
                 });
             }
-            Self::EpochRotation { reason } => {
-                enc.variant(5).u8(match reason {
-                    RotationReason::MembershipChange => 0,
-                    RotationReason::SelfInitiated => 1,
-                });
+            Self::EpochRotation { reason, commit } => {
+                enc.variant(5)
+                    .u8(match reason {
+                        // Tags 0 and 1 keep their original meaning; admission is
+                        // appended as 2 rather than renumbering, since a tag is
+                        // part of what every existing entry was signed over.
+                        RotationReason::MemberRevoked => 0,
+                        RotationReason::SelfInitiated => 1,
+                        RotationReason::MemberAdmitted => 2,
+                    })
+                    // Inside the signed encoding, so the commit is bound to the
+                    // rotation that authorized it. A commit swapped en route
+                    // fails the entry's signature rather than quietly rekeying
+                    // the network to a tree the author never committed to.
+                    .bytes(commit);
             }
             Self::DeviceEnrollment(cert) => {
                 enc.variant(6);
@@ -596,13 +647,15 @@ mod tests {
         // can mint one without holding any capability.
         assert!(
             !EntryBody::EpochRotation {
-                reason: RotationReason::SelfInitiated
+                reason: RotationReason::SelfInitiated,
+                commit: Vec::new(),
             }
             .is_capability_gated()
         );
         assert!(
             EntryBody::EpochRotation {
-                reason: RotationReason::MembershipChange
+                reason: RotationReason::MemberRevoked,
+                commit: Vec::new(),
             }
             .is_capability_gated()
         );

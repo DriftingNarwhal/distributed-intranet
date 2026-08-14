@@ -415,8 +415,12 @@ impl GovernanceState {
                 Capability::ManageMembership(group.clone())
             }
 
-            EntryBody::EpochRotation { reason } => match reason {
-                RotationReason::MembershipChange => Capability::RevokeNode,
+            EntryBody::EpochRotation { reason, .. } => match reason {
+                // The rotation carries the same authority as the membership
+                // change that caused it: admitting keys a member in, revoking
+                // keys them out, and §2.2 keeps those two deliberately separate.
+                RotationReason::MemberAdmitted => Capability::ApproveNode,
+                RotationReason::MemberRevoked => Capability::RevokeNode,
                 // §1.3, point 6: any identity may request this, without holding
                 // any capability, so that reporting a device compromise is never
                 // discouraged. Current membership is still required — a

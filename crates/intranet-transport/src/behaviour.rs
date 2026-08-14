@@ -9,7 +9,9 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{ChunkCodec, CollectionCodec, LedgerCodec, MediaCodec, SignalCodec, SyncCodec};
+use crate::sync::{
+    ChunkCodec, CollectionCodec, EpochCodec, LedgerCodec, MediaCodec, SignalCodec, SyncCodec,
+};
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
 };
@@ -50,6 +52,13 @@ pub struct MemberBehaviour {
     /// ancestry, the ledger by per-node freshness. Sharing a protocol would mean
     /// one version number covering two things that will not change together.
     pub ledger: request_response::Behaviour<LedgerCodec>,
+    /// Epoch key delivery — §3.5.
+    ///
+    /// The one protocol here that moves key material, and therefore the one
+    /// whose refusals matter as much as its successes: a waiting-room identity
+    /// under explicit intake is a valid, non-revoked identity holding no
+    /// capability, and it must come away with nothing (§2.4).
+    pub epoch: request_response::Behaviour<EpochCodec>,
     /// Chunk transfer — Storage Spec §4.
     ///
     /// Its own protocol rather than a message on either of the others, because

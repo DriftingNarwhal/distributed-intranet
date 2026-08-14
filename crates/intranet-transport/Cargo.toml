@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 intranet-crypto.workspace = true
+intranet-epoch.workspace = true
 intranet-governance.workspace = true
 intranet-identity.workspace = true
 intranet-invite.workspace = true

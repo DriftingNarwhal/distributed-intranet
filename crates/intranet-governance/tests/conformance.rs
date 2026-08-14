@@ -997,6 +997,7 @@ fn a_self_initiated_rotation_also_cannot_grind_a_branch() {
             at(100 + i),
             EntryBody::EpochRotation {
                 reason: RotationReason::SelfInitiated,
+                commit: Vec::new(),
             },
         );
         parent = entry.hash();
@@ -1554,7 +1555,8 @@ fn a_revocation_driven_rotation_requires_revoke_node() {
         &member,
         at(20),
         EntryBody::EpochRotation {
-            reason: RotationReason::MembershipChange,
+            reason: RotationReason::MemberRevoked,
+            commit: Vec::new(),
         },
     );
 
@@ -1581,6 +1583,7 @@ fn any_member_may_request_a_self_initiated_rekey() {
         at(20),
         EntryBody::EpochRotation {
             reason: RotationReason::SelfInitiated,
+            commit: Vec::new(),
         },
     );
 
@@ -1599,6 +1602,7 @@ fn a_non_member_may_not_request_a_rekey() {
         at(20),
         EntryBody::EpochRotation {
             reason: RotationReason::SelfInitiated,
+            commit: Vec::new(),
         },
     );
 
@@ -1620,7 +1624,8 @@ fn rotation_ref_tracks_the_entry_hash_not_a_bare_counter() {
         &founder,
         at(10),
         EntryBody::EpochRotation {
-            reason: RotationReason::MembershipChange,
+            reason: RotationReason::MemberRevoked,
+            commit: Vec::new(),
         },
     );
 

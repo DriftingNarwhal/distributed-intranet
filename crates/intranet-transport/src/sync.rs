@@ -28,6 +28,7 @@
 //! surprise.
 
 use futures::{AsyncReadExt, AsyncWriteExt};
+use intranet_epoch::{EpochKeyRequest, EpochKeyResponse};
 use intranet_governance::{SyncRequest, SyncResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
 use intranet_realtime::{MediaAck, MediaEnvelope, Signal, SignalAck};
@@ -47,6 +48,15 @@ pub const SYNC_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/governa
 /// The capability ledger gossip protocol's libp2p identifier.
 pub const LEDGER_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/intranet/capability-ledger/1.0.0");
+
+/// The epoch key delivery protocol's libp2p identifier — §3.5.
+///
+/// Its own protocol rather than a message on the governance sync, because the
+/// two answer different questions and fail differently. Log sync serves public,
+/// already-signed history to anyone who asks; this serves key material, only to
+/// an identity that passes the `read-content` gate, and every refusal it can
+/// return is a refusal log sync has no notion of.
+pub const EPOCH_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/epoch-key/1.0.0");
 
 /// The chunk transfer protocol's libp2p identifier — Storage Spec §4.
 pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/1.0.0");
@@ -107,6 +117,16 @@ pub const DEFAULT_MAX_MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// refuses to read.
 pub const MAX_CHUNK_MESSAGE_BYTES: u64 = intranet_storage::MAX_CHUNK_BYTES as u64 + 1024;
 
+/// The largest epoch key delivery message this build will read.
+///
+/// Derived from the epoch layer's own Welcome ceiling rather than chosen
+/// separately, for the same reason the chunk and media ceilings are: two limits
+/// picked independently eventually disagree, and the failure mode is a legal
+/// Welcome that cannot be read. The allowance covers the sealed history keys and
+/// framing that travel alongside it.
+pub const MAX_EPOCH_MESSAGE_BYTES: u64 =
+    intranet_epoch::MAX_WELCOME_BYTES as u64 + (intranet_epoch::MAX_HISTORY_KEYS as u64 * 128) + 1024;
+
 /// The largest media envelope this build will read.
 ///
 /// Derived from the realtime layer's own frame ceiling for the same reason the
@@ -159,6 +179,8 @@ wire_message!(SyncRequest);
 wire_message!(SyncResponse);
 wire_message!(LedgerRequest);
 wire_message!(LedgerResponse);
+wire_message!(EpochKeyRequest);
+wire_message!(EpochKeyResponse, MAX_EPOCH_MESSAGE_BYTES);
 wire_message!(ChunkRequest);
 wire_message!(ChunkResponse, MAX_CHUNK_MESSAGE_BYTES);
 wire_message!(CollectionRequest);
@@ -193,6 +215,8 @@ impl<Req, Res> Clone for WireCodec<Req, Res> {
 pub type SyncCodec = WireCodec<SyncRequest, SyncResponse>;
 /// Codec for capability ledger gossip.
 pub type LedgerCodec = WireCodec<LedgerRequest, LedgerResponse>;
+/// Codec for epoch key delivery.
+pub type EpochCodec = WireCodec<EpochKeyRequest, EpochKeyResponse>;
 /// Codec for chunk transfer.
 pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
 /// Codec for append-set collection enumeration.
@@ -290,6 +314,11 @@ pub fn behaviour() -> request_response::Behaviour<SyncCodec> {
 /// Builds the capability ledger gossip behaviour.
 pub fn ledger_behaviour() -> request_response::Behaviour<LedgerCodec> {
     build(LEDGER_PROTOCOL)
+}
+
+/// Builds the epoch key delivery behaviour.
+pub fn epoch_behaviour() -> request_response::Behaviour<EpochCodec> {
+    build(EPOCH_PROTOCOL)
 }
 
 /// Builds the chunk transfer behaviour.

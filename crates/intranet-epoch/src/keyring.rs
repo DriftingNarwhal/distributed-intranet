@@ -187,13 +187,23 @@ impl EpochKeyring {
     pub fn reconcile(&mut self, log: &GovernanceLog) -> KeyringReconciliation {
         let mut outcome = KeyringReconciliation::default();
 
-        // Rotation entries on the canonical chain, oldest first.
+        // Entries on the canonical chain that produced an epoch, oldest first.
+        //
+        // Genesis counts. It is the entry that produced the network's *first*
+        // epoch, and Storage Spec §5.3 requires a wrapping to name the entry
+        // that produced its epoch — for epoch 0 there is no rotation entry to
+        // name. Omitting it here would void the founder's own key on the first
+        // reconcile, on the grounds that no rotation produced it.
         let canonical_rotations: Vec<Hash> = log
             .canonical_chain()
             .into_iter()
             .filter(|hash| {
-                log.get(hash)
-                    .is_some_and(|entry| matches!(entry.body, EntryBody::EpochRotation { .. }))
+                log.get(hash).is_some_and(|entry| {
+                    matches!(
+                        entry.body,
+                        EntryBody::EpochRotation { .. } | EntryBody::Genesis { .. }
+                    )
+                })
             })
             .collect();
         let canonical_set: BTreeSet<Hash> = canonical_rotations.iter().copied().collect();

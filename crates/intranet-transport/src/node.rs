@@ -2,10 +2,15 @@
 
 use crate::dial::{ConnectionTier, classify};
 use crate::{RelayLimits, TransportError, behaviour::*};
-use intranet_crypto::Hash;
+use intranet_crypto::{Hash, Timestamp};
+use intranet_epoch::{
+    EpochError, EpochKeyRequest, EpochKeyResponse, EpochKeyring, GroupSession, KeyDeliveryRefusal,
+    KeyringReconciliation, PendingMember, identity_label, key_package_identity, open_history,
+    seal_history,
+};
 use intranet_governance::{
-    GovernanceError, GovernanceLog, GovernanceState, LogEntry, MAX_ENTRIES_PER_RESPONSE,
-    SyncRequest, SyncResponse,
+    EntryBody, GovernanceError, GovernanceLog, GovernanceState, HistoryAccess, LogEntry,
+    MAX_ENTRIES_PER_RESPONSE, RotationReason, SyncRequest, SyncResponse,
 };
 use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
@@ -19,7 +24,7 @@ use intranet_storage::{
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, identify, kad, mdns, ping, relay,
-    request_response, swarm::SwarmEvent,
+    request_response, request_response::ResponseChannel, swarm::SwarmEvent,
 };
 use std::collections::BTreeMap;
 
@@ -39,11 +44,52 @@ pub fn default_listen_addresses() -> Vec<Multiaddr> {
     .collect()
 }
 
+/// Identifies one inbound key delivery awaiting this node's decision.
+///
+/// Opaque and node-local: it names a request held in memory between the event
+/// that surfaced it and the call that answers it, and means nothing to a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EpochRequestId(u64);
+
 /// Something observable that happened on a node.
 #[derive(Debug, Clone)]
 pub enum NodeEvent {
     /// The node began listening on an address.
     Listening(Multiaddr),
+    /// A peer asked to be keyed into the network, and passed every check —
+    /// §3.5.
+    ///
+    /// Surfaced rather than answered automatically because answering means
+    /// signing a governance entry, which needs an identity and a timestamp this
+    /// layer does not hold. Requests that fail a check are refused in the loop
+    /// and never appear here, so an application that ignores this event leaves
+    /// a requester unanswered rather than wrongly admitted.
+    EpochKeyRequested {
+        /// The peer that asked.
+        peer: PeerId,
+        /// The identity asking, already verified against the request signature,
+        /// the connection, the `read-content` gate and its key package.
+        requester: PerNetworkIdentityId,
+        /// Pass to [`MemberNode::answer_epoch_key`] or
+        /// [`MemberNode::decline_epoch_key`].
+        request: EpochRequestId,
+    },
+    /// This node was keyed into the network — §3.5.
+    EpochKeyDelivered {
+        /// The peer that welcomed it.
+        peer: PeerId,
+        /// The rotation the delivered key belongs to.
+        rotation_ref: Hash,
+        /// How many superseded keys came with it (§3.4's full-history policy).
+        historical_keys: usize,
+    },
+    /// A key delivery was refused, or could not be completed.
+    EpochKeyUnavailable {
+        /// The peer that answered.
+        peer: PeerId,
+        /// Why.
+        reason: String,
+    },
     /// A connection was established, at a known tier.
     Connected {
         /// The remote peer.
@@ -442,6 +488,49 @@ pub struct MemberNode {
     /// from the PeerId on every frame would be wasted work on the one path where
     /// latency is the product.
     identity_id: PerNetworkIdentityId,
+    /// This node's own identity, for the paths that must sign or agree inside
+    /// the event loop.
+    ///
+    /// Held rather than passed per call — the convention everywhere else — for
+    /// one reason: opening the sealed history in a §3.4 full-history delivery
+    /// needs a key agreement against the sender, and that happens as a response
+    /// arrives rather than when a caller asks for something. This is no new
+    /// exposure; the swarm below already holds the same key material as its
+    /// Noise transport identity, derived from this very keypair (§1.2).
+    identity: PerNetworkIdentity,
+    /// This node's MLS group session, once it has one — §3.3.
+    ///
+    /// `None` covers two genuinely different states that behave identically
+    /// here: a node that has not yet created a network, and one that has joined
+    /// but not yet been keyed in. Neither can welcome anybody, which is why the
+    /// serving path refuses with `NoGroup` rather than distinguishing them.
+    group: Option<GroupSession>,
+    /// Epoch keys this node holds, tentative and final — §3.3, §3.4.
+    keyring: EpochKeyring,
+    /// A key package generated while awaiting a Welcome.
+    ///
+    /// Held between asking and being answered because the private half never
+    /// leaves this node: the Welcome is HPKE-sealed to this package, so a node
+    /// that regenerated one in the meantime could not open the answer to its own
+    /// request.
+    pending_join: Option<PendingMember>,
+    /// Key deliveries asked for and not yet answered, and who was asked.
+    ///
+    /// The responder identity is kept because sealed history (§3.4) is opened
+    /// against the *sender's* key, and a response carries key material but no
+    /// trustworthy statement of who sent it — that comes from who was asked.
+    epoch_requests: BTreeMap<request_response::OutboundRequestId, PerNetworkIdentityId>,
+    /// Inbound key deliveries that passed every check this node can make alone.
+    ///
+    /// Held rather than answered inline because answering means signing a
+    /// governance entry, and signing needs both an identity and a timestamp
+    /// this layer deliberately does not hold: timestamps are always passed in so
+    /// the harness can drive finality on a virtual clock. Requests that fail a
+    /// check are refused in the loop and never reach here, so ignoring an event
+    /// leaves a requester unanswered rather than wrongly admitted.
+    inbound_epoch_requests: BTreeMap<EpochRequestId, (EpochKeyRequest, ResponseChannel<EpochKeyResponse>)>,
+    /// Source of the next [`EpochRequestId`].
+    next_epoch_request: u64,
     /// Calls this node is relaying media for, and who is in them — §2.2.
     ///
     /// A relay needs the participant set so it can refuse to forward to someone
@@ -493,6 +582,7 @@ impl MemberNode {
                     relay_client,
                     dcutr: dcutr::Behaviour::new(peer),
                     sync: crate::sync::behaviour(),
+                    epoch: crate::sync::epoch_behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
                     chunk: crate::sync::chunk_behaviour(),
                     collection: crate::sync::collection_behaviour(),
@@ -525,8 +615,320 @@ impl MemberNode {
             collection_queries: std::collections::HashMap::new(),
             collection_requests: BTreeMap::new(),
             identity_id: identity.id(),
+            identity: identity.clone(),
+            group: None,
+            keyring: EpochKeyring::new(),
+            pending_join: None,
+            epoch_requests: BTreeMap::new(),
+            inbound_epoch_requests: BTreeMap::new(),
+            next_epoch_request: 0,
             relayed_calls: BTreeMap::new(),
         })
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Epoch key delivery — Core Protocol Spec §3.5
+    // -----------------------------------------------------------------------
+
+    /// Creates this network's MLS group, with this node as its only member.
+    ///
+    /// The founder path. Every other node reaches a group by being welcomed
+    /// into this one, so this is called once per network, by whoever created it.
+    ///
+    /// The resulting epoch is recorded against the **genesis** entry, because
+    /// genesis is the log entry that produced it. Storage Spec §5.3 requires a
+    /// wrapping to reference the entry hash that produced its epoch, and for the
+    /// network's first epoch there is no rotation entry to point at.
+    pub fn create_epoch_group(
+        &mut self,
+        identity: &PerNetworkIdentity,
+    ) -> Result<(), EpochError> {
+        let session = GroupSession::create(&identity_label(&identity.id()))?;
+        let key = session.epoch_key()?;
+        let epoch = session.epoch();
+
+        let genesis = self
+            .log
+            .canonical_chain()
+            .first()
+            .copied()
+            .ok_or_else(|| EpochError::Mls("no genesis entry to anchor the epoch to".into()))?;
+
+        self.keyring.record(genesis, epoch, key);
+        self.group = Some(session);
+        Ok(())
+    }
+
+    /// Sends an already-built key delivery request — §3.5.
+    ///
+    /// [`Self::request_epoch_key`] is the ordinary path and builds the request
+    /// itself. This exists for callers that need to control the request's
+    /// contents, which in practice means tests exercising what a responder does
+    /// with one it should refuse.
+    pub fn send_epoch_request(
+        &mut self,
+        from: PerNetworkIdentityId,
+        request: EpochKeyRequest,
+    ) -> request_response::OutboundRequestId {
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .epoch
+            .send_request(&from.peer_id(), request);
+        self.epoch_requests.insert(id, from);
+        id
+    }
+
+    /// Rotates the epoch without a membership change — §1.3, point 6.
+    ///
+    /// The self-initiated rekey any member may request after a device
+    /// compromise, requiring no capability: gating it behind approval would
+    /// discourage reporting a compromise, which is the wrong incentive. The
+    /// commit is appended to the log like any other rotation, so other members
+    /// pick it up through ordinary sync.
+    pub fn rotate_epoch(
+        &mut self,
+        identity: &PerNetworkIdentity,
+        now: Timestamp,
+    ) -> Result<Hash, EpochError> {
+        let group = self
+            .group
+            .as_mut()
+            .ok_or_else(|| EpochError::Mls("this node holds no group".into()))?;
+        let rotation = group.rotate()?;
+
+        let parent = self.log.canonical_chain().last().copied();
+        let entry = LogEntry::create(
+            identity,
+            parent,
+            now,
+            EntryBody::EpochRotation {
+                reason: RotationReason::SelfInitiated,
+                commit: rotation.commit,
+            },
+        );
+        let rotation_ref = self
+            .log
+            .insert(entry)
+            .map_err(|e| EpochError::Mls(format!("rotation entry rejected: {e}")))?;
+        self.keyring
+            .record(rotation_ref, rotation.epoch, rotation.key);
+        Ok(rotation_ref)
+    }
+
+    /// This node's held epoch keys — §3.3.
+    pub fn epoch_keyring(&self) -> &EpochKeyring {
+        &self.keyring
+    }
+
+    /// Whether this node currently holds a usable epoch key.
+    ///
+    /// The honest question to ask before publishing or reading: a node with a
+    /// synced log and no key can fetch every byte of a network's content and
+    /// open none of it.
+    pub fn holds_epoch_key(&self) -> bool {
+        self.keyring.current().is_some()
+    }
+
+    /// Asks a peer to key this node into the network — §3.5.
+    ///
+    /// Generates a key package if one is not already outstanding, and keeps the
+    /// private half locally: the answer is sealed to this package, so a node
+    /// that regenerated one would be unable to open its own Welcome.
+    pub fn request_epoch_key(
+        &mut self,
+        from: PerNetworkIdentityId,
+        identity: &PerNetworkIdentity,
+    ) -> Result<request_response::OutboundRequestId, EpochError> {
+        if self.pending_join.is_none() {
+            self.pending_join = Some(GroupSession::prepare_join(&identity_label(&identity.id()))?);
+        }
+        let key_package = self
+            .pending_join
+            .as_ref()
+            .expect("just populated")
+            .key_package()?;
+
+        let request = EpochKeyRequest::create(identity, key_package);
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .epoch
+            .send_request(&from.peer_id(), request);
+        self.epoch_requests.insert(id, from);
+        Ok(id)
+    }
+
+    /// Answers a key delivery this node accepted — §3.5.
+    ///
+    /// Performs the MLS add, appends the rotation it produces to the governance
+    /// log, and seals whatever history the network's policy grants. Every gate
+    /// was already applied when the request arrived; what is left is the part
+    /// that needs an identity to sign with and a clock to sign at, neither of
+    /// which the event loop holds.
+    ///
+    /// The rotation is appended **before** the Welcome is sent. A member keyed
+    /// into a group whose commit no peer can order is a member nobody else will
+    /// agree with, so if the append fails the admission does not happen.
+    pub fn answer_epoch_key(
+        &mut self,
+        request: EpochRequestId,
+        identity: &PerNetworkIdentity,
+        now: Timestamp,
+    ) -> Result<Hash, EpochError> {
+        let (request, channel) = self
+            .inbound_epoch_requests
+            .remove(&request)
+            .ok_or_else(|| EpochError::Mls("no such pending key delivery".into()))?;
+
+        let group = self
+            .group
+            .as_mut()
+            .ok_or_else(|| EpochError::Mls("this node holds no group".into()))?;
+        let rotation = group.add_member(&request.key_package)?;
+        let welcome = rotation
+            .welcome
+            .ok_or_else(|| EpochError::Mls("an add produced no welcome".into()))?;
+
+        let parent = self.log.canonical_chain().last().copied();
+        let entry = LogEntry::create(
+            identity,
+            parent,
+            now,
+            EntryBody::EpochRotation {
+                reason: RotationReason::MemberAdmitted,
+                commit: rotation.commit,
+            },
+        );
+        let rotation_ref = self
+            .log
+            .insert(entry)
+            .map_err(|e| EpochError::Mls(format!("rotation entry rejected: {e}")))?;
+        self.keyring
+            .record(rotation_ref, rotation.epoch, rotation.key);
+
+        // Superseded epochs only: the joiner derives the current key from the
+        // Welcome itself, so re-sending it would be shipping raw key material
+        // for something they are about to compute anyway.
+        let history = match self.governance_state().map(|state| state.policy.history_access) {
+            Some(HistoryAccess::FullHistory) => {
+                let keys: Vec<_> = self
+                    .keyring
+                    .keys_for_new_member(HistoryAccess::FullHistory)
+                    .into_iter()
+                    .filter(|(hash, _)| *hash != rotation_ref)
+                    .collect();
+                seal_history(identity, &request.requester, &keys)?
+            }
+            _ => Vec::new(),
+        };
+
+        let _ = self.swarm.behaviour_mut().epoch.send_response(
+            channel,
+            EpochKeyResponse::Welcome {
+                welcome,
+                rotation_ref,
+                history,
+            },
+        );
+        Ok(rotation_ref)
+    }
+
+    /// Refuses a key delivery this node had accepted for consideration.
+    ///
+    /// Distinct from letting it lapse: a requester that is told no can act on
+    /// the answer, where one left waiting cannot tell refusal from a peer that
+    /// simply went away.
+    pub fn decline_epoch_key(&mut self, request: EpochRequestId, reason: KeyDeliveryRefusal) {
+        if let Some((_, channel)) = self.inbound_epoch_requests.remove(&request) {
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .epoch
+                .send_response(channel, EpochKeyResponse::Refused { reason });
+        }
+    }
+
+    /// Applies canonical rotation commits this node has not yet applied — §3.3.
+    ///
+    /// This is the other half of putting commits in the log: a member that syncs
+    /// a rotation entry must actually process its commit, or its MLS state falls
+    /// behind the network's and it derives the wrong epoch key from that point
+    /// on. Called after a sync, and idempotent — a commit already applied is
+    /// skipped by the keyring rather than reapplied.
+    ///
+    /// Commits are applied in canonical chain order, which is the ordering the
+    /// log exists to supply in place of a Delivery Service.
+    pub fn apply_pending_rotations(&mut self) -> Vec<Hash> {
+        let Some(group) = self.group.as_mut() else {
+            return Vec::new();
+        };
+
+        let mut applied = Vec::new();
+        for hash in self.log.canonical_chain() {
+            if self.keyring.holds(&hash) {
+                continue;
+            }
+            let Some(entry) = self.log.get(&hash) else {
+                continue;
+            };
+            let EntryBody::EpochRotation { commit, .. } = &entry.body else {
+                continue;
+            };
+            // A commit this node authored was merged when it was produced, so it
+            // cannot be applied a second time; the keyring check above covers
+            // that case, and anything reaching here is genuinely another
+            // member's. A commit that will not apply is skipped rather than
+            // fatal: it may belong to a branch this node cannot reach from its
+            // current MLS state, which reconciliation resolves by re-welcome.
+            if let Ok(key) = group.apply_commit(commit) {
+                let epoch = group.epoch();
+                self.keyring.record(hash, epoch, key);
+                applied.push(hash);
+            }
+        }
+        applied
+    }
+
+    /// Reconciles held epoch keys against the log — §3.3, §2.7.1.
+    ///
+    /// Reports what became final, what was voided, and whether this node needs a
+    /// re-welcome because the rotation it was operating under lost.
+    pub fn reconcile_epoch_keys(&mut self) -> KeyringReconciliation {
+        self.keyring.reconcile(&self.log)
+    }
+
+    /// Accepts a Welcome, joining this node to the network's group.
+    ///
+    /// Split out from the event loop for the same reason [`Self::answer_epoch_key`]
+    /// is: it consumes the pending key package, and a node that joined silently
+    /// on an arriving message would have no way to refuse one it did not ask for.
+    fn accept_welcome(
+        &mut self,
+        welcome: &[u8],
+        rotation_ref: Hash,
+        history: &[intranet_epoch::SealedEpochKey],
+        sender: PerNetworkIdentityId,
+    ) -> Result<(), EpochError> {
+        let pending = self
+            .pending_join
+            .take()
+            .ok_or_else(|| EpochError::Mls("no key package is outstanding".into()))?;
+
+        let session = pending.join(welcome)?;
+        let key = session.epoch_key()?;
+        let epoch = session.epoch();
+
+        // History first, so that `record` leaves the current rotation canonical
+        // rather than an older delivered one.
+        if !history.is_empty() {
+            let keys = open_history(&self.identity.clone(), &sender, history)?;
+            self.keyring.accept_delivered(keys)?;
+        }
+        self.keyring.record(rotation_ref, epoch, key);
+        self.group = Some(session);
+        Ok(())
     }
 
     /// This node's replica of the governance log.
@@ -996,6 +1398,47 @@ impl MemberNode {
         // identifier derived from those same bytes would verify nothing.
         self.inflight.insert(id, (peer, source, cid));
         id
+    }
+
+    /// Applies every §3.5 check this node can make on its own.
+    ///
+    /// Ordered so that a refusal never depends on state a requester could probe
+    /// for: the gate is evaluated before the group is consulted, so "no group"
+    /// cannot be used to learn whether this node holds keys it will not hand
+    /// over.
+    fn screen_epoch_request(
+        &self,
+        request: &EpochKeyRequest,
+        peer: PeerId,
+    ) -> Result<(), KeyDeliveryRefusal> {
+        // The signature was verified during decoding, so the named requester
+        // really did ask. That does not establish that the peer delivering it is
+        // that requester — a signed request is replayable by anyone who captured
+        // it, and here the prize is key material rather than a chunk.
+        if request.requester.peer_id() != peer {
+            return Err(KeyDeliveryRefusal::NoReadContent);
+        }
+
+        let Some(state) = self.governance_state() else {
+            return Err(KeyDeliveryRefusal::CannotEvaluate);
+        };
+        if may_serve(&request.requester, &state).is_err() {
+            return Err(KeyDeliveryRefusal::NoReadContent);
+        }
+
+        // Binds the MLS credential to the per-network identity. Without it a
+        // member could present a package built under someone else's label and be
+        // welcomed into the group as them.
+        match key_package_identity(&request.key_package) {
+            Ok(label) if label == identity_label(&request.requester) => {}
+            Ok(_) => return Err(KeyDeliveryRefusal::IdentityMismatch),
+            Err(_) => return Err(KeyDeliveryRefusal::IdentityMismatch),
+        }
+
+        if self.group.is_none() {
+            return Err(KeyDeliveryRefusal::NoGroup);
+        }
+        Ok(())
     }
 
     /// Answers a peer's chunk request, applying the §5.4 serving gate.
@@ -1674,6 +2117,79 @@ impl MemberNode {
                             .add_address(&peer_id, address);
                     }
                 }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Epoch(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        // Every check this node can make without an identity or
+                        // a clock happens here, and a failure is answered
+                        // immediately. Only a request that survives all of them
+                        // is surfaced for a decision — so an application that
+                        // ignores the event leaves a requester unanswered, never
+                        // wrongly keyed in.
+                        match self.screen_epoch_request(&request, peer) {
+                            Err(reason) => {
+                                let _ = self.swarm.behaviour_mut().epoch.send_response(
+                                    channel,
+                                    EpochKeyResponse::Refused { reason },
+                                );
+                            }
+                            Ok(()) => {
+                                let id = EpochRequestId(self.next_epoch_request);
+                                self.next_epoch_request += 1;
+                                let requester = request.requester;
+                                self.inbound_epoch_requests.insert(id, (request, channel));
+                                return NodeEvent::EpochKeyRequested {
+                                    peer,
+                                    requester,
+                                    request: id,
+                                };
+                            }
+                        }
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        let Some(sender) = self.epoch_requests.remove(&request_id) else {
+                            continue;
+                        };
+                        match response {
+                            EpochKeyResponse::Welcome {
+                                welcome,
+                                rotation_ref,
+                                history,
+                            } => {
+                                let count = history.len();
+                                match self.accept_welcome(&welcome, rotation_ref, &history, sender)
+                                {
+                                    Ok(()) => {
+                                        return NodeEvent::EpochKeyDelivered {
+                                            peer,
+                                            rotation_ref,
+                                            historical_keys: count,
+                                        };
+                                    }
+                                    Err(error) => {
+                                        return NodeEvent::EpochKeyUnavailable {
+                                            peer,
+                                            reason: error.to_string(),
+                                        };
+                                    }
+                                }
+                            }
+                            EpochKeyResponse::Refused { reason } => {
+                                return NodeEvent::EpochKeyUnavailable {
+                                    peer,
+                                    reason: format!("refused: {}", reason.as_str()),
+                                };
+                            }
+                        }
+                    }
+                },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Chunk(
                     request_response::Event::Message { peer, message, .. },

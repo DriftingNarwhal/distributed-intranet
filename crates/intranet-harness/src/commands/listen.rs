@@ -112,6 +112,30 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                // Key delivery is surfaced but never answered here. Answering
+                // means admitting somebody to the network's MLS group, which is
+                // a decision for whoever runs the node, not something a
+                // connectivity harness should make on their behalf — so the
+                // line records the request and the requester goes unanswered.
+                NodeEvent::EpochKeyRequested { peer, requester, .. } => {
+                    println!(
+                        "epoch-key-requested: peer={peer} requester={} (not answered)",
+                        requester.short()
+                    );
+                }
+                NodeEvent::EpochKeyDelivered {
+                    peer,
+                    rotation_ref,
+                    historical_keys,
+                } => {
+                    println!(
+                        "epoch-key-delivered: peer={peer} rotation={} history={historical_keys}",
+                        rotation_ref.short()
+                    );
+                }
+                NodeEvent::EpochKeyUnavailable { peer, reason } => {
+                    println!("epoch-key-unavailable: peer={peer} reason={reason}");
+                }
                 NodeEvent::LedgerSynced {
                     peer,
                     accepted,

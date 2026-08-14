@@ -22,6 +22,7 @@
 //! deliberately does **not** decide their order; that belongs to the log.
 
 use crate::EpochError;
+use intranet_identity::PerNetworkIdentityId;
 use intranet_storage::EpochKey;
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
@@ -42,6 +43,45 @@ const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA2
 /// epoch key is a proper derived secret, and changes with every commit by
 /// construction.
 const EXPORTER_LABEL: &str = "intranet.epoch-key.v1";
+
+/// The credential label an identity presents inside MLS.
+///
+/// The per-network identity's own public key, so that "who is this leaf" and
+/// "who is this member of the network" are the same question with the same
+/// answer. Any other convention would leave the MLS tree and the governance log
+/// naming members differently, and nothing would detect the divergence.
+pub fn identity_label(id: &PerNetworkIdentityId) -> Vec<u8> {
+    id.verifying_key().as_bytes().to_vec()
+}
+
+/// Reads the identity a key package's credential claims.
+///
+/// The responder in a key delivery (§3.5) must confirm this names the identity
+/// that signed the request. Without the check, a member could present a package
+/// built under someone else's label and be welcomed into the group as them —
+/// the request signature closes the converse case, and only both together close
+/// the pair.
+pub fn key_package_identity(key_package: &[u8]) -> Result<Vec<u8>, EpochError> {
+    let incoming = MlsMessageIn::tls_deserialize(&mut &key_package[..])
+        .map_err(|e| EpochError::Mls(format!("key package decode: {e:?}")))?;
+    let MlsMessageBodyIn::KeyPackage(key_package) = incoming.extract() else {
+        return Err(EpochError::Mls("expected a key package".into()));
+    };
+
+    // Validated before its credential is read, not after. The package arrives
+    // from an untrusted peer, and reading a field out of a structure that has
+    // not been checked would be trusting exactly the thing under examination.
+    let provider = OpenMlsRustCrypto::default();
+    let key_package = key_package
+        .validate(provider.crypto(), ProtocolVersion::Mls10)
+        .map_err(|e| EpochError::Mls(format!("key package validation: {e:?}")))?;
+
+    Ok(key_package
+        .leaf_node()
+        .credential()
+        .serialized_content()
+        .to_vec())
+}
 
 /// A member's view of the network's MLS group.
 pub struct GroupSession {

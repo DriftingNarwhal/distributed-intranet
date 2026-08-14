@@ -14,6 +14,7 @@ openmls.workspace = true
 openmls_basic_credential.workspace = true
 openmls_rust_crypto.workspace = true
 openmls_traits.workspace = true
+chacha20poly1305.workspace = true
 thiserror.workspace = true
 
 [lints]

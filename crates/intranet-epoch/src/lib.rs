@@ -25,9 +25,16 @@
 
 pub mod group;
 pub mod keyring;
+pub mod wire;
 
-pub use group::{GroupSession, PendingMember, Rotation};
+pub use group::{
+    GroupSession, PendingMember, Rotation, identity_label, key_package_identity,
+};
 pub use keyring::{EpochKeyring, EpochRecord, KeyringReconciliation, RotationStatus};
+pub use wire::{
+    EpochKeyRequest, EpochKeyResponse, KeyDeliveryRefusal, MAX_HISTORY_KEYS,
+    MAX_KEY_PACKAGE_BYTES, MAX_WELCOME_BYTES, SealedEpochKey, open_history, seal_history,
+};
 
 /// Errors produced by the epoch keying layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

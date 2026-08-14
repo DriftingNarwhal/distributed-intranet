@@ -75,6 +75,17 @@ const REQUEST_DOMAIN: &str = "intranet.wire.sync-request.v1";
 /// Domain tag for a sync response.
 const RESPONSE_DOMAIN: &str = "intranet.wire.sync-response.v1";
 
+/// The largest MLS commit this build will accept inside a rotation entry.
+///
+/// **Flagged: the specs set no bound.** One is needed because a response carries
+/// up to [`MAX_ENTRIES_PER_RESPONSE`] entries and the commit length is chosen by
+/// whoever authored the entry, so without a per-entry cap a single hostile
+/// rotation could consume the whole response budget. 128 KiB is far above a real
+/// commit — MLS touches only the path from the changed member to the root, on
+/// the order of 20 nodes even for a network of a few hundred thousand (§3.3) —
+/// while keeping one entry's cost bounded.
+pub const MAX_COMMIT_BYTES: usize = 128 * 1024;
+
 /// Why a message could not be turned into a value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
@@ -92,6 +103,12 @@ pub enum WireError {
     /// in both cases the bytes are not something an author signed.
     #[error("entry signature did not verify after decoding")]
     BadSignature,
+    /// A rotation entry carried a commit past [`MAX_COMMIT_BYTES`].
+    #[error("epoch rotation commit is {got} bytes, over the {MAX_COMMIT_BYTES} ceiling")]
+    CommitTooLarge {
+        /// Size actually presented.
+        got: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -204,11 +221,14 @@ fn put_body(e: &mut Enc, body: &EntryBody) {
                 e.str(t.as_str());
             });
         }
-        EntryBody::EpochRotation { reason } => {
-            e.variant(5).u8(match reason {
-                RotationReason::MembershipChange => 0,
-                RotationReason::SelfInitiated => 1,
-            });
+        EntryBody::EpochRotation { reason, commit } => {
+            e.variant(5)
+                .u8(match reason {
+                    RotationReason::MemberRevoked => 0,
+                    RotationReason::SelfInitiated => 1,
+                    RotationReason::MemberAdmitted => 2,
+                })
+                .bytes(commit);
         }
         EntryBody::DeviceEnrollment(cert) => {
             e.variant(6);
@@ -285,9 +305,17 @@ fn get_body(d: &mut Dec<'_>) -> Result<EntryBody, WireError> {
         },
         5 => EntryBody::EpochRotation {
             reason: match d.u8()? {
-                0 => RotationReason::MembershipChange,
+                0 => RotationReason::MemberRevoked,
                 1 => RotationReason::SelfInitiated,
+                2 => RotationReason::MemberAdmitted,
                 other => return Err(unknown("RotationReason", other)),
+            },
+            commit: {
+                let commit = d.bytes()?;
+                if commit.len() > MAX_COMMIT_BYTES {
+                    return Err(WireError::CommitTooLarge { got: commit.len() });
+                }
+                commit.to_vec()
             },
         },
         6 => EntryBody::DeviceEnrollment(DeviceCertificate {
@@ -696,10 +724,16 @@ mod tests {
                 allowlist: starter_content_types(),
             },
             EntryBody::EpochRotation {
-                reason: RotationReason::MembershipChange,
+                reason: RotationReason::MemberRevoked,
+                commit: b"member-revoked-commit".to_vec(),
+            },
+            EntryBody::EpochRotation {
+                reason: RotationReason::MemberAdmitted,
+                commit: b"member-admitted-commit".to_vec(),
             },
             EntryBody::EpochRotation {
                 reason: RotationReason::SelfInitiated,
+                commit: b"self-initiated-commit".to_vec(),
             },
             EntryBody::DeviceEnrollment(DeviceCertificate::issue(
                 &identity(1),

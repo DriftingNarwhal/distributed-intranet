@@ -1750,6 +1750,7 @@ dependencies = [
 name = "intranet-epoch"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305 0.11.0",
  "intranet-crypto",
  "intranet-governance",
  "intranet-identity",
@@ -1863,6 +1864,7 @@ dependencies = [
  "futures",
  "intranet-app",
  "intranet-crypto",
+ "intranet-epoch",
  "intranet-governance",
  "intranet-identity",
  "intranet-invite",

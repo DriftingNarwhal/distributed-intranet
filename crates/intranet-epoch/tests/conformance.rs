@@ -152,7 +152,8 @@ fn log_with(rotations: usize, padding: usize) -> (GovernanceLog, Vec<Hash>) {
             Some(parent),
             at(10 + i as i64),
             EntryBody::EpochRotation {
-                reason: RotationReason::MembershipChange,
+                reason: RotationReason::MemberRevoked,
+                commit: Vec::new(),
             },
         );
         parent = log.insert(entry).unwrap();
@@ -250,7 +251,8 @@ fn a_voided_rotation_drops_its_key_and_flags_a_rewelcome() {
         Some(root),
         at(10),
         EntryBody::EpochRotation {
-            reason: RotationReason::MembershipChange,
+            reason: RotationReason::MemberRevoked,
+            commit: Vec::new(),
         },
     );
     let losing_ref = log.insert(losing).unwrap();
@@ -261,7 +263,8 @@ fn a_voided_rotation_drops_its_key_and_flags_a_rewelcome() {
         Some(root),
         at(11),
         EntryBody::EpochRotation {
-            reason: RotationReason::MembershipChange,
+            reason: RotationReason::MemberRevoked,
+            commit: Vec::new(),
         },
     );
     let winning_ref = log.insert(winning).unwrap();
