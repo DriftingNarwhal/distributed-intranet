@@ -90,10 +90,26 @@ impl MutablePointer {
     /// across an object's life, only its wrapping does, and that lives outside
     /// this record entirely.
     ///
-    /// Only `owner_identity` may do this. `publish:<content_type>` is *not*
-    /// re-checked here, because it governs a different moment: whether an
-    /// identity may create a new thing of this type at all. Ownership governs
-    /// every subsequent update to one specific already-created pointer.
+    /// Only `owner_identity` may do this, and **both publish gates are
+    /// re-checked** — §2.3, corrected.
+    ///
+    /// An earlier reading had `publish:<content_type>` as a creation-time gate
+    /// only, on the grounds that ownership governs updates. §2.2 says otherwise
+    /// ("every publish, including updates"), and §2.2 is the version that can
+    /// actually be enforced: a receiving node cannot tell a creation from an
+    /// update for a pointer it has never seen, so a creation-time-only rule is
+    /// bypassed by publishing a first record at a version above zero, and the
+    /// repair — check when no prior record is held — makes two honest nodes
+    /// disagree about the same record depending on what each had seen.
+    ///
+    /// Checking here as well as at the receiver is what keeps the two sides
+    /// agreeing. Without it an owner could build an update locally that every
+    /// peer refuses, and the failure would surface as unexplained
+    /// non-propagation rather than as a refusal at the point of the action.
+    ///
+    /// The consequence is worth knowing: losing `publish:<content_type>` freezes
+    /// the pointers you own of that type. They stay published, readable and
+    /// servable — only further versions are refused.
     pub fn update(
         &self,
         owner: &PerNetworkIdentity,
@@ -106,14 +122,10 @@ impl MutablePointer {
                 attempted_by: owner.id().short(),
             });
         }
-        // The allowlist is re-checked, since a network may have narrowed its
-        // scope since this pointer was created and an existing pointer must not
-        // be a way to keep publishing a type the network has since excluded.
-        if !state.allows_content_type(&self.content_type) {
-            return Err(StorageError::ContentTypeNotAllowed {
-                content_type: self.content_type.to_string(),
-            });
-        }
+        // Both gates, against *current* state: a network may have narrowed its
+        // allowlist or the owner's grant since this pointer was created, and an
+        // existing pointer must not be a way to keep publishing past either.
+        Self::check_publish_gates(&owner.id(), &self.content_type, state)?;
 
         Ok(Self::sign(
             owner,

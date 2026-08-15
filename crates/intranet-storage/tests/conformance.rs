@@ -85,6 +85,66 @@ fn publish_text(
     (pointer, dek)
 }
 
+#[test]
+fn losing_the_publish_capability_freezes_an_owners_existing_pointers() {
+    // §2.3, corrected. `publish:<content_type>` is a *continuing* requirement,
+    // not a creation-time gate, because a creation-time-only rule cannot be
+    // enforced by receiving nodes: they cannot tell a creation from an update
+    // for a pointer they have never seen, so the gate is bypassed by publishing
+    // a first record above version zero.
+    //
+    // The consequence is deliberate and worth pinning, since it is easy to
+    // trigger by accident: narrowing a publish grant freezes existing content
+    // owned by whoever lost it.
+    let author = identity(2);
+    let mut chain = network(&[&author]);
+    let state = state_of(&chain);
+
+    let (pointer, _dek) = publish_text(&author, b"first version", &state);
+    let updated = pointer
+        .update(&author, pointer.current_cid, &state)
+        .expect("an owner holding publish:text may update");
+    assert_eq!(updated.version, 1);
+
+    // Narrow the grant: `everyone` keeps read-content but loses publish:text,
+    // the routine governance action that triggers this.
+    push(
+        &mut chain,
+        &identity(1),
+        100,
+        EntryBody::DefineGroup {
+            group: GroupId::everyone(),
+            capabilities: CapabilitySet::explicit([Capability::ReadContent]),
+        },
+    );
+    let narrowed = state_of(&chain);
+
+    // The existing record is untouched: still valid, still readable, still
+    // servable. Only *further* versions are refused.
+    assert!(pointer.verify().is_ok());
+    assert!(may_serve(&author.id(), &narrowed).is_ok());
+
+    let refused = pointer
+        .update(&author, pointer.current_cid, &narrowed)
+        .expect_err("an owner who lost publish:text may no longer update");
+    assert!(matches!(
+        refused,
+        StorageError::PublishNotPermitted { .. }
+    ));
+
+    // And ownership is unaffected by the correction: passing the publish gates
+    // never lets a non-owner update somebody else's pointer.
+    let interloper = identity(3);
+    let chain_with_interloper = network(&[&author, &interloper]);
+    let permissive = state_of(&chain_with_interloper);
+    assert!(matches!(
+        pointer
+            .update(&interloper, pointer.current_cid, &permissive)
+            .expect_err("a non-owner may never update"),
+        StorageError::NotPointerOwner { .. }
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Publish gates (§2.2, Core Protocol Spec §2.8)
 // ---------------------------------------------------------------------------
