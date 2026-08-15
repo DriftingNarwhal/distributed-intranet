@@ -10,8 +10,8 @@
 )]
 
 use crate::sync::{
-    ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, PointerCodec,
-    SignalCodec, SyncCodec,
+    BallotCodec, ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec,
+    PointerCodec, SignalCodec, SyncCodec,
 };
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
@@ -53,6 +53,15 @@ pub struct MemberBehaviour {
     /// ancestry, the ledger by per-node freshness. Sharing a protocol would mean
     /// one version number covering two things that will not change together.
     pub ledger: request_response::Behaviour<LedgerCodec>,
+    /// Ballot collection — §2.6.1.
+    ///
+    /// Pull-based like everything else here, and for a reason specific to votes:
+    /// §2.6.1 blesses a certificate assembled long after close from ballots
+    /// validly cast before it, which is only reachable if those ballots can
+    /// still be obtained late. A broadcast has no history, so a node partitioned
+    /// during the voting window could never assemble the certificate the spec
+    /// says is valid.
+    pub ballot: request_response::Behaviour<BallotCodec>,
     /// The join handshake — §5.6–5.7.
     ///
     /// The one protocol a node speaks before it is a member of anything, which

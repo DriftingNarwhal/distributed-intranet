@@ -68,3 +68,7 @@ pub use wire::{
     MAX_ENTRIES_PER_RESPONSE, SyncRequest, SyncResponse, WireError, decode_entry, encode_entry,
 };
 pub use vote::{Ballot, QuorumCertificate, VoteOutcome, VoteProposal};
+pub use wire::{
+    BallotRefusal, BallotRequest, BallotResponse, MAX_BALLOTS, MAX_BALLOTS_PER_RESPONSE,
+    MAX_ELECTORATE,
+};

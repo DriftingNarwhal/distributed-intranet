@@ -1203,6 +1203,283 @@ fn entries_on_the_canonical_chain_are_not_reported_as_voided() {
 }
 
 // ---------------------------------------------------------------------------
+// A vote actually deciding something (§2.6, §2.6.1)
+// ---------------------------------------------------------------------------
+
+/// A member-vote network with `voters` members of `everyone`, plus the founder.
+///
+/// Built by admitting under capability rules and *then* switching to
+/// member-vote, which is not a convenience — it is the only order that works. A
+/// network that opened under member-vote could never admit anybody: admission
+/// would need a quorum of an electorate that has no members yet. Switching once
+/// a founding electorate exists is the bootstrap path, and it is worth a test
+/// fixture demonstrating it rather than a comment asserting it.
+fn voting_network(voters: usize) -> (Vec<LogEntry>, Vec<PerNetworkIdentity>) {
+    let founder = identity(1);
+    let mut chain = vec![genesis(&founder)];
+    let mut members = Vec::new();
+    for i in 0..voters {
+        let member = identity(10 + i as u8);
+        append(&mut chain, &founder, at(10 + i as i64), add_to(EVERYONE, &member));
+        members.push(member);
+    }
+
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.governance_model = GovernanceModel::MemberVote {
+        electorate: GroupId::everyone(),
+        quorum: 3,
+        window_millis: 72_000,
+    };
+    append(&mut chain, &founder, at(50), EntryBody::PolicyChange { policy });
+    (chain, members)
+}
+
+/// The admission a vote is held about.
+fn admission_of(newcomer: &PerNetworkIdentity) -> EntryBody {
+    EntryBody::MembershipChange {
+        group: GroupId::everyone(),
+        identity: newcomer.id(),
+        action: MembershipAction::Add { via_invite: None },
+    }
+}
+
+#[test]
+fn under_member_vote_an_admission_needs_a_passing_certificate() {
+    // The whole point of the policy: with MemberVote configured, holding
+    // `manage-membership:everyone` is no longer enough on its own.
+    let founder = identity(1);
+    let newcomer = identity(200);
+    let (mut chain, voters) = voting_network(5);
+
+    let unauthorized = LogEntry::create(
+        &founder,
+        Some(chain.last().unwrap().hash()),
+        at(100),
+        admission_of(&newcomer),
+    );
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(
+        state.apply(&unauthorized).is_err(),
+        "a capability holder must not admit unilaterally under member-vote policy"
+    );
+
+    // Open the vote, on the exact action it authorizes.
+    let proposal = VoteProposal::open(
+        admission_of(&newcomer).action_hash(),
+        GroupId::everyone(),
+        &state,
+        chain.last().unwrap().hash(),
+        at(72_000),
+        3,
+    )
+    .unwrap();
+    append(
+        &mut chain,
+        &founder,
+        at(110),
+        EntryBody::VoteProposed {
+            proposal: proposal.clone(),
+        },
+    );
+
+    // Three voters approve, and anyone may assemble and append the outcome.
+    let vote_id = proposal.vote_id();
+    let ballots: Vec<Ballot> = voters
+        .iter()
+        .take(3)
+        .map(|voter| Ballot::cast(voter, vote_id, true, at(1_000)))
+        .collect();
+    let certificate = QuorumCertificate::assemble(&proposal, ballots);
+    append(
+        &mut chain,
+        &voters[0],
+        at(120),
+        EntryBody::VoteOutcome { certificate },
+    );
+
+    // Now the same admission is authorized — and by a member with no capability.
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(state.passed_votes.contains(&admission_of(&newcomer).action_hash()));
+    let admission = LogEntry::create(
+        &voters[1],
+        Some(chain.last().unwrap().hash()),
+        at(130),
+        admission_of(&newcomer),
+    );
+    let after = state
+        .apply(&admission)
+        .expect("a passing vote authorizes the admission it was held for");
+    assert!(after.is_member(&newcomer.id()));
+}
+
+#[test]
+fn a_certificate_authorizes_only_the_action_it_was_held_for() {
+    // The action-hash binding. A passing vote is not a general licence to admit:
+    // it settles one specific body, so a second admission cannot ride on it.
+    let founder = identity(1);
+    let voted_on = identity(200);
+    let smuggled = identity(201);
+    let (mut chain, voters) = voting_network(5);
+    let state = GovernanceState::replay(&chain).unwrap();
+
+    let proposal = VoteProposal::open(
+        admission_of(&voted_on).action_hash(),
+        GroupId::everyone(),
+        &state,
+        chain.last().unwrap().hash(),
+        at(72_000),
+        3,
+    )
+    .unwrap();
+    append(
+        &mut chain,
+        &founder,
+        at(110),
+        EntryBody::VoteProposed {
+            proposal: proposal.clone(),
+        },
+    );
+    let vote_id = proposal.vote_id();
+    let certificate = QuorumCertificate::assemble(
+        &proposal,
+        voters
+            .iter()
+            .take(3)
+            .map(|voter| Ballot::cast(voter, vote_id, true, at(1_000)))
+            .collect::<Vec<_>>(),
+    );
+    append(
+        &mut chain,
+        &voters[0],
+        at(120),
+        EntryBody::VoteOutcome { certificate },
+    );
+
+    let state = GovernanceState::replay(&chain).unwrap();
+    let smuggled_entry = LogEntry::create(
+        &voters[1],
+        Some(chain.last().unwrap().hash()),
+        at(130),
+        admission_of(&smuggled),
+    );
+    assert!(
+        state.apply(&smuggled_entry).is_err(),
+        "a certificate for one admission must not authorize a different one"
+    );
+}
+
+#[test]
+fn a_proposal_cannot_freeze_an_electorate_the_log_never_had() {
+    // The attack that makes opening-as-an-entry necessary. A proposal asserts
+    // its roster; if nothing checked it, a proposer could freeze a roster of
+    // keypairs they control, cast every ballot themselves, and present a
+    // certificate that verifies perfectly against the roster it arrived with.
+    let founder = identity(1);
+    let newcomer = identity(200);
+    let (mut chain, _) = voting_network(5);
+    let state = GovernanceState::replay(&chain).unwrap();
+
+    // Sock puppets: never admitted to anything.
+    let puppets: Vec<PerNetworkIdentity> = (0..3).map(|i| identity(150 + i)).collect();
+    let mut forged = VoteProposal::open(
+        admission_of(&newcomer).action_hash(),
+        GroupId::everyone(),
+        &state,
+        chain.last().unwrap().hash(),
+        at(72_000),
+        3,
+    )
+    .unwrap();
+    forged.electorate_snapshot = puppets.iter().map(|p| p.id()).collect();
+
+    // The certificate itself is internally perfect — it verifies against the
+    // roster it came with, which is exactly why the roster cannot be taken on
+    // trust.
+    let vote_id = forged.vote_id();
+    let certificate = QuorumCertificate::assemble(
+        &forged,
+        puppets
+            .iter()
+            .map(|p| Ballot::cast(p, vote_id, true, at(1_000)))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(certificate.verify(&forged).unwrap(), VoteOutcome::Passed);
+
+    // But the log refuses to open it, because replay knows what the membership
+    // actually was at this point in the chain.
+    let opening = LogEntry::create(
+        &founder,
+        Some(chain.last().unwrap().hash()),
+        at(110),
+        EntryBody::VoteProposed { proposal: forged },
+    );
+    assert!(
+        state.apply(&opening).is_err(),
+        "a proposal whose roster disagrees with replayed membership must be refused"
+    );
+
+    // And with no open vote, the outcome has nothing to attach to.
+    append(
+        &mut chain,
+        &founder,
+        at(120),
+        EntryBody::VoteOutcome { certificate },
+    );
+    assert!(
+        GovernanceState::replay(&chain).is_err(),
+        "an outcome for a vote that was never opened must be refused"
+    );
+}
+
+#[test]
+fn an_outcome_below_quorum_authorizes_nothing() {
+    let founder = identity(1);
+    let newcomer = identity(200);
+    let (mut chain, voters) = voting_network(5);
+    let state = GovernanceState::replay(&chain).unwrap();
+
+    let proposal = VoteProposal::open(
+        admission_of(&newcomer).action_hash(),
+        GroupId::everyone(),
+        &state,
+        chain.last().unwrap().hash(),
+        at(72_000),
+        3,
+    )
+    .unwrap();
+    append(
+        &mut chain,
+        &founder,
+        at(110),
+        EntryBody::VoteProposed {
+            proposal: proposal.clone(),
+        },
+    );
+
+    // Two approvals against a quorum of three.
+    let vote_id = proposal.vote_id();
+    let certificate = QuorumCertificate::assemble(
+        &proposal,
+        voters
+            .iter()
+            .take(2)
+            .map(|voter| Ballot::cast(voter, vote_id, true, at(1_000)))
+            .collect::<Vec<_>>(),
+    );
+    let outcome = LogEntry::create(
+        &voters[0],
+        Some(chain.last().unwrap().hash()),
+        at(120),
+        EntryBody::VoteOutcome { certificate },
+    );
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(
+        state.apply(&outcome).is_err(),
+        "a certificate short of quorum must not be recorded as a passing vote"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Member-vote quorum (§2.6.1)
 // ---------------------------------------------------------------------------
 

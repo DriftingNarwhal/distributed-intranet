@@ -14,6 +14,9 @@ const ENTRY_DOMAIN: &str = "intranet.governance-entry.v1";
 /// Domain tag for governance log entry hashing.
 const ENTRY_HASH_DOMAIN: &str = "intranet.governance-entry-hash.v1";
 
+/// Domain tag for hashing an entry body as a vote subject.
+const ACTION_HASH_DOMAIN: &str = "intranet.governance-action-hash.v1";
+
 /// The identifier of a mutable pointer (Storage Spec §2.2).
 ///
 /// Defined here rather than in a storage crate because moderation entries are
@@ -279,6 +282,65 @@ pub enum EntryBody {
         /// layer, never a rejected log entry here.
         commit: Vec<u8>,
     },
+    /// Open a vote, freezing its electorate — §2.6.1, point 1.
+    ///
+    /// # Why opening is a log entry, and not just a message
+    ///
+    /// The electorate is "a snapshot of a specific group's membership, taken at
+    /// a fixed version the moment a vote is proposed". If a proposal simply
+    /// *asserted* its roster, a proposer could freeze a roster of keypairs they
+    /// control, cast every ballot themselves, and produce a certificate that
+    /// verifies perfectly against the roster it came with — forging any outcome
+    /// they liked. The attested roster has to be checked against the membership
+    /// the log actually had.
+    ///
+    /// Opening as an entry is what makes that check possible and cheap: replay
+    /// processes entries in order, so at this entry it already holds the
+    /// membership as of this point in the chain and can reject any proposal
+    /// whose roster disagrees. No node has to re-replay to an arbitrary earlier
+    /// version, and the fixed version §2.6.1 refers to is simply this entry's
+    /// position.
+    ///
+    /// **Capability-free**, like a vote outcome: proposing costs nothing and
+    /// decides nothing, since the electorate is what settles it. Current
+    /// membership is still required — a non-member has no standing to put the
+    /// network's electorate to work.
+    VoteProposed {
+        /// The proposal, whose roster is verified against replayed state here.
+        proposal: crate::VoteProposal,
+    },
+    /// Record that a vote reached a decision — §2.6.1.
+    ///
+    /// # Why an outcome is recorded rather than recomputed
+    ///
+    /// §2.6.1 defines a vote's outcome as **certificate existence**, precisely
+    /// because local tallying diverges: two honest nodes near the close boundary
+    /// genuinely collect different ballot sets. Appending the certificate makes
+    /// existence a fact of the log — replayable, ordered, and identical
+    /// everywhere — rather than a question each node answers from whatever it
+    /// happened to receive.
+    ///
+    /// It also gives ballots somewhere to stop. Ballots themselves are not log
+    /// entries and never become any node's permanent responsibility; once a
+    /// certificate is appended, the ballots behind it have done their work and
+    /// can be dropped, since the certificate carries the ones that mattered.
+    ///
+    /// **Capability-free**, so it does not count toward branch length (§2.7.1,
+    /// point 2). Assembling one is not free — it needs real ballots from a real
+    /// frozen electorate — but it needs no capability either, and the
+    /// anti-grinding rule counts only capability-gated actions. Treating it as
+    /// gated would let a network with an active vote lengthen a branch by
+    /// re-appending outcomes.
+    VoteOutcome {
+        /// The certificate that settles it.
+        ///
+        /// The proposal is *not* carried alongside. It was recorded when the
+        /// vote opened, with its roster verified against the log at that point,
+        /// so this references it by the `vote_id` the certificate already names.
+        /// Re-carrying it would let a certificate arrive with a roster nobody
+        /// checked — the exact hole opening-as-an-entry exists to close.
+        certificate: crate::QuorumCertificate,
+    },
     /// Record a device certificate — capability-free.
     DeviceEnrollment(DeviceCertificate),
     /// Record a device certificate revocation — capability-free.
@@ -333,6 +395,7 @@ impl EntryBody {
             // Genesis is always the shared root, never on a competing branch.
             Self::Genesis { .. } => false,
             Self::DeviceEnrollment(_) | Self::DeviceRevocation(_) => false,
+            Self::VoteProposed { .. } | Self::VoteOutcome { .. } => false,
             Self::EpochRotation { reason, .. } => match reason {
                 RotationReason::MemberAdmitted | RotationReason::MemberRevoked => true,
                 RotationReason::SelfInitiated => false,
@@ -362,11 +425,26 @@ impl EntryBody {
             Self::PolicyChange { .. } => "policy-change",
             Self::ContentTypePolicy { .. } => "content-type-policy",
             Self::EpochRotation { .. } => "epoch-rotation",
+            Self::VoteProposed { .. } => "vote-proposed",
+            Self::VoteOutcome { .. } => "vote-outcome",
             Self::DeviceEnrollment(_) => "device-enrollment",
             Self::DeviceRevocation(_) => "device-revocation",
             Self::Moderation(_) => "moderation",
             Self::AppNameRegistration { .. } => "app-name-registration",
         }
+    }
+
+    /// This body's hash, as a vote's `subject` — §2.6.1.
+    ///
+    /// A vote is proposed *for a specific action*, and this is how the two are
+    /// bound: the proposal's subject is the hash of the body the vote would
+    /// authorize, so a passing certificate authorizes that body and nothing
+    /// else. Without the binding a certificate would be a general licence,
+    /// reusable to admit somebody the electorate never voted on.
+    pub fn action_hash(&self) -> Hash {
+        let mut e = Enc::domain(ACTION_HASH_DOMAIN);
+        self.encode(&mut e);
+        hash_bytes(&e.finish())
     }
 
     fn encode(&self, enc: &mut Enc) {
@@ -435,6 +513,14 @@ impl EntryBody {
                     // fails the entry's signature rather than quietly rekeying
                     // the network to a tree the author never committed to.
                     .bytes(commit);
+            }
+            Self::VoteProposed { proposal } => {
+                enc.variant(10);
+                proposal.encode(enc);
+            }
+            Self::VoteOutcome { certificate } => {
+                enc.variant(11);
+                certificate.encode(enc);
             }
             Self::DeviceEnrollment(cert) => {
                 enc.variant(6);

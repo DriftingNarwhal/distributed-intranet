@@ -75,6 +75,21 @@ pub struct GovernanceState {
     /// durability. A discovery index has neither: its ordering is
     /// self-attested and its entries lapse without refresh.
     pub app_names: BTreeMap<AppName, AppNameRecord>,
+    /// Votes currently open, by `vote_id` — §2.6.1, point 1.
+    ///
+    /// Recorded when a vote opens, at which point its frozen roster was checked
+    /// against the membership the log actually held. A certificate is verified
+    /// against the proposal *here*, never against one travelling beside it, so a
+    /// forged roster cannot arrive with the certificate that relies on it.
+    pub open_votes: BTreeMap<Hash, crate::VoteProposal>,
+    /// Action hashes a vote has authorized — §2.6.1.
+    ///
+    /// A vote's outcome is certificate *existence*, and this is where existence
+    /// becomes a replayable fact rather than a question each node answers from
+    /// whatever ballots it happened to collect. Keyed by the subject the
+    /// certificate settles, which is the hash of the entry body the vote
+    /// authorizes — so a certificate authorizes that action and nothing else.
+    pub passed_votes: BTreeSet<Hash>,
     /// Hash of the log entry that produced the current epoch.
     ///
     /// Storage Spec §5.3 requires DEK wrappings to reference this entry hash
@@ -135,6 +150,8 @@ impl GovernanceState {
             device_certificates: BTreeMap::new(),
             revoked_devices: BTreeSet::new(),
             delisted: BTreeSet::new(),
+            open_votes: BTreeMap::new(),
+            passed_votes: BTreeSet::new(),
             app_names: BTreeMap::new(),
             epoch: 0,
             epoch_rotation_ref: None,
@@ -404,7 +421,7 @@ impl GovernanceState {
                     Capability::extension(REGISTER_APP_NAME)
                 }
             }
-            EntryBody::MembershipChange { group, .. } => {
+            EntryBody::MembershipChange { group, action, .. } => {
                 // The target group must exist before its membership can be
                 // managed, and refusing an unknown group here is what stops a
                 // capability being demanded for a group whose tier cannot be
@@ -412,7 +429,57 @@ impl GovernanceState {
                 if !self.groups.contains_key(group) {
                     return Err(GovernanceError::UnknownGroup(group.clone()));
                 }
+
+                // Under member-vote policy, admission is decided by the
+                // electorate rather than by a capability holder (§2.6, §2.6.1).
+                // The check is that a certificate settling *this exact action*
+                // has been recorded — bound by the action hash, so a passing
+                // vote authorizes the admission it was held for and no other.
+                //
+                // Removal is deliberately left on the capability path. §2.6
+                // frames the vote as governing *admission* ("admission requires
+                // a quorum of existing members"), and routing removal through a
+                // vote would mean a compromised account could only be ejected at
+                // the speed of a quorum — the opposite of what a network needs
+                // in that moment.
+                if let crate::GovernanceModel::MemberVote { .. } = self.policy.governance_model
+                    && matches!(action, MembershipAction::Add { .. })
+                {
+                    return if self.passed_votes.contains(&entry.body.action_hash()) {
+                        // Somebody still has to append it, and a non-member has
+                        // no standing to act on the network's behalf even
+                        // holding a valid certificate.
+                        if self.is_member(author) {
+                            Ok(())
+                        } else {
+                            Err(GovernanceError::not_a_member(author))
+                        }
+                    } else {
+                        Err(GovernanceError::InvalidQuorumCertificate {
+                            reason: "no passing vote authorizes this admission".into(),
+                        })
+                    };
+                }
+
                 Capability::ManageMembership(group.clone())
+            }
+
+            // Neither proposing nor recording an outcome needs a capability —
+            // that is the point of §2.6.1's no-central-tallying design. What
+            // they need is a roster and a certificate that actually verify,
+            // which `mutate` checks. An author who is not a member has no
+            // standing to put the network's electorate to work either way.
+            //
+            // **Flagged: §2.6.1 does not say who may propose a vote.** Current
+            // membership is the natural floor, since proposing decides nothing
+            // — the electorate settles it — and requiring more would put the
+            // one procedure meant to bypass capability holders back behind one.
+            EntryBody::VoteProposed { .. } | EntryBody::VoteOutcome { .. } => {
+                return if self.is_member(author) {
+                    Ok(())
+                } else {
+                    Err(GovernanceError::not_a_member(author))
+                };
             }
 
             EntryBody::EpochRotation { reason, .. } => match reason {
@@ -541,6 +608,57 @@ impl GovernanceState {
 
             EntryBody::ContentTypePolicy { allowlist } => {
                 self.policy.content_type_allowlist = allowlist.clone();
+            }
+
+            EntryBody::VoteProposed { proposal } => {
+                // The check the whole design turns on. A proposal asserts its
+                // frozen roster; replay is the only thing that knows what the
+                // roster actually was. Without this a proposer could freeze a
+                // roster of keypairs they control, cast every ballot, and
+                // present a certificate that verifies perfectly against the
+                // roster it came with.
+                let group = self
+                    .groups
+                    .get(&proposal.electorate)
+                    .ok_or_else(|| GovernanceError::UnknownGroup(proposal.electorate.clone()))?;
+                let actual: BTreeSet<PerNetworkIdentityId> =
+                    group.members.keys().copied().collect();
+                if proposal.electorate_snapshot != actual {
+                    return Err(GovernanceError::InvalidQuorumCertificate {
+                        reason: "proposal's electorate does not match the membership at this \
+                                 point in the log"
+                            .into(),
+                    });
+                }
+                self.open_votes.insert(proposal.vote_id(), proposal.clone());
+            }
+
+            EntryBody::VoteOutcome { certificate } => {
+                // Looked up rather than trusted from the entry: the roster this
+                // verifies against is the one the log validated when the vote
+                // opened.
+                let proposal = self.open_votes.get(&certificate.vote_id).ok_or_else(|| {
+                    GovernanceError::InvalidQuorumCertificate {
+                        reason: "no open vote matches this certificate".into(),
+                    }
+                })?;
+                // Verified here rather than trusted: the entry's signature only
+                // says its author appended it, and an author can append a
+                // certificate they assembled badly or made up. Every node
+                // re-verifies against the frozen electorate and the ballots'
+                // own timestamps, which is what makes "a vote passed" a fact
+                // every node computes identically.
+                if certificate.verify(proposal)? != crate::VoteOutcome::Passed {
+                    return Err(GovernanceError::InvalidQuorumCertificate {
+                        reason: "certificate does not reach quorum".into(),
+                    });
+                }
+                let subject = proposal.subject;
+                // The vote is settled, so it stops being open — which also makes
+                // a second, competing certificate for the same vote a no-op
+                // rather than something to reconcile.
+                self.open_votes.remove(&certificate.vote_id);
+                self.passed_votes.insert(subject);
             }
 
             EntryBody::EpochRotation { .. } => {

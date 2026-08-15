@@ -103,6 +103,14 @@ pub enum WireError {
     /// in both cases the bytes are not something an author signed.
     #[error("entry signature did not verify after decoding")]
     BadSignature,
+    /// A message carried more entries than its ceiling.
+    #[error("message carried {got} entries, over the {limit} ceiling")]
+    TooManyEntries {
+        /// How many were presented.
+        got: usize,
+        /// The ceiling.
+        limit: usize,
+    },
     /// A rotation entry carried a commit past [`MAX_COMMIT_BYTES`].
     #[error("epoch rotation commit is {got} bytes, over the {MAX_COMMIT_BYTES} ceiling")]
     CommitTooLarge {
@@ -230,6 +238,14 @@ fn put_body(e: &mut Enc, body: &EntryBody) {
                 })
                 .bytes(commit);
         }
+        EntryBody::VoteProposed { proposal } => {
+            e.variant(10);
+            put_proposal(e, proposal);
+        }
+        EntryBody::VoteOutcome { certificate } => {
+            e.variant(11);
+            put_certificate(e, certificate);
+        }
         EntryBody::DeviceEnrollment(cert) => {
             e.variant(6);
             cert.network.encode(e);
@@ -317,6 +333,12 @@ fn get_body(d: &mut Dec<'_>) -> Result<EntryBody, WireError> {
                 }
                 commit.to_vec()
             },
+        },
+        10 => EntryBody::VoteProposed {
+            proposal: get_proposal(d)?,
+        },
+        11 => EntryBody::VoteOutcome {
+            certificate: get_certificate(d)?,
         },
         6 => EntryBody::DeviceEnrollment(DeviceCertificate {
             network: NetworkId::from_bytes(d.fixed::<32>()?),
@@ -926,5 +948,306 @@ mod tests {
             .unwrap();
 
         assert_eq!(sent_hash, received_hash);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vote proposals and certificates
+//
+// Encoded here in exactly the form `VoteProposal::encode` and
+// `QuorumCertificate::encode` produce, because both are inside an entry's signed
+// payload: a codec that disagreed by a byte would change what the author signed
+// and the entry would be rejected rather than silently reinterpreted.
+// ---------------------------------------------------------------------------
+
+/// The most voters an electorate on the wire may carry.
+///
+/// **Flagged: §2.6.1 sets no bound**, and deliberately expects large
+/// electorates — the design targets networks of hundreds of thousands. This
+/// bounds one *message*, not a network: 65536 covers any plausible roster while
+/// stopping a peer claiming an electorate whose decoding alone would exhaust
+/// memory.
+pub const MAX_ELECTORATE: usize = 65_536;
+
+/// The most ballots one certificate on the wire may carry.
+///
+/// A certificate never needs more ballots than there are voters, so this shares
+/// the electorate ceiling rather than inventing a second number that could drift
+/// from it.
+pub const MAX_BALLOTS: usize = MAX_ELECTORATE;
+
+fn put_proposal(e: &mut Enc, proposal: &crate::VoteProposal) {
+    proposal.encode(e);
+}
+
+fn get_proposal(d: &mut Dec<'_>) -> Result<crate::VoteProposal, WireError> {
+    let subject = Hash::from_bytes(d.fixed::<32>()?);
+    let electorate = GroupId::new(d.str()?);
+    let voters = d.seq::<_, WireError>(|d| get_identity(d))?;
+    if voters.len() > MAX_ELECTORATE {
+        return Err(WireError::TooManyEntries {
+            got: voters.len(),
+            limit: MAX_ELECTORATE,
+        });
+    }
+    Ok(crate::VoteProposal {
+        subject,
+        electorate,
+        electorate_snapshot: voters.into_iter().collect(),
+        snapshot_ref: Hash::from_bytes(d.fixed::<32>()?),
+        close_time: Timestamp::from_millis(d.i64()?),
+        quorum: d.u32()?,
+    })
+}
+
+fn put_certificate(e: &mut Enc, certificate: &crate::QuorumCertificate) {
+    certificate.encode(e);
+}
+
+fn get_certificate(d: &mut Dec<'_>) -> Result<crate::QuorumCertificate, WireError> {
+    let vote_id = Hash::from_bytes(d.fixed::<32>()?);
+    let ballots = d.seq::<_, WireError>(|d| {
+        Ok(crate::Ballot {
+            vote_id: Hash::from_bytes(d.fixed::<32>()?),
+            voter: get_identity(d)?,
+            approve: d.bool()?,
+            cast_at: Timestamp::from_millis(d.i64()?),
+            signature: Signature::from_bytes(d.fixed::<64>()?),
+        })
+    })?;
+    if ballots.len() > MAX_BALLOTS {
+        return Err(WireError::TooManyEntries {
+            got: ballots.len(),
+            limit: MAX_BALLOTS,
+        });
+    }
+    Ok(crate::QuorumCertificate {
+        vote_id,
+        ballots,
+        merkle_root: Hash::from_bytes(d.fixed::<32>()?),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Ballot collection — §2.6.1
+//
+// # Why only ballots need a protocol
+//
+// A vote's proposal and its outcome are both log entries, so both already
+// propagate by ordinary governance sync, ordered and verified like anything
+// else. Ballots are the one part that is not an entry — they are the raw
+// material a certificate is assembled *from*, and turning each into an entry
+// would put every voter's ballot permanently in every node's replay for a vote
+// that may never even pass.
+//
+// # Why pull, not broadcast
+//
+// §2.6.1 permits a certificate assembled long after close, from ballots validly
+// cast before it — and that is only reachable if those ballots can still be
+// *obtained* late. A broadcast has no history: a node partitioned during the
+// voting window would never see the ballots it missed, and could never assemble
+// the certificate the spec says is valid. Pulling makes a late assembler and a
+// healed partition the same code path.
+// ---------------------------------------------------------------------------
+
+/// Domain tag for the signature a requester makes over a ballot request.
+const BALLOT_REQUEST_SIGNATURE_DOMAIN: &str = "intranet.ballot-request.v1";
+/// Domain tag for a ballot request on the wire.
+const BALLOT_REQUEST_DOMAIN: &str = "intranet.wire.ballot-request.v1";
+/// Domain tag for a ballot response on the wire.
+const BALLOT_RESPONSE_DOMAIN: &str = "intranet.wire.ballot-response.v1";
+
+/// The most ballots one response will carry.
+///
+/// **Flagged: §2.6.1 sets no bound.** A requester names what it already holds,
+/// so a truncated response is resumed by asking again with a longer `have` —
+/// which converges, unlike re-asking for a whole set.
+pub const MAX_BALLOTS_PER_RESPONSE: usize = 512;
+
+/// A request for ballots cast under one vote — §2.6.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BallotRequest {
+    /// Which vote's ballots are wanted.
+    pub vote_id: Hash,
+    /// Ballot hashes the requester already holds, so they are not re-sent.
+    pub have: Vec<Hash>,
+    /// Who is asking.
+    pub requester: PerNetworkIdentityId,
+    /// The requester's signature.
+    pub signature: Signature,
+}
+
+impl BallotRequest {
+    /// Builds and signs a request.
+    pub fn create(
+        requester: &intranet_identity::PerNetworkIdentity,
+        vote_id: Hash,
+        have: Vec<Hash>,
+    ) -> Self {
+        let id = requester.id();
+        Self {
+            signature: requester.sign(&Self::payload(&vote_id, &have, &id)),
+            vote_id,
+            have,
+            requester: id,
+        }
+    }
+
+    /// Verifies that the named requester really made this request.
+    pub fn verify(&self) -> Result<(), WireError> {
+        self.requester
+            .verifying_key()
+            .verify(
+                &Self::payload(&self.vote_id, &self.have, &self.requester),
+                &self.signature,
+            )
+            .map_err(|_| WireError::BadSignature)
+    }
+
+    fn payload(vote_id: &Hash, have: &[Hash], requester: &PerNetworkIdentityId) -> Enc {
+        let mut e = Enc::domain(BALLOT_REQUEST_SIGNATURE_DOMAIN);
+        e.fixed(vote_id.as_bytes());
+        e.seq(have.iter(), |e, hash| {
+            e.fixed(hash.as_bytes());
+        });
+        requester.encode(&mut e);
+        e
+    }
+
+    /// Encodes the request.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(BALLOT_REQUEST_DOMAIN);
+        e.fixed(self.vote_id.as_bytes());
+        e.seq(self.have.iter(), |e, hash| {
+            e.fixed(hash.as_bytes());
+        });
+        self.requester.encode(&mut e);
+        e.fixed(self.signature.as_bytes());
+        e.finish()
+    }
+
+    /// Decodes a request and verifies its signature.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, BALLOT_REQUEST_DOMAIN)?;
+        let vote_id = Hash::from_bytes(d.fixed::<32>()?);
+        let have = d.seq::<_, WireError>(|d| Ok(Hash::from_bytes(d.fixed::<32>()?)))?;
+        if have.len() > MAX_BALLOTS {
+            return Err(WireError::TooManyEntries {
+                got: have.len(),
+                limit: MAX_BALLOTS,
+            });
+        }
+        let request = Self {
+            vote_id,
+            have,
+            requester: get_identity(&mut d)?,
+            signature: Signature::from_bytes(d.fixed::<64>()?),
+        };
+        d.finish()?;
+        request.verify()?;
+        Ok(request)
+    }
+}
+
+/// Why a node would not serve ballots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BallotRefusal {
+    /// The requester is not a current member.
+    ///
+    /// **Flagged: §2.6.1 does not name a gate for ballot access.** Membership is
+    /// the natural floor: the electorate is drawn from members, a non-member has
+    /// no standing in the vote, and ballots reveal how individuals voted —
+    /// something the governance log itself never discloses. Deliberately *not*
+    /// `read-content`: a ballot is governance material rather than content, and
+    /// a network could restrict reading without meaning to blind its own voters.
+    NotAMember,
+    /// The responder could not evaluate the gate — no governance state yet.
+    CannotEvaluate,
+    /// The responder knows of no such open vote.
+    ///
+    /// Ordinary rather than exceptional: a node learns which votes are open from
+    /// its own log replay, so this is what a peer that has not caught up says.
+    UnknownVote,
+}
+
+/// A response carrying ballots — §2.6.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BallotResponse {
+    /// Ballots the requester did not already hold.
+    Ballots {
+        /// The ballots.
+        ballots: Vec<crate::Ballot>,
+        /// Whether the response was cut at [`MAX_BALLOTS_PER_RESPONSE`].
+        truncated: bool,
+    },
+    /// The request was refused.
+    Refused {
+        /// Why.
+        reason: BallotRefusal,
+    },
+}
+
+impl BallotResponse {
+    /// Encodes the response.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(BALLOT_RESPONSE_DOMAIN);
+        match self {
+            Self::Ballots { ballots, truncated } => {
+                e.variant(0);
+                e.seq(ballots.iter(), |e, ballot| ballot.encode(e));
+                e.bool(*truncated);
+            }
+            Self::Refused { reason } => {
+                e.variant(1).u8(match reason {
+                    BallotRefusal::NotAMember => 0,
+                    BallotRefusal::CannotEvaluate => 1,
+                    BallotRefusal::UnknownVote => 2,
+                });
+            }
+        }
+        e.finish()
+    }
+
+    /// Decodes a response, verifying every ballot's signature.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, BALLOT_RESPONSE_DOMAIN)?;
+        let response = match d.variant()? {
+            0 => {
+                let ballots = d.seq::<_, WireError>(|d| {
+                    let ballot = crate::Ballot {
+                        vote_id: Hash::from_bytes(d.fixed::<32>()?),
+                        voter: get_identity(d)?,
+                        approve: d.bool()?,
+                        cast_at: Timestamp::from_millis(d.i64()?),
+                        signature: Signature::from_bytes(d.fixed::<64>()?),
+                    };
+                    // Verified during decoding, so an unauthenticated ballot
+                    // never reaches the collection a certificate is built from.
+                    ballot.verify().map_err(|_| WireError::BadSignature)?;
+                    Ok(ballot)
+                })?;
+                if ballots.len() > MAX_BALLOTS_PER_RESPONSE {
+                    return Err(WireError::TooManyEntries {
+                        got: ballots.len(),
+                        limit: MAX_BALLOTS_PER_RESPONSE,
+                    });
+                }
+                Self::Ballots {
+                    ballots,
+                    truncated: d.bool()?,
+                }
+            }
+            1 => Self::Refused {
+                reason: match d.u8()? {
+                    0 => BallotRefusal::NotAMember,
+                    1 => BallotRefusal::CannotEvaluate,
+                    2 => BallotRefusal::UnknownVote,
+                    other => return Err(unknown("BallotRefusal", other)),
+                },
+            },
+            other => return Err(unknown("BallotResponse", other)),
+        };
+        d.finish()?;
+        Ok(response)
     }
 }

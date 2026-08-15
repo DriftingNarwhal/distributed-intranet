@@ -87,6 +87,20 @@ impl VoteProposal {
         })
     }
 
+    /// Appends this proposal to a canonical encoding.
+    ///
+    /// Public because a vote outcome is a log entry, and an entry's signature is
+    /// over its canonical bytes — so the proposal has to be encodable by the
+    /// entry that carries it, in exactly the form its `vote_id` is derived from.
+    pub fn encode(&self, e: &mut Enc) {
+        e.fixed(self.subject.as_bytes())
+            .str(self.electorate.as_str());
+        e.seq(self.electorate_snapshot.iter(), |e, voter| voter.encode(e));
+        e.fixed(self.snapshot_ref.as_bytes())
+            .i64(self.close_time.as_millis())
+            .u32(self.quorum);
+    }
+
     /// This proposal's identifier, derived from its own contents.
     ///
     /// Deriving rather than assigning means a ballot's `vote_id` binds to the
@@ -94,12 +108,7 @@ impl VoteProposal {
     /// cannot be replayed against a proposal with, say, a lower quorum.
     pub fn vote_id(&self) -> Hash {
         let mut e = Enc::domain(PROPOSAL_DOMAIN);
-        e.fixed(self.subject.as_bytes())
-            .str(self.electorate.as_str());
-        e.seq(self.electorate_snapshot.iter(), |e, voter| voter.encode(e));
-        e.fixed(self.snapshot_ref.as_bytes())
-            .i64(self.close_time.as_millis())
-            .u32(self.quorum);
+        self.encode(&mut e);
         hash_bytes(&e.finish())
     }
 }
@@ -182,7 +191,25 @@ pub struct QuorumCertificate {
     pub merkle_root: Hash,
 }
 
+impl Ballot {
+    /// Appends this ballot to a canonical encoding.
+    pub fn encode(&self, e: &mut Enc) {
+        e.fixed(self.vote_id.as_bytes());
+        self.voter.encode(e);
+        e.bool(self.approve)
+            .i64(self.cast_at.as_millis())
+            .fixed(self.signature.as_bytes());
+    }
+}
+
 impl QuorumCertificate {
+    /// Appends this certificate to a canonical encoding.
+    pub fn encode(&self, e: &mut Enc) {
+        e.fixed(self.vote_id.as_bytes());
+        e.seq(self.ballots.iter(), |e, ballot| ballot.encode(e));
+        e.fixed(self.merkle_root.as_bytes());
+    }
+
     /// Assembles a certificate from collected ballots.
     ///
     /// Ballots are sorted by hash so that two nodes assembling from the same set

@@ -9,7 +9,9 @@ use intranet_epoch::{
     seal_history,
 };
 use intranet_governance::{
-    AdmissionMode, EntryBody, GovernanceError, GovernanceLog, GovernanceState, GroupId,
+    AdmissionMode, Ballot, BallotRefusal, BallotRequest, BallotResponse, EntryBody,
+    GovernanceError, GovernanceLog, GovernanceState, GroupId, MAX_BALLOTS_PER_RESPONSE,
+    QuorumCertificate,
     HistoryAccess, LogEntry, MAX_ENTRIES_PER_RESPONSE, MembershipAction, PointerId,
     RotationReason, SyncRequest, SyncResponse,
 };
@@ -69,6 +71,29 @@ pub struct EpochRequestId(u64);
 pub enum NodeEvent {
     /// The node began listening on an address.
     Listening(Multiaddr),
+    /// Ballots arrived from a peer — §2.6.1.
+    BallotsReceived {
+        /// The peer that sent them.
+        peer: PeerId,
+        /// The vote they were cast under.
+        vote_id: Hash,
+        /// How many this node took.
+        accepted: usize,
+        /// How many it refused — not in the frozen electorate, cast after close,
+        /// or for a vote it does not know is open.
+        rejected: usize,
+        /// Whether the response was truncated.
+        truncated: bool,
+    },
+    /// A ballot request was refused.
+    BallotSyncRefused {
+        /// The peer that refused.
+        peer: PeerId,
+        /// The vote asked about.
+        vote_id: Hash,
+        /// Why.
+        reason: String,
+    },
     /// A peer reported which pointers it holds — Storage Spec §2.2.
     ///
     /// A fetch for anything worth having is already in flight when this is
@@ -588,6 +613,17 @@ pub struct MemberNode {
     /// exposure; the swarm below already holds the same key material as its
     /// Noise transport identity, derived from this very keypair (§1.2).
     identity: PerNetworkIdentity,
+    /// Ballots collected for open votes — §2.6.1.
+    ///
+    /// Keyed by vote, then by ballot hash, so a re-offered ballot replaces
+    /// rather than duplicates. Deliberately *not* in the governance log: a
+    /// ballot is the raw material a certificate is assembled from, and a vote
+    /// that never passes should leave nothing behind in every node's replay.
+    /// Once an outcome is appended the ballots have done their work — the
+    /// certificate carries the ones that mattered.
+    ballots: BTreeMap<Hash, BTreeMap<Hash, Ballot>>,
+    /// Ballot requests outstanding, and which vote each was for.
+    ballot_requests: BTreeMap<request_response::OutboundRequestId, Hash>,
     /// Mutable pointers this node holds — Storage Spec §2.2.
     ///
     /// One record per pointer, since a pointer *is* its latest record: a
@@ -709,6 +745,7 @@ impl MemberNode {
                     relay_client,
                     dcutr: dcutr::Behaviour::new(peer),
                     sync: crate::sync::behaviour(),
+                    ballot: crate::sync::ballot_behaviour(),
                     join: crate::sync::join_behaviour(),
                     epoch: crate::sync::epoch_behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
@@ -745,6 +782,8 @@ impl MemberNode {
             collection_requests: BTreeMap::new(),
             identity_id: identity.id(),
             identity: identity.clone(),
+            ballots: BTreeMap::new(),
+            ballot_requests: BTreeMap::new(),
             pointers: BTreeMap::new(),
             wrappings: BTreeMap::new(),
             pointer_digests: BTreeMap::new(),
@@ -1749,6 +1788,154 @@ impl MemberNode {
     // Mutable pointer distribution — Storage Spec §2.2, §5.3
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // Ballot collection — Core Protocol Spec §2.6.1
+    // -----------------------------------------------------------------------
+
+    /// Ballots this node holds for a vote.
+    pub fn ballots_for(&self, vote_id: &Hash) -> Vec<&Ballot> {
+        self.ballots
+            .get(vote_id)
+            .map(|by_hash| by_hash.values().collect())
+            .unwrap_or_default()
+    }
+
+    /// Casts this node's own ballot and records it — §2.6.1, point 2.
+    ///
+    /// Recorded locally rather than pushed: peers collect it by asking, which is
+    /// what lets a certificate be assembled later from ballots cast earlier.
+    pub fn cast_ballot(
+        &mut self,
+        vote_id: Hash,
+        approve: bool,
+        now: Timestamp,
+        identity: &PerNetworkIdentity,
+    ) -> Result<Ballot, GovernanceError> {
+        let ballot = Ballot::cast(identity, vote_id, approve, now);
+        if !self.record_ballot(ballot.clone()) {
+            return Err(GovernanceError::InvalidQuorumCertificate {
+                reason: "this node knows of no open vote matching that ballot".into(),
+            });
+        }
+        Ok(ballot)
+    }
+
+    /// Records a ballot, if it qualifies for a vote this node knows is open.
+    ///
+    /// Every check that can be made from replayed state is made here, because a
+    /// collection is only useful if what it holds can go into a certificate: the
+    /// signature, that the vote is open, that the voter is in *that vote's*
+    /// frozen electorate, and that the ballot was cast at or before close. A
+    /// collection that accepted anything would hand an assembler ballots that
+    /// make the certificate they build invalid.
+    pub fn record_ballot(&mut self, ballot: Ballot) -> bool {
+        if ballot.verify().is_err() {
+            return false;
+        }
+        let Some(state) = self.governance_state() else {
+            return false;
+        };
+        let Some(proposal) = state.open_votes.get(&ballot.vote_id) else {
+            return false;
+        };
+        if !proposal.electorate_snapshot.contains(&ballot.voter)
+            || ballot.cast_at > proposal.close_time
+        {
+            return false;
+        }
+        self.ballots
+            .entry(ballot.vote_id)
+            .or_default()
+            .insert(ballot.hash(), ballot);
+        true
+    }
+
+    /// Asks a peer for ballots this node does not hold — §2.6.1.
+    pub fn sync_ballots_with(
+        &mut self,
+        peer: PeerId,
+        vote_id: Hash,
+    ) -> request_response::OutboundRequestId {
+        let have: Vec<Hash> = self
+            .ballots
+            .get(&vote_id)
+            .map(|by_hash| by_hash.keys().copied().collect())
+            .unwrap_or_default();
+        let request = BallotRequest::create(&self.identity.clone(), vote_id, have);
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .ballot
+            .send_request(&peer, request);
+        self.ballot_requests.insert(id, vote_id);
+        id
+    }
+
+    /// Asks a peer for ballots on every vote this node knows is open.
+    ///
+    /// Which votes exist is answered by the log, not by the peer — proposals are
+    /// entries — so there is no digest to exchange first.
+    pub fn sync_open_votes_with(&mut self, peer: PeerId) -> usize {
+        let Some(state) = self.governance_state() else {
+            return 0;
+        };
+        let open: Vec<Hash> = state.open_votes.keys().copied().collect();
+        for vote_id in &open {
+            self.sync_ballots_with(peer, *vote_id);
+        }
+        open.len()
+    }
+
+    /// Assembles a certificate from the ballots collected for a vote — §2.6.1.
+    ///
+    /// `None` when this node knows of no such open vote. A certificate that does
+    /// not reach quorum is still returned: whether it passes is the *verifier's*
+    /// question, and hiding a short certificate here would make "no certificate"
+    /// mean both "the vote failed" and "I did not build one".
+    pub fn assemble_certificate(&self, vote_id: &Hash) -> Option<QuorumCertificate> {
+        let state = self.governance_state()?;
+        let proposal = state.open_votes.get(vote_id)?;
+        Some(QuorumCertificate::assemble(
+            proposal,
+            self.ballots_for(vote_id).into_iter().cloned(),
+        ))
+    }
+
+    /// Answers a peer's ballot request.
+    fn serve_ballots(&self, request: &BallotRequest) -> BallotResponse {
+        let Some(state) = self.governance_state() else {
+            return BallotResponse::Refused {
+                reason: BallotRefusal::CannotEvaluate,
+            };
+        };
+        if !state.is_member(&request.requester) {
+            return BallotResponse::Refused {
+                reason: BallotRefusal::NotAMember,
+            };
+        }
+        if !state.open_votes.contains_key(&request.vote_id) {
+            return BallotResponse::Refused {
+                reason: BallotRefusal::UnknownVote,
+            };
+        }
+
+        let have: std::collections::BTreeSet<Hash> = request.have.iter().copied().collect();
+        let mut ballots: Vec<Ballot> = self
+            .ballots
+            .get(&request.vote_id)
+            .map(|by_hash| {
+                by_hash
+                    .iter()
+                    .filter(|(hash, _)| !have.contains(*hash))
+                    .map(|(_, ballot)| ballot.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let truncated = ballots.len() > MAX_BALLOTS_PER_RESPONSE;
+        ballots.truncate(MAX_BALLOTS_PER_RESPONSE);
+        BallotResponse::Ballots { ballots, truncated }
+    }
+
     /// A pointer's current record, if this node holds one.
     pub fn pointer(&self, pointer_id: &PointerId) -> Option<&MutablePointer> {
         self.pointers.get(pointer_id)
@@ -2728,6 +2915,69 @@ impl MemberNode {
                             .add_address(&peer_id, address);
                     }
                 }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Ballot(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        let response = if request.requester.peer_id() != peer {
+                            BallotResponse::Refused {
+                                reason: BallotRefusal::NotAMember,
+                            }
+                        } else {
+                            self.serve_ballots(&request)
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .ballot
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        let Some(vote_id) = self.ballot_requests.remove(&request_id) else {
+                            continue;
+                        };
+                        match response {
+                            BallotResponse::Ballots { ballots, truncated } => {
+                                let offered = ballots.len();
+                                let accepted = ballots
+                                    .into_iter()
+                                    .filter(|ballot| self.record_ballot(ballot.clone()))
+                                    .count();
+                                return NodeEvent::BallotsReceived {
+                                    peer,
+                                    vote_id,
+                                    accepted,
+                                    rejected: offered - accepted,
+                                    truncated,
+                                };
+                            }
+                            BallotResponse::Refused { reason } => {
+                                return NodeEvent::BallotSyncRefused {
+                                    peer,
+                                    vote_id,
+                                    reason: match reason {
+                                        BallotRefusal::NotAMember => {
+                                            "refused: requester is not a current member".into()
+                                        }
+                                        BallotRefusal::CannotEvaluate => {
+                                            "refused: responder cannot evaluate governance state"
+                                                .into()
+                                        }
+                                        BallotRefusal::UnknownVote => {
+                                            "refused: responder knows of no such open vote".into()
+                                        }
+                                    },
+                                };
+                            }
+                        }
+                    }
+                },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Pointer(
                     request_response::Event::Message { peer, message, .. },

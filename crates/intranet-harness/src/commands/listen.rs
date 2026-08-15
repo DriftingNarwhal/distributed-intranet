@@ -112,6 +112,25 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                NodeEvent::BallotsReceived {
+                    peer,
+                    vote_id,
+                    accepted,
+                    rejected,
+                    truncated,
+                } => {
+                    println!(
+                        "ballots-received: peer={peer} vote={} accepted={accepted} \
+                         rejected={rejected} more={truncated}",
+                        vote_id.short()
+                    );
+                }
+                NodeEvent::BallotSyncRefused { peer, vote_id, reason } => {
+                    println!(
+                        "ballot-sync-refused: peer={peer} vote={} reason={reason}",
+                        vote_id.short()
+                    );
+                }
                 NodeEvent::PointerDigest {
                     peer,
                     offered,
