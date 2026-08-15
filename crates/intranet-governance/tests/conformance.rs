@@ -1202,6 +1202,89 @@ fn entries_on_the_canonical_chain_are_not_reported_as_voided() {
     assert_eq!(reconciliation.canonical.len(), 4);
 }
 
+#[test]
+fn member_vote_cannot_be_paired_with_auto_admit() {
+    // §2.4 and §2.6 define these independently and never address the pairing.
+    // Auto-admit says a valid invite admits immediately; member-vote says
+    // admission needs a quorum. A network cannot do both, and refusing is the
+    // fail-closed reading — the alternative silently privileges one setting and
+    // makes the other a lie.
+    let founder = identity(1);
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.governance_model = GovernanceModel::MemberVote {
+        electorate: GroupId::everyone(),
+        quorum: 3,
+        window_millis: 72_000,
+    };
+    policy.admission_mode = AdmissionMode::AutoAdmit;
+
+    // Refused at genesis, the first moment policy can be set.
+    let bad_genesis = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: policy.clone(),
+            everyone_capabilities: [Capability::ReadContent].into_iter().collect(),
+        },
+    );
+    assert!(matches!(
+        GovernanceState::genesis(&bad_genesis),
+        Err(GovernanceError::IncoherentPolicy { .. })
+    ));
+
+    // And refused on a policy change, the other moment — which is the one that
+    // matters in practice, since a network reaches member-vote by switching to
+    // it rather than opening under it.
+    let mut chain = vec![genesis(&founder)];
+    let state = GovernanceState::replay(&chain).unwrap();
+    let bad_change = LogEntry::create(
+        &founder,
+        Some(chain.last().unwrap().hash()),
+        at(100),
+        EntryBody::PolicyChange { policy },
+    );
+    assert!(matches!(
+        state.apply(&bad_change),
+        Err(GovernanceError::IncoherentPolicy { .. })
+    ));
+
+    // The coherent pairing is accepted, so the guard is about the combination
+    // rather than about member-vote itself.
+    let mut good = NetworkPolicy::conservative_default();
+    good.governance_model = GovernanceModel::MemberVote {
+        electorate: GroupId::everyone(),
+        quorum: 3,
+        window_millis: 72_000,
+    };
+    good.admission_mode = AdmissionMode::ExplicitIntake;
+    append(&mut chain, &founder, at(110), EntryBody::PolicyChange { policy: good });
+    assert!(GovernanceState::replay(&chain).is_ok());
+}
+
+#[test]
+fn auto_admit_stays_available_under_capability_holders() {
+    // The guard must not make auto-admit harder to use in the ordinary case.
+    // Capability-holder networks — the default — are untouched by any of this.
+    let founder = identity(1);
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.admission_mode = AdmissionMode::AutoAdmit;
+    assert_eq!(policy.governance_model, GovernanceModel::CapabilityHolders);
+
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy,
+            everyone_capabilities: [Capability::ReadContent].into_iter().collect(),
+        },
+    );
+    assert!(GovernanceState::genesis(&entry).is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // A vote actually deciding something (§2.6, §2.6.1)
 // ---------------------------------------------------------------------------

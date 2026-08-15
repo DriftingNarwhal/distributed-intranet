@@ -158,6 +158,7 @@ impl GovernanceState {
         };
 
         state.check_everyone_invariant()?;
+        state.check_policy_coherence()?;
         Ok(state)
     }
 
@@ -180,6 +181,7 @@ impl GovernanceState {
         let mut next = self.clone();
         next.mutate(entry)?;
         next.check_everyone_invariant()?;
+        next.check_policy_coherence()?;
         Ok(next)
     }
 
@@ -768,6 +770,37 @@ impl GovernanceState {
     ///
     /// The second case is the subtle one, and it is why this is a whole-state
     /// check rather than a check on the entry being applied.
+    /// Refuses policy combinations that require opposite things — §2.4, §2.6.
+    ///
+    /// Only one pairing is contradictory today, and it is contradictory in a way
+    /// that has no sensible resolution. **Auto-admit** (§2.4) says a valid invite
+    /// immediately places the joiner in `everyone`; **member-vote** (§2.6) says
+    /// admission requires a quorum of the electorate. A network configured for
+    /// both is asking for admission to be simultaneously automatic and
+    /// deliberated.
+    ///
+    /// Checked at genesis and on every policy change — the two moments policy
+    /// can be set — rather than at the moment a joiner is refused. Discovering
+    /// it then would mean the operator learns their network cannot admit anyone
+    /// from a confused joiner rather than from the action that broke it.
+    ///
+    /// **Flagged: the specs define both settings independently and never address
+    /// the pairing.** Refusing is the fail-closed reading: the alternative is
+    /// silently privileging one setting, which makes the other a lie.
+    fn check_policy_coherence(&self) -> Result<(), GovernanceError> {
+        if matches!(self.policy.governance_model, crate::GovernanceModel::MemberVote { .. })
+            && self.policy.admission_mode == crate::AdmissionMode::AutoAdmit
+        {
+            return Err(GovernanceError::IncoherentPolicy {
+                reason: "auto-admit grants membership on a valid invite, but member-vote \
+                         requires a quorum to approve admission — a network cannot do both, \
+                         so pair member-vote with explicit intake"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     fn check_everyone_invariant(&self) -> Result<(), GovernanceError> {
         let Some(everyone) = self.groups.get(&GroupId::everyone()) else {
             return Ok(());

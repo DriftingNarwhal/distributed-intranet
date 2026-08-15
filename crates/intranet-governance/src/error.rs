@@ -32,6 +32,18 @@ pub enum GovernanceError {
     #[error("only a genesis entry may have no parent")]
     MissingParent,
 
+    /// Two policy settings were configured to require opposite things.
+    ///
+    /// Refused rather than resolved in favour of one: a network whose policy
+    /// contradicts itself has no correct behaviour to fall back on, and picking
+    /// one silently would mean the operator's other setting was ignored without
+    /// anybody being told.
+    #[error("incoherent network policy: {reason}")]
+    IncoherentPolicy {
+        /// What contradicts what.
+        reason: String,
+    },
+
     /// The acting identity does not hold the capability the action requires.
     #[error("identity {identity} is not authorized: requires {capability}")]
     Unauthorized {
