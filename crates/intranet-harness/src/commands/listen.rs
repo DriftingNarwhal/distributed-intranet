@@ -112,6 +112,32 @@ impl ListenArgs {
                          more={truncated}"
                     );
                 }
+                NodeEvent::PointerDigest {
+                    peer,
+                    offered,
+                    wanted,
+                    truncated,
+                } => {
+                    println!(
+                        "pointer-digest: peer={peer} offered={offered} wanted={wanted} \
+                         more={truncated}"
+                    );
+                }
+                NodeEvent::PointersReceived {
+                    peer,
+                    accepted,
+                    rejected,
+                    wrappings,
+                    truncated,
+                } => {
+                    println!(
+                        "pointers-received: peer={peer} accepted={accepted} \
+                         rejected={rejected} wrappings={wrappings} more={truncated}"
+                    );
+                }
+                NodeEvent::PointerSyncRefused { peer, reason } => {
+                    println!("pointer-sync-refused: peer={peer} reason={reason}");
+                }
                 // Joins are surfaced and never answered, for the same reason
                 // key deliveries are not: admitting somebody to a network is
                 // the operator's decision, not a connectivity harness's.

@@ -33,7 +33,10 @@ use intranet_governance::{SyncRequest, SyncResponse};
 use intranet_invite::{JoinRequest, JoinResponse};
 use intranet_ledger::{LedgerRequest, LedgerResponse};
 use intranet_realtime::{MediaAck, MediaEnvelope, Signal, SignalAck};
-use intranet_storage::{ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse};
+use intranet_storage::{
+    ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse, PointerRequest,
+    PointerResponse,
+};
 use libp2p::StreamProtocol;
 use libp2p::request_response;
 use std::io;
@@ -72,6 +75,17 @@ pub const EPOCH_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/epoch-
 
 /// The chunk transfer protocol's libp2p identifier — Storage Spec §4.
 pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/1.0.0");
+
+/// The mutable pointer protocol's libp2p identifier — Storage Spec §2.2.
+///
+/// Pull-based like the governance log, and for the same reason rather than by
+/// analogy. §2.2 calls stale-pointer detection "a natural fit for the same
+/// gossip mechanism used for capability ledger propagation" — and the ledger is
+/// pulled here, because a broadcast has no history. A pointer published while a
+/// network is partitioned would never arrive on the far side, since the moment
+/// it was announced has passed. Pulling makes a heal a reconnect and a reconnect
+/// a sync, with no separate catch-up path to rot.
+pub const POINTER_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/pointer/1.0.0");
 
 /// The append-set collection protocol's libp2p identifier — Storage Spec §2.5.
 pub const COLLECTION_PROTOCOL: StreamProtocol =
@@ -197,6 +211,8 @@ wire_message!(EpochKeyRequest);
 wire_message!(EpochKeyResponse, MAX_EPOCH_MESSAGE_BYTES);
 wire_message!(ChunkRequest);
 wire_message!(ChunkResponse, MAX_CHUNK_MESSAGE_BYTES);
+wire_message!(PointerRequest);
+wire_message!(PointerResponse);
 wire_message!(CollectionRequest);
 wire_message!(CollectionResponse);
 wire_message!(Signal);
@@ -235,6 +251,8 @@ pub type JoinCodec = WireCodec<JoinRequest, JoinResponse>;
 pub type EpochCodec = WireCodec<EpochKeyRequest, EpochKeyResponse>;
 /// Codec for chunk transfer.
 pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
+/// Codec for mutable pointer sync.
+pub type PointerCodec = WireCodec<PointerRequest, PointerResponse>;
 /// Codec for append-set collection enumeration.
 pub type CollectionCodec = WireCodec<CollectionRequest, CollectionResponse>;
 /// Codec for call signalling.
@@ -345,6 +363,11 @@ pub fn epoch_behaviour() -> request_response::Behaviour<EpochCodec> {
 /// Builds the chunk transfer behaviour.
 pub fn chunk_behaviour() -> request_response::Behaviour<ChunkCodec> {
     build(CHUNK_PROTOCOL)
+}
+
+/// Builds the mutable pointer sync behaviour.
+pub fn pointer_behaviour() -> request_response::Behaviour<PointerCodec> {
+    build(POINTER_PROTOCOL)
 }
 
 /// Builds the append-set collection behaviour.

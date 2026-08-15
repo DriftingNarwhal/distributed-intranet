@@ -10,8 +10,8 @@ use intranet_epoch::{
 };
 use intranet_governance::{
     AdmissionMode, EntryBody, GovernanceError, GovernanceLog, GovernanceState, GroupId,
-    HistoryAccess, LogEntry, MAX_ENTRIES_PER_RESPONSE, MembershipAction, RotationReason,
-    SyncRequest, SyncResponse,
+    HistoryAccess, LogEntry, MAX_ENTRIES_PER_RESPONSE, MembershipAction, PointerId,
+    RotationReason, SyncRequest, SyncResponse,
 };
 use intranet_invite::{
     Invite, JoinRefusal, JoinRequest, JoinResponse, WaitingRoom, WaitingRoomEntry,
@@ -23,7 +23,9 @@ use intranet_ledger::{
 use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Signal, SignalAck, SignalBody};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
-    CollectionResponse, FetchPlan, MAX_COLLECTION_ENTRIES, StorageError, may_serve,
+    CollectionResponse, DekWrapping, FetchPlan, MAX_COLLECTION_ENTRIES,
+    MAX_POINTERS_PER_RESPONSE, MutablePointer, PointerDigestEntry, PointerRecord, PointerRefusal,
+    PointerRequest, PointerResponse, StorageError, may_serve,
 };
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
@@ -67,6 +69,41 @@ pub struct EpochRequestId(u64);
 pub enum NodeEvent {
     /// The node began listening on an address.
     Listening(Multiaddr),
+    /// A peer reported which pointers it holds — Storage Spec §2.2.
+    ///
+    /// A fetch for anything worth having is already in flight when this is
+    /// surfaced; the counts are for observability, not for the caller to act on.
+    PointerDigest {
+        /// The peer that answered.
+        peer: PeerId,
+        /// How many pointers it offered.
+        offered: usize,
+        /// How many of those this node did not already hold at least as new.
+        wanted: usize,
+        /// Whether its digest was truncated, so more remain.
+        truncated: bool,
+    },
+    /// Pointer records arrived from a peer — §2.2, §5.3.
+    PointersReceived {
+        /// The peer that sent them.
+        peer: PeerId,
+        /// How many records this node adopted.
+        accepted: usize,
+        /// How many it refused — a failed publish gate, a delisting, or a record
+        /// that did not supersede what it already held.
+        rejected: usize,
+        /// How many DEK wrappings it took alongside them.
+        wrappings: usize,
+        /// Whether the response was truncated.
+        truncated: bool,
+    },
+    /// A pointer request was refused.
+    PointerSyncRefused {
+        /// The peer that refused.
+        peer: PeerId,
+        /// Why.
+        reason: String,
+    },
     /// A peer presented an invite, and it passed every check this node can
     /// make without a clock — §5.6.
     ///
@@ -551,6 +588,26 @@ pub struct MemberNode {
     /// exposure; the swarm below already holds the same key material as its
     /// Noise transport identity, derived from this very keypair (§1.2).
     identity: PerNetworkIdentity,
+    /// Mutable pointers this node holds — Storage Spec §2.2.
+    ///
+    /// One record per pointer, since a pointer *is* its latest record: a
+    /// superseding record replaces rather than accumulates. Keeping older
+    /// versions would invite serving one, and §2.2's version rule exists
+    /// precisely so a stale record can never be presented as current.
+    pointers: BTreeMap<PointerId, MutablePointer>,
+    /// DEK wrappings held, by pointer and then by the rotation they are under.
+    ///
+    /// Keyed by rotation because a wrapping is only usable by someone holding
+    /// that rotation's epoch key, and because cleanup after a voided branch
+    /// (§5.3.1) is "replace the one under the stale rotation" rather than
+    /// "replace the wrapping". Wrapping under a given rotation is deterministic,
+    /// so two members re-wrapping the same object collide byte-for-byte and this
+    /// map converges rather than growing.
+    wrappings: BTreeMap<PointerId, BTreeMap<Hash, DekWrapping>>,
+    /// Pointer digests requested and not yet answered.
+    pointer_digests: BTreeMap<request_response::OutboundRequestId, PeerId>,
+    /// Pointer fetches requested and not yet answered.
+    pointer_fetches: BTreeMap<request_response::OutboundRequestId, PeerId>,
     /// Identities that presented an invite and are awaiting admission — §2.4.
     ///
     /// Node-local rather than a log entry, because waiting-room occupancy is not
@@ -656,6 +713,7 @@ impl MemberNode {
                     epoch: crate::sync::epoch_behaviour(),
                     ledger: crate::sync::ledger_behaviour(),
                     chunk: crate::sync::chunk_behaviour(),
+                    pointer: crate::sync::pointer_behaviour(),
                     collection: crate::sync::collection_behaviour(),
                     signal: crate::sync::signal_behaviour(),
                     media: crate::sync::media_behaviour(),
@@ -687,6 +745,10 @@ impl MemberNode {
             collection_requests: BTreeMap::new(),
             identity_id: identity.id(),
             identity: identity.clone(),
+            pointers: BTreeMap::new(),
+            wrappings: BTreeMap::new(),
+            pointer_digests: BTreeMap::new(),
+            pointer_fetches: BTreeMap::new(),
             waiting_room: WaitingRoom::new(),
             inbound_joins: BTreeMap::new(),
             next_join_request: 0,
@@ -1683,6 +1745,227 @@ impl MemberNode {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Mutable pointer distribution — Storage Spec §2.2, §5.3
+    // -----------------------------------------------------------------------
+
+    /// A pointer's current record, if this node holds one.
+    pub fn pointer(&self, pointer_id: &PointerId) -> Option<&MutablePointer> {
+        self.pointers.get(pointer_id)
+    }
+
+    /// Every pointer this node holds.
+    pub fn pointers(&self) -> impl Iterator<Item = &MutablePointer> {
+        self.pointers.values()
+    }
+
+    /// Wrappings held for a pointer, by rotation.
+    pub fn wrappings_for(&self, pointer_id: &PointerId) -> Vec<&DekWrapping> {
+        self.wrappings
+            .get(pointer_id)
+            .map(|by_rotation| by_rotation.values().collect())
+            .unwrap_or_default()
+    }
+
+    /// The wrapping for a pointer under a specific rotation, if held.
+    pub fn wrapping_under(
+        &self,
+        pointer_id: &PointerId,
+        rotation_ref: &Hash,
+    ) -> Option<&DekWrapping> {
+        self.wrappings.get(pointer_id)?.get(rotation_ref)
+    }
+
+    /// Accepts a pointer record, keeping whichever record wins — §2.2.
+    ///
+    /// Returns whether this node's view changed. The resolution rule is the
+    /// primitive's own: a higher version supersedes outright, and two records
+    /// claiming the *same* version are settled by lower record hash — the same
+    /// deterministic tie-break sibling governance entries use, so every node
+    /// holding both reaches the same answer regardless of arrival order.
+    ///
+    /// Records failing validation are refused rather than stored, so nothing
+    /// unusable can be served on. Validation is [`Self::pointer_is_publishable`].
+    pub fn accept_pointer(&mut self, pointer: MutablePointer) -> bool {
+        if !self.pointer_is_publishable(&pointer) {
+            return false;
+        }
+        match self.pointers.get(&pointer.pointer_id) {
+            Some(current) if !pointer.supersedes(current) => false,
+            _ => {
+                self.pointers.insert(pointer.pointer_id, pointer);
+                true
+            }
+        }
+    }
+
+    /// Accepts a DEK wrapping — §5.3.
+    ///
+    /// Any current member may publish one, so this checks membership and the
+    /// wrapper's signature rather than ownership. What makes a wrapping
+    /// *usable* is that it unwraps to the owner's committed DEK, which only a
+    /// holder of the relevant epoch key can check and which is therefore left to
+    /// whoever opens it — storing an unusable wrapping costs a little space and
+    /// is corrected by the next re-wrap, whereas refusing one this node cannot
+    /// yet check would drop wrappings for rotations it has not caught up to.
+    pub fn accept_wrapping(&mut self, wrapping: DekWrapping) -> bool {
+        if wrapping.verify_signature().is_err() {
+            return false;
+        }
+        let Some(state) = self.governance_state() else {
+            return false;
+        };
+        if !state.is_member(&wrapping.wrapper_identity) {
+            return false;
+        }
+        self.wrappings
+            .entry(wrapping.pointer_id)
+            .or_default()
+            .insert(wrapping.rotation_ref, wrapping);
+        true
+    }
+
+    /// Whether a pointer record may be stored and served here — §2.8, §2.2.
+    ///
+    /// Both publish gates, re-checked against this node's own replayed state.
+    /// §2.2 is explicit that either check failing means the publish is "rejected
+    /// outright by receiving/replicating nodes, fail-closed and protocol-enforced,
+    /// not merely conventional" — so a receiving node re-derives them rather than
+    /// trusting that the publisher checked.
+    ///
+    /// Delisted pointers are refused too. §3.4 of App Hosting defines delisting
+    /// as stopping content being "servable and surfaced", and a node that stored
+    /// and re-served a delisted record would leave moderation effective only
+    /// against nodes that happened to be listening at the time.
+    fn pointer_is_publishable(&self, pointer: &MutablePointer) -> bool {
+        if pointer.verify().is_err() {
+            return false;
+        }
+        let Some(state) = self.governance_state() else {
+            return false;
+        };
+        if state.delisted.contains(&pointer.pointer_id) {
+            return false;
+        }
+        state.allows_content_type(&pointer.content_type)
+            && state.identity_holds(
+                &pointer.owner_identity,
+                &intranet_governance::Capability::Publish(pointer.content_type.clone()),
+            )
+    }
+
+    /// Asks a peer what pointers it holds, starting a pointer sync — §2.2.
+    ///
+    /// Pull-based like the governance log: a pointer published during a
+    /// partition arrives on heal because the far side asks for it, not because
+    /// anybody replays an announcement nobody heard.
+    pub fn sync_pointers_with(&mut self, peer: PeerId) -> request_response::OutboundRequestId {
+        let request = PointerRequest::digest(&self.identity.clone());
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .pointer
+            .send_request(&peer, request);
+        self.pointer_digests.insert(id, peer);
+        id
+    }
+
+    /// Asks a peer for specific pointer records and their wrappings.
+    pub fn request_pointers(
+        &mut self,
+        peer: PeerId,
+        wanted: Vec<PointerId>,
+    ) -> request_response::OutboundRequestId {
+        let request = PointerRequest::fetch(&self.identity.clone(), wanted);
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .pointer
+            .send_request(&peer, request);
+        self.pointer_fetches.insert(id, peer);
+        id
+    }
+
+    /// Answers a peer's pointer request, applying the §5.4 serving gate.
+    fn serve_pointers(&self, request: &PointerRequest) -> PointerResponse {
+        // Gated before anything is consulted, so a refusal never depends on what
+        // this node happens to hold. The digest is gated as tightly as the
+        // records: a digest is a list of everything published, which is the
+        // content graph itself, and handing it to a waiting-room identity would
+        // disclose the shape of a network's contents to somebody §2.4 promises
+        // essentially nothing.
+        let Some(state) = self.governance_state() else {
+            return PointerResponse::Refused {
+                reason: PointerRefusal::CannotEvaluate,
+            };
+        };
+        if may_serve(request.requester(), &state).is_err() {
+            return PointerResponse::Refused {
+                reason: PointerRefusal::NoReadContent,
+            };
+        }
+
+        match request {
+            PointerRequest::Digest { .. } => {
+                let mut entries: Vec<PointerDigestEntry> = self
+                    .pointers
+                    .values()
+                    .filter(|pointer| !state.delisted.contains(&pointer.pointer_id))
+                    .map(|pointer| PointerDigestEntry {
+                        pointer_id: pointer.pointer_id,
+                        version: pointer.version,
+                        record_hash: pointer.record_hash(),
+                    })
+                    .collect();
+                let truncated = entries.len() > MAX_POINTERS_PER_RESPONSE;
+                entries.truncate(MAX_POINTERS_PER_RESPONSE);
+                PointerResponse::Digest { entries, truncated }
+            }
+            PointerRequest::Fetch { wanted, .. } => {
+                let mut records: Vec<PointerRecord> = wanted
+                    .iter()
+                    .filter(|id| !state.delisted.contains(*id))
+                    .filter_map(|id| {
+                        let pointer = self.pointers.get(id)?;
+                        Some(PointerRecord {
+                            pointer: pointer.clone(),
+                            wrappings: self
+                                .wrappings
+                                .get(id)
+                                .map(|by_rotation| by_rotation.values().cloned().collect())
+                                .unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+                let truncated = records.len() > MAX_POINTERS_PER_RESPONSE;
+                records.truncate(MAX_POINTERS_PER_RESPONSE);
+                PointerResponse::Records { records, truncated }
+            }
+        }
+    }
+
+    /// Which of a peer's digest entries are worth fetching.
+    ///
+    /// Anything unknown, anything at a higher version, and — the case a
+    /// version-only comparison misses — anything at the *same* version with a
+    /// different record hash. That last one is a genuine same-version fork
+    /// (§2.2), and skipping it would leave two nodes permanently disagreeing
+    /// while each believed it was up to date.
+    fn pointers_worth_fetching(&self, entries: &[PointerDigestEntry]) -> Vec<PointerId> {
+        entries
+            .iter()
+            .filter(|entry| match self.pointers.get(&entry.pointer_id) {
+                None => true,
+                Some(held) => {
+                    entry.version > held.version
+                        || (entry.version == held.version
+                            && entry.record_hash != held.record_hash())
+                }
+            })
+            .map(|entry| entry.pointer_id)
+            .collect()
+    }
+
     /// Applies every §5.6 check this node can make without a clock.
     fn screen_join(&self, request: &JoinRequest, peer: PeerId) -> Result<(), JoinRefusal> {
         // A signed request proves the named joiner asked; it does not prove the
@@ -2100,6 +2383,7 @@ impl MemberNode {
                     // protocol failure, which is ignored below.
                     self.sync_with(peer_id);
                     self.sync_ledger_with(peer_id);
+                    self.sync_pointers_with(peer_id);
                     return NodeEvent::Connected {
                         peer: peer_id,
                         tier,
@@ -2231,6 +2515,14 @@ impl MemberNode {
                                 // than leaving the ledger empty until the next
                                 // reconnect.
                                 self.sync_ledger_with(peer);
+                                // And re-ask for pointers, for the same reason
+                                // one step removed: a pointer is refused unless
+                                // its owner currently holds `publish:<type>` and
+                                // its type is allowed, both of which are answers
+                                // this node's log has just changed. A record
+                                // rejected a moment ago may be perfectly valid
+                                // now, and nothing else would ever re-offer it.
+                                self.sync_pointers_with(peer);
                             }
                             return NodeEvent::Synced {
                                 peer,
@@ -2436,6 +2728,93 @@ impl MemberNode {
                             .add_address(&peer_id, address);
                     }
                 }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Pointer(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
+                    request_response::Message::Request {
+                        request, channel, ..
+                    } => {
+                        // Bound to the connection, as chunk requests are: a
+                        // signature proves the named identity asked, never that
+                        // whoever delivered it is that identity.
+                        let response = if request.requester().peer_id() != peer {
+                            PointerResponse::Refused {
+                                reason: PointerRefusal::NoReadContent,
+                            }
+                        } else {
+                            self.serve_pointers(&request)
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .pointer
+                            .send_response(channel, response);
+                    }
+                    request_response::Message::Response {
+                        request_id,
+                        response,
+                    } => {
+                        let digest_peer = self.pointer_digests.remove(&request_id);
+                        let fetch_peer = self.pointer_fetches.remove(&request_id);
+                        if digest_peer.is_none() && fetch_peer.is_none() {
+                            continue;
+                        }
+                        match response {
+                            PointerResponse::Digest { entries, truncated } => {
+                                let wanted = self.pointers_worth_fetching(&entries);
+                                let count = wanted.len();
+                                if !wanted.is_empty() {
+                                    self.request_pointers(peer, wanted);
+                                }
+                                return NodeEvent::PointerDigest {
+                                    peer,
+                                    offered: entries.len(),
+                                    wanted: count,
+                                    truncated,
+                                };
+                            }
+                            PointerResponse::Records { records, truncated } => {
+                                let mut accepted = 0;
+                                let mut rejected = 0;
+                                let mut wrappings = 0;
+                                for record in records {
+                                    if self.accept_pointer(record.pointer) {
+                                        accepted += 1;
+                                    } else {
+                                        rejected += 1;
+                                    }
+                                    for wrapping in record.wrappings {
+                                        if self.accept_wrapping(wrapping) {
+                                            wrappings += 1;
+                                        }
+                                    }
+                                }
+                                return NodeEvent::PointersReceived {
+                                    peer,
+                                    accepted,
+                                    rejected,
+                                    wrappings,
+                                    truncated,
+                                };
+                            }
+                            PointerResponse::Refused { reason } => {
+                                return NodeEvent::PointerSyncRefused {
+                                    peer,
+                                    reason: match reason {
+                                        PointerRefusal::NoReadContent => {
+                                            "refused: requester holds no read-content".into()
+                                        }
+                                        PointerRefusal::CannotEvaluate => {
+                                            "refused: responder cannot evaluate governance state"
+                                                .into()
+                                        }
+                                    },
+                                };
+                            }
+                        }
+                    }
+                },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Join(
                     request_response::Event::Message { peer, message, .. },

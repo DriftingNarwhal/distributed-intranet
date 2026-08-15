@@ -24,7 +24,7 @@ harness.
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 573 tests and `cargo clippy --workspace --all-targets` reports no
+passes 580 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -316,7 +316,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 573 tests
+cargo test --workspace                      # 580 tests
 cargo run -p intranet-harness -- --help
 ```
 

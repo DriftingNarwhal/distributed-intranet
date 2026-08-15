@@ -27,6 +27,7 @@
 
 use crate::Cid;
 use intranet_crypto::{Dec, DecodeError, Enc, Hash, Signature};
+use intranet_governance::PointerId;
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 
 /// Domain tag for a chunk request signature.
@@ -61,6 +62,14 @@ pub enum WireError {
     ChunkTooLarge {
         /// The size claimed.
         size: usize,
+    },
+    /// A message carried more entries, or a longer field, than its ceiling.
+    #[error("message carried {got}, over the {limit} ceiling")]
+    TooManyEntries {
+        /// What was presented.
+        got: usize,
+        /// The ceiling.
+        limit: usize,
     },
 }
 
@@ -542,4 +551,416 @@ pub fn decode_entry(bytes: &[u8]) -> Result<crate::AppendSetEntry, WireError> {
         .verify_signature()
         .map_err(|_| WireError::BadSignature)?;
     Ok(entry)
+}
+
+// ---------------------------------------------------------------------------
+// Mutable pointers and DEK wrappings — Storage Spec §2.2, §5.3
+//
+// # Why pointers sync rather than broadcast
+//
+// §2.2 calls stale-pointer detection "a natural fit for the same gossip
+// mechanism used for capability ledger propagation", and the ledger is pulled
+// here rather than pushed for a reason that applies to pointers with equal
+// force: a broadcast has no history. A pointer published while two halves of a
+// network cannot see each other would simply never arrive, because the moment it
+// was announced has passed. Pulling makes a heal a reconnect and a reconnect a
+// sync, exactly as for the governance log.
+//
+// # Why the digest carries a record hash and not just a version
+//
+// Two publishers can each build on the same prior version, producing two valid
+// records claiming the *identical* version (§2.2). A digest keyed on version
+// alone reports those as agreeing, so neither side ever fetches the other's
+// record and the divergence is permanent — the one failure mode a pointer sync
+// exists to prevent. Carrying the record hash makes a same-version disagreement
+// visible, at which point the existing lower-hash tie-break settles it.
+// ---------------------------------------------------------------------------
+
+/// Domain tag for the signature a requester makes over a pointer request.
+const POINTER_REQUEST_SIGNATURE_DOMAIN: &str = "intranet.pointer-request.v1";
+/// Domain tag for a pointer request on the wire.
+const POINTER_REQUEST_DOMAIN: &str = "intranet.wire.pointer-request.v1";
+/// Domain tag for a pointer response on the wire.
+const POINTER_RESPONSE_DOMAIN: &str = "intranet.wire.pointer-response.v1";
+
+/// The most pointers one response will carry.
+///
+/// **Flagged: §2.2 sets no bound.** One is needed because a node's pointer set
+/// grows with everything the network has ever published. A requester that needs
+/// more asks again, the same way a truncated governance sync is resumed.
+pub const MAX_POINTERS_PER_RESPONSE: usize = 256;
+
+/// The most DEK wrappings one pointer's record will carry.
+///
+/// **Flagged: §5.3 sets no bound.** At most one wrapping exists per rotation, by
+/// determinism, so a legitimate record carries the current one plus any not yet
+/// cleaned up after a voided branch (§5.3.1). 16 is far above that while stopping
+/// a peer padding a record with wrappings for rotations nobody has.
+pub const MAX_WRAPPINGS_PER_POINTER: usize = 16;
+
+/// The largest wrapped DEK this build will accept.
+///
+/// **Flagged: the specs set no bound.** A wrapped 32-byte DEK is a nonce, the
+/// ciphertext and a tag — well under 128 bytes. 1 KiB bounds a hostile record
+/// without constraining any real one.
+pub const MAX_WRAPPED_DEK_BYTES: usize = 1024;
+
+/// One pointer's state, as a peer summarises it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerDigestEntry {
+    /// Which pointer.
+    pub pointer_id: PointerId,
+    /// Its version, so a requester can skip anything it already has newer.
+    pub version: u64,
+    /// The record's hash, which is what makes a same-version fork visible.
+    pub record_hash: Hash,
+}
+
+/// A pointer and the wrappings that open it.
+///
+/// Carried together because they are useless apart: a resolver needs the record
+/// to know what to fetch and the wrapping to decrypt it, and fetching them over
+/// two round trips would make the common case slower for no benefit. They remain
+/// *separately valid* — a wrapping is checked against the owner's commitment,
+/// never against whoever sent it (§5.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerRecord {
+    /// The signed pointer record.
+    pub pointer: crate::MutablePointer,
+    /// Wrappings this node holds for it, keyed by rotation in the sender's view.
+    pub wrappings: Vec<crate::DekWrapping>,
+}
+
+/// A request for pointer state — §2.2.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PointerRequest {
+    /// "What pointers do you hold, and at what version?"
+    Digest {
+        /// Who is asking, for the `read-content` gate (§5.4).
+        requester: PerNetworkIdentityId,
+        /// The requester's signature.
+        signature: Signature,
+    },
+    /// "Send me these pointers and their wrappings."
+    Fetch {
+        /// Which pointers are wanted.
+        wanted: Vec<PointerId>,
+        /// Who is asking.
+        requester: PerNetworkIdentityId,
+        /// The requester's signature.
+        signature: Signature,
+    },
+}
+
+impl PointerRequest {
+    /// Builds and signs a digest request.
+    pub fn digest(requester: &PerNetworkIdentity) -> Self {
+        let id = requester.id();
+        Self::Digest {
+            signature: requester.sign(&Self::payload(&id, &[])),
+            requester: id,
+        }
+    }
+
+    /// Builds and signs a fetch request.
+    pub fn fetch(requester: &PerNetworkIdentity, wanted: Vec<PointerId>) -> Self {
+        let id = requester.id();
+        Self::Fetch {
+            signature: requester.sign(&Self::payload(&id, &wanted)),
+            requester: id,
+            wanted,
+        }
+    }
+
+    /// Who is asking.
+    pub fn requester(&self) -> &PerNetworkIdentityId {
+        match self {
+            Self::Digest { requester, .. } | Self::Fetch { requester, .. } => requester,
+        }
+    }
+
+    /// Verifies that the named requester really made this request.
+    pub fn verify(&self) -> Result<(), WireError> {
+        let (requester, wanted, signature) = match self {
+            Self::Digest {
+                requester,
+                signature,
+            } => (requester, [].as_slice(), signature),
+            Self::Fetch {
+                wanted,
+                requester,
+                signature,
+            } => (requester, wanted.as_slice(), signature),
+        };
+        requester
+            .verifying_key()
+            .verify(&Self::payload(requester, wanted), signature)
+            .map_err(|_| WireError::BadSignature)
+    }
+
+    fn payload(requester: &PerNetworkIdentityId, wanted: &[PointerId]) -> Enc {
+        let mut e = Enc::domain(POINTER_REQUEST_SIGNATURE_DOMAIN);
+        requester.encode(&mut e);
+        // The wanted set is signed, so a request cannot be widened in flight to
+        // pull pointers the requester never asked for under their standing.
+        e.seq(wanted.iter(), |e, id| {
+            e.fixed(id.as_bytes());
+        });
+        e
+    }
+
+    /// Encodes the request.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(POINTER_REQUEST_DOMAIN);
+        match self {
+            Self::Digest {
+                requester,
+                signature,
+            } => {
+                e.variant(0);
+                requester.encode(&mut e);
+                e.fixed(signature.as_bytes());
+            }
+            Self::Fetch {
+                wanted,
+                requester,
+                signature,
+            } => {
+                e.variant(1);
+                e.seq(wanted.iter(), |e, id| {
+                    e.fixed(id.as_bytes());
+                });
+                requester.encode(&mut e);
+                e.fixed(signature.as_bytes());
+            }
+        }
+        e.finish()
+    }
+
+    /// Decodes a request and verifies its signature.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, POINTER_REQUEST_DOMAIN)?;
+        let request = match d.variant()? {
+            0 => Self::Digest {
+                requester: get_identity(&mut d)?,
+                signature: Signature::from_bytes(d.fixed::<64>()?),
+            },
+            1 => {
+                let wanted = d.seq::<_, WireError>(|d| Ok(PointerId::from_bytes(d.fixed::<32>()?)))?;
+                if wanted.len() > MAX_POINTERS_PER_RESPONSE {
+                    return Err(WireError::TooManyEntries {
+                        got: wanted.len(),
+                        limit: MAX_POINTERS_PER_RESPONSE,
+                    });
+                }
+                Self::Fetch {
+                    wanted,
+                    requester: get_identity(&mut d)?,
+                    signature: Signature::from_bytes(d.fixed::<64>()?),
+                }
+            }
+            other => return Err(unknown("PointerRequest", other)),
+        };
+        d.finish()?;
+        request.verify()?;
+        Ok(request)
+    }
+}
+
+/// Why a node would not answer a pointer request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerRefusal {
+    /// The requester does not hold `read-content` (§5.4).
+    ///
+    /// Gating the *digest* matters as much as gating the records: a digest is a
+    /// list of everything the network has published, which is the content graph
+    /// itself. Serving it to a waiting-room identity would hand over the shape
+    /// of a network's contents to somebody §2.4 promises essentially nothing.
+    NoReadContent,
+    /// The responder could not evaluate the gate — no governance state yet.
+    CannotEvaluate,
+}
+
+/// A response to a pointer request — §2.2.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PointerResponse {
+    /// What this node holds.
+    Digest {
+        /// One entry per pointer held.
+        entries: Vec<PointerDigestEntry>,
+        /// Whether the list was cut at [`MAX_POINTERS_PER_RESPONSE`].
+        truncated: bool,
+    },
+    /// The requested records.
+    Records {
+        /// Pointers and their wrappings.
+        records: Vec<PointerRecord>,
+        /// Whether the list was cut at [`MAX_POINTERS_PER_RESPONSE`].
+        truncated: bool,
+    },
+    /// The request was refused.
+    Refused {
+        /// Why.
+        reason: PointerRefusal,
+    },
+}
+
+impl PointerResponse {
+    /// Encodes the response.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(POINTER_RESPONSE_DOMAIN);
+        match self {
+            Self::Digest { entries, truncated } => {
+                e.variant(0);
+                e.seq(entries.iter(), |e, entry| {
+                    e.fixed(entry.pointer_id.as_bytes())
+                        .u64(entry.version)
+                        .fixed(entry.record_hash.as_bytes());
+                });
+                e.bool(*truncated);
+            }
+            Self::Records { records, truncated } => {
+                e.variant(1);
+                e.seq(records.iter(), |e, record| {
+                    put_pointer(e, &record.pointer);
+                    e.seq(record.wrappings.iter(), |e, wrapping| {
+                        put_wrapping(e, wrapping);
+                    });
+                });
+                e.bool(*truncated);
+            }
+            Self::Refused { reason } => {
+                e.variant(2).u8(match reason {
+                    PointerRefusal::NoReadContent => 0,
+                    PointerRefusal::CannotEvaluate => 1,
+                });
+            }
+        }
+        e.finish()
+    }
+
+    /// Decodes a response, verifying every signature it carries.
+    ///
+    /// Both the pointer's owner signature and each wrapping's wrapper signature
+    /// are checked here, so nothing structurally unauthenticated reaches a
+    /// caller. What is *not* checked here is authorization — the publish gates
+    /// and the delisting state are governance questions, answered against
+    /// replayed state by whoever consumes the record.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut d = Dec::domain(bytes, POINTER_RESPONSE_DOMAIN)?;
+        let response = match d.variant()? {
+            0 => {
+                let entries = d.seq::<_, WireError>(|d| {
+                    Ok(PointerDigestEntry {
+                        pointer_id: PointerId::from_bytes(d.fixed::<32>()?),
+                        version: d.u64()?,
+                        record_hash: Hash::from_bytes(d.fixed::<32>()?),
+                    })
+                })?;
+                if entries.len() > MAX_POINTERS_PER_RESPONSE {
+                    return Err(WireError::TooManyEntries {
+                        got: entries.len(),
+                        limit: MAX_POINTERS_PER_RESPONSE,
+                    });
+                }
+                Self::Digest {
+                    entries,
+                    truncated: d.bool()?,
+                }
+            }
+            1 => {
+                let records = d.seq::<_, WireError>(|d| {
+                    let pointer = get_pointer(d)?;
+                    let wrappings = d.seq::<_, WireError>(get_wrapping)?;
+                    if wrappings.len() > MAX_WRAPPINGS_PER_POINTER {
+                        return Err(WireError::TooManyEntries {
+                            got: wrappings.len(),
+                            limit: MAX_WRAPPINGS_PER_POINTER,
+                        });
+                    }
+                    Ok(PointerRecord {
+                        pointer,
+                        wrappings,
+                    })
+                })?;
+                if records.len() > MAX_POINTERS_PER_RESPONSE {
+                    return Err(WireError::TooManyEntries {
+                        got: records.len(),
+                        limit: MAX_POINTERS_PER_RESPONSE,
+                    });
+                }
+                Self::Records {
+                    records,
+                    truncated: d.bool()?,
+                }
+            }
+            2 => Self::Refused {
+                reason: match d.u8()? {
+                    0 => PointerRefusal::NoReadContent,
+                    1 => PointerRefusal::CannotEvaluate,
+                    other => return Err(unknown("PointerRefusal", other)),
+                },
+            },
+            other => return Err(unknown("PointerResponse", other)),
+        };
+        d.finish()?;
+        Ok(response)
+    }
+}
+
+fn put_pointer(e: &mut Enc, pointer: &crate::MutablePointer) {
+    e.fixed(pointer.pointer_id.as_bytes());
+    pointer.owner_identity.encode(e);
+    e.str(pointer.content_type.as_str())
+        .fixed(pointer.current_cid.hash().as_bytes())
+        .fixed(pointer.dek_commitment.as_bytes())
+        .u64(pointer.version)
+        .fixed(pointer.signature.as_bytes());
+}
+
+fn get_pointer(d: &mut Dec<'_>) -> Result<crate::MutablePointer, WireError> {
+    let pointer = crate::MutablePointer {
+        pointer_id: PointerId::from_bytes(d.fixed::<32>()?),
+        owner_identity: get_identity(d)?,
+        content_type: intranet_governance::ContentType::new(d.str()?),
+        current_cid: Cid::from_hash(Hash::from_bytes(d.fixed::<32>()?)),
+        dek_commitment: Hash::from_bytes(d.fixed::<32>()?),
+        version: d.u64()?,
+        signature: Signature::from_bytes(d.fixed::<64>()?),
+    };
+    // Re-verified against the canonically re-encoded payload, so a codec that
+    // disagreed with the signing encoding produces a rejected record rather than
+    // a record nobody signed — the same property the governance codec relies on.
+    pointer.verify().map_err(|_| WireError::BadSignature)?;
+    Ok(pointer)
+}
+
+fn put_wrapping(e: &mut Enc, wrapping: &crate::DekWrapping) {
+    e.fixed(wrapping.pointer_id.as_bytes())
+        .bytes(&wrapping.wrapped_dek)
+        .fixed(wrapping.rotation_ref.as_bytes());
+    wrapping.wrapper_identity.encode(e);
+    e.fixed(wrapping.signature.as_bytes());
+}
+
+fn get_wrapping(d: &mut Dec<'_>) -> Result<crate::DekWrapping, WireError> {
+    let pointer_id = PointerId::from_bytes(d.fixed::<32>()?);
+    let wrapped_dek = d.bytes()?;
+    if wrapped_dek.len() > MAX_WRAPPED_DEK_BYTES {
+        return Err(WireError::TooManyEntries {
+            got: wrapped_dek.len(),
+            limit: MAX_WRAPPED_DEK_BYTES,
+        });
+    }
+    let wrapping = crate::DekWrapping {
+        pointer_id,
+        wrapped_dek: wrapped_dek.to_vec(),
+        rotation_ref: Hash::from_bytes(d.fixed::<32>()?),
+        wrapper_identity: get_identity(d)?,
+        signature: Signature::from_bytes(d.fixed::<64>()?),
+    };
+    wrapping
+        .verify_signature()
+        .map_err(|_| WireError::BadSignature)?;
+    Ok(wrapping)
 }

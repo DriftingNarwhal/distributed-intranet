@@ -10,8 +10,8 @@
 )]
 
 use crate::sync::{
-    ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, SignalCodec,
-    SyncCodec,
+    ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, PointerCodec,
+    SignalCodec, SyncCodec,
 };
 use libp2p::{
     dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
@@ -72,6 +72,14 @@ pub struct MemberBehaviour {
     /// backpressure story (§4.5) and the authorization gate (§5.4) are all
     /// specific to it.
     pub chunk: request_response::Behaviour<ChunkCodec>,
+    /// Mutable pointer sync — Storage Spec §2.2.
+    ///
+    /// Its own protocol rather than a message on chunk transfer, because the two
+    /// move different things under different rules: chunks are immutable bytes
+    /// addressed by their own hash, while a pointer is a small signed record
+    /// that is *replaced* over time and whose replacement rule — higher version,
+    /// then lower record hash — is the whole substance of the protocol.
+    pub pointer: request_response::Behaviour<PointerCodec>,
     /// Append-set collection enumeration — Storage Spec §2.5.
     ///
     /// One primitive, several consumers: search postings (Search Spec §3.1) and
