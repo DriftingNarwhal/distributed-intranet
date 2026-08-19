@@ -309,6 +309,17 @@ impl ListenArgs {
                         to.iter().map(|id| id.short()).collect::<Vec<_>>().join(",")
                     );
                 }
+                NodeEvent::MediaRefused { call, from, reason } => {
+                    // Printed, not swallowed. A run of these is what "I
+                    // volunteered more bandwidth than I have" looks like from
+                    // inside the node, and it is invisible any other way.
+                    println!(
+                        "call-refused: call={} from={} reason={}",
+                        call.short(),
+                        from.short(),
+                        reason
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

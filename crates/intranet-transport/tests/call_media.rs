@@ -19,7 +19,7 @@ use intranet_realtime::{
     Topology,
     TopologyProposal,
 };
-use intranet_transport::{MemberNode, NodeEvent};
+use intranet_transport::{MediaRelayDenied, MediaRelayLimits, MemberNode, NodeEvent};
 use libp2p::Multiaddr;
 use libp2p::multiaddr::Protocol;
 use std::time::Duration;
@@ -315,7 +315,7 @@ async fn a_relay_forwards_media_it_cannot_read() {
 
     // The relay agrees to carry the call. This is the entirety of what it is
     // told: the call id and who is in it.
-    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]);
+    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
     assert!(relay.is_relaying(&call));
 
     let plaintext = b"this must never reach the relay in the clear";
@@ -385,10 +385,9 @@ async fn a_relay_fans_one_envelope_out_to_the_rest_of_the_call() {
 
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
-    relay.relay_call(
-        call,
-        [caller_identity.id(), a_identity.id(), b_identity.id()],
-    );
+    relay
+        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .unwrap();
 
     let plaintext = b"one envelope in, two out";
     // One send. Not one per recipient — that is the whole measurement.
@@ -489,7 +488,7 @@ async fn a_relay_refuses_to_fan_out_for_a_sender_outside_the_call() {
 
     // Control first, so a silent drop cannot be mistaken for enforcement: the
     // relay does fan out for this call when the sender is in it.
-    relay.relay_call(call, [caller_identity.id(), a_identity.id()]);
+    relay.relay_call(call, [caller_identity.id(), a_identity.id()]).unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -563,10 +562,9 @@ async fn a_relay_will_not_fan_out_for_a_spoofed_sender() {
 
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
-    relay.relay_call(
-        call,
-        [caller_identity.id(), a_identity.id(), b_identity.id()],
-    );
+    relay
+        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .unwrap();
 
     // Control: the real caller's fan-out is carried.
     caller.send_media(
@@ -639,15 +637,17 @@ async fn a_relay_that_is_also_a_participant_receives_as_well_as_forwards() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     // The relay is in the call this time.
-    relay.relay_call(
-        call,
-        [
-            caller_identity.id(),
-            a_identity.id(),
-            relay_identity.id(),
-            b_identity.id(),
-        ],
-    );
+    relay
+        .relay_call(
+            call,
+            [
+                caller_identity.id(),
+                a_identity.id(),
+                relay_identity.id(),
+                b_identity.id(),
+            ],
+        )
+        .unwrap();
 
     let plaintext = b"the carrier is listening too";
     caller.send_media(
@@ -726,7 +726,7 @@ async fn a_relaying_participant_hears_a_frame_it_has_nobody_to_forward_to() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     // The callee carries the call *and* is in it, with nobody else present.
-    callee.relay_call(call, [caller_identity.id(), callee_identity.id()]);
+    callee.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
 
     let plaintext = b"nobody to pass this on to";
     caller.send_media(
@@ -772,6 +772,204 @@ async fn a_relaying_participant_hears_a_frame_it_has_nobody_to_forward_to() {
 }
 
 #[tokio::test]
+async fn a_relay_declines_a_call_beyond_what_it_agreed_to_carry() {
+    // The advertisement side of §4.3 was always readable by everyone except the
+    // node that made it: `relay_media_willing` and `bandwidth_cap` drove other
+    // nodes' selection while the volunteer enforced nothing. This is the node
+    // holding itself to it, and refusing is a first-class answer — the call
+    // simply selects another relay, exactly as if this one were offline.
+    let (mut caller, mut callee, mut relay) = trio().await;
+    let caller_identity = identity(1);
+    let callee_identity = identity(2);
+    let relay_identity = identity(3);
+
+    relay.set_media_relay_limits(MediaRelayLimits {
+        max_calls: 1,
+        ..MediaRelayLimits::default()
+    });
+
+    let carried = CallId::generate().unwrap();
+    relay
+        .relay_call(carried, [caller_identity.id(), callee_identity.id()])
+        .unwrap();
+    let refused = CallId::generate().unwrap();
+    assert_eq!(
+        relay
+            .relay_call(refused, [caller_identity.id(), callee_identity.id()])
+            .unwrap_err(),
+        MediaRelayDenied::CallCeiling { limit: 1 },
+        "a second call is beyond what this node agreed to"
+    );
+    assert!(!relay.is_relaying(&refused), "and is not carried anyway");
+
+    // The refusal is real rather than advisory: a frame for the declined call
+    // goes nowhere, while the carried one still flows.
+    let key = CallKey::generate().unwrap();
+    caller.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call: refused,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&refused, 1, b"declined"),
+        },
+    );
+    let leaked = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            tokio::select! {
+                event = callee.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { return true; }
+                }
+                event = relay.next_event() => {
+                    if matches!(event, NodeEvent::MediaForwarded { .. }) { return true; }
+                }
+                _ = caller.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(!leaked, "a declined call must not be carried regardless");
+}
+
+#[tokio::test]
+async fn a_relay_stops_forwarding_once_its_byte_allowance_is_spent() {
+    // The ceiling that actually bounds sustained cost, and the one fan-out made
+    // matter: the allowance is charged for what leaves the node, so a frame to
+    // two participants costs twice what it would have under the old form.
+    //
+    // The refusal is surfaced rather than silent. An operator seeing a run of
+    // these is seeing "I volunteered more upload than I have", which is
+    // invisible any other way.
+    let [mut caller, mut callee_a, mut relay, mut callee_b] = quartet().await;
+    let caller_identity = identity(1);
+    let a_identity = identity(2);
+    let relay_identity = identity(3);
+    let b_identity = identity(4);
+
+    // Enough for exactly one fan-out of a small frame, and no refill.
+    relay.set_media_relay_limits(MediaRelayLimits {
+        forward_bytes_per_sec: 0,
+        burst_bytes: 200,
+        ..MediaRelayLimits::default()
+    });
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+    relay
+        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .unwrap();
+
+    let send = |caller: &mut MemberNode, seq: u64| {
+        caller.send_media(
+            relay_identity.id(),
+            MediaEnvelope {
+                call,
+                from: caller_identity.id(),
+                to: Recipient::Participants,
+                frame: key.seal_frame(&call, seq, b"tiny"),
+            },
+        );
+    };
+
+    // Control: the first frame fans out normally.
+    send(&mut caller, 1);
+    let mut delivered = 0;
+    let first = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            tokio::select! {
+                event = callee_a.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { delivered += 1; }
+                }
+                event = callee_b.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { delivered += 1; }
+                }
+                _ = relay.next_event() => {}
+                _ = caller.next_event() => {}
+            }
+            if delivered == 2 { return true; }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(first, "precondition: the first frame is within the allowance");
+
+    // Now drain it. Each frame costs its size times two recipients.
+    let mut refused = None;
+    for seq in 2..12u64 {
+        send(&mut caller, seq);
+        let found = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                tokio::select! {
+                    event = relay.next_event() => {
+                        if let NodeEvent::MediaRefused { reason, .. } = event {
+                            return Some(reason);
+                        }
+                    }
+                    _ = caller.next_event() => {}
+                    _ = callee_a.next_event() => {}
+                    _ = callee_b.next_event() => {}
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(reason) = found {
+            refused = Some(reason);
+            break;
+        }
+    }
+
+    assert!(
+        matches!(refused, Some(MediaRelayDenied::AllowanceExhausted { .. })),
+        "the byte ceiling must eventually refuse, and say why: got {refused:?}"
+    );
+    assert!(
+        relay.media_relay().forwarded_bytes() > 0,
+        "and the node can report what relaying actually cost it"
+    );
+
+    // Refilling restores service, which is what makes this a rate ceiling
+    // rather than a lifetime quota. Note what is deliberately *not* here: no
+    // re-agreement to the call. Raising a ceiling must not require re-carrying
+    // what this node is already carrying, and an earlier version of this
+    // implementation dropped every live call when its limits changed.
+    relay.set_media_relay_limits(MediaRelayLimits {
+        forward_bytes_per_sec: 1_000_000,
+        burst_bytes: 1_000_000,
+        ..MediaRelayLimits::default()
+    });
+    assert!(
+        relay.is_relaying(&call),
+        "a limit change must not drop a call in flight"
+    );
+
+    // Raising a ceiling does not *grant* allowance — that would let a node
+    // bypass its own rate by toggling a setting. Allowance is earned over
+    // elapsed time, and this is the caller obligation the node cannot meet
+    // itself, holding no clock.
+    relay.refill_media_allowance(Timestamp::from_millis(0));
+    relay.refill_media_allowance(Timestamp::from_millis(10_000));
+    send(&mut caller, 99);
+    let recovered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            tokio::select! {
+                event = callee_a.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { return true; }
+                }
+                _ = callee_b.next_event() => {}
+                _ = relay.next_event() => {}
+                _ = caller.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(recovered, "a relay with allowance again forwards again");
+}
+
+#[tokio::test]
 async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
     // Without this a media relay is an open reflector: anyone knowing its
     // address could have it forward arbitrary traffic to arbitrary members, at
@@ -787,7 +985,7 @@ async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
     // relay carries *this* call, and the frame gets through — which establishes
     // that the path works and the caller can reach the relay at all.
     let carried = CallId::generate().unwrap();
-    relay.relay_call(carried, [caller_identity.id(), callee_identity.id()]);
+    relay.relay_call(carried, [caller_identity.id(), callee_identity.id()]).unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -859,7 +1057,7 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
     // Same call, same route, same everything except who the relay was told is
     // in it — so what the assertion below observes is the participant check and
     // not some unrelated failure to deliver.
-    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]);
+    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -875,7 +1073,7 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
     );
 
     // Now the callee is no longer a participant as far as the relay was told.
-    relay.relay_call(call, [caller_identity.id(), relay_identity.id()]);
+    relay.relay_call(call, [caller_identity.id(), relay_identity.id()]).unwrap();
 
     caller.send_media(
         relay_identity.id(),

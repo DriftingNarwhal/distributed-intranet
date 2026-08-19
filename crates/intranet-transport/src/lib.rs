@@ -25,6 +25,7 @@
 
 pub mod behaviour;
 pub mod dial;
+pub mod media_limits;
 pub mod node;
 pub mod relay_limits;
 pub mod sync;
@@ -35,6 +36,9 @@ pub mod sync;
 pub use libp2p::{Multiaddr, PeerId};
 
 pub use dial::{AddressFamily, ConnectionTier};
+pub use media_limits::{
+    FanOut, MediaRelayDenied, MediaRelayGuard, MediaRelayLimits,
+};
 pub use node::{
     EpochRequestId, JoinRequestId, MemberNode, NodeEvent, RelayNode, default_listen_addresses,
 };

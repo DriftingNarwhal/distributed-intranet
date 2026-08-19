@@ -103,6 +103,29 @@ both checks it is an open reflector. Routing metadata sits outside the AEAD beca
 relay must read it, so a malicious relay can misroute; the nonce binds the call, so a
 misrouted frame simply fails to open.
 
+A relay fans out: `MediaEnvelope`'s recipient is `Recipient::{One, Participants}`, and the
+`Participants` form has the sender emit **one** envelope per frame which the relay
+replicates (§2.2.1). Four things about it are easy to undo by accident. The fan-out form
+carries no recipient list — the set is what the relay was told, which is what stops a
+sender aiming a relay at a non-participant. Every forwarded copy is readdressed to `One`,
+so a participant never holds a fan-out envelope and a forwarding loop has nowhere to start.
+The claimed `from` is checked against the connection, because a media frame carries no
+signature and a relay cannot check the claim against the frame — under fan-out an unbound
+sender is worth N−1 sends rather than one. And the envelope's domain tag is `v2`; adding
+the discriminant under `v1` would have let an old envelope's first recipient byte parse as
+one, wrongly, twice in every 256.
+
+Limits live in `media_limits.rs`, separate from `relay_limits.rs` because the roles are
+distinct (§4.4) and mixing them blurs exactly that. `MediaRelayGuard` owns the participant
+sets, so `authorize` is the only way to learn a frame's recipients and it charges the byte
+allowance in the same call — there is no path that forwards what the guard did not meter,
+which is the same structural answer `relay_limits` uses. Bytes are charged for what
+*leaves* the node (frame size × recipients); charging the inbound size under-meters by
+exactly the fan-out factor. The node holds no clock, so the allowance is refilled by an
+explicit `refill_media_allowance(now)` — a caller that never calls it spends the burst and
+then refuses everything, which is fail-closed but a real obligation. `relay_call` returns
+`Result` and refusing is ordinary, not an error: the call renegotiates onto another relay.
+
 Call media delivery is specified in §1.5 as **unreliable and unordered** (QUIC datagrams
 or equivalent): a frame past its playout deadline is worthless, and a reliable ordered
 channel turns one lost packet into a multi-frame gap through head-of-line blocking. The

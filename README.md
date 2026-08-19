@@ -104,14 +104,14 @@ Three shapes, in rough order of how most consumers would use it:
 ## Status
 
 **Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **613 tests, clippy clean.**
+and every layer is reachable over the network. **626 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
 | 01 Core protocol — identity, governance, epoch keying, transport | Implemented |
 | 02 Storage & replication | Implemented |
 | 03 App hosting — name registry, manifests, publishing policy | Implemented; execution sandbox is an embedder concern, see below |
-| 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) but uses the fallback delivery path, see below |
+| 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
 | 07 Chat application (draft) | Specified; implementation in progress out of tree. Asks five amendments of the platform — see its §7 |
@@ -190,7 +190,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 613 tests
+cargo test --workspace      # 626 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```

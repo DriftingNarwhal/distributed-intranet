@@ -22,6 +22,7 @@ use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
+use crate::media_limits::{MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
 use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
@@ -440,6 +441,21 @@ pub enum NodeEvent {
         /// participant set minus the sender for a fanned-out one.
         to: Vec<PerNetworkIdentityId>,
     },
+    /// This node refused to relay a frame — Real-Time Spec §2.2.1.
+    ///
+    /// Reported for the same reason [`NodeEvent::ReservationDenied`] is: a
+    /// refusal that only appears in a log is indistinguishable from a limiter
+    /// that never ran. It also carries the figure an operator actually wants,
+    /// since a run of `AllowanceExhausted` is what "I volunteered too much
+    /// bandwidth" looks like from inside the node.
+    MediaRefused {
+        /// The call the frame claimed.
+        call: CallId,
+        /// Who the frame claimed to be from.
+        from: PerNetworkIdentityId,
+        /// Why it was refused.
+        reason: MediaRelayDenied,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -700,13 +716,17 @@ pub struct MemberNode {
     inbound_epoch_requests: BTreeMap<EpochRequestId, (EpochKeyRequest, ResponseChannel<EpochKeyResponse>)>,
     /// Source of the next [`EpochRequestId`].
     next_epoch_request: u64,
-    /// Calls this node is relaying media for, and who is in them — §2.2.
+    /// Calls this node is relaying media for, and what it agreed to spend.
     ///
-    /// A relay needs the participant set so it can refuse to forward to someone
-    /// outside the call; it needs nothing else, and deliberately holds nothing
-    /// else. There is no key here and no place to put one, which is what
-    /// "architecturally incapable of decrypting" means concretely.
-    relayed_calls: BTreeMap<CallId, std::collections::BTreeSet<PerNetworkIdentityId>>,
+    /// A relay needs the participant set so it can refuse to forward outside the
+    /// call; it needs nothing else, and deliberately holds nothing else. There is
+    /// no key here and no place to put one, which is what "architecturally
+    /// incapable of decrypting" means concretely.
+    ///
+    /// The set lives inside the guard rather than beside it so that the only way
+    /// to learn who a frame goes to is to ask the guard, which charges for the
+    /// answer — see [`crate::media_limits`].
+    media_relay: MediaRelayGuard,
 }
 
 impl MemberNode {
@@ -804,7 +824,7 @@ impl MemberNode {
             epoch_requests: BTreeMap::new(),
             inbound_epoch_requests: BTreeMap::new(),
             next_epoch_request: 0,
-            relayed_calls: BTreeMap::new(),
+            media_relay: MediaRelayGuard::new(MediaRelayLimits::default()),
         })
     }
 
@@ -1350,23 +1370,54 @@ impl MemberNode {
     /// the relay can refuse to forward to a non-participant, which stops a relay
     /// being used as an open reflector; it is not, and must not become, a place
     /// to accumulate anything about the call's content.
+    ///
+    /// **This can refuse**, and a caller must handle that rather than assume
+    /// agreement. Carrying a call is a sustained bandwidth commitment, multiplied
+    /// by the participant count under §2.2.1's fan-out, so a node that has
+    /// reached what it agreed to spend declines — see
+    /// [`media_limits`](crate::media_limits). Re-agreeing to a call already
+    /// carried updates its roster and does not consume another slot.
     pub fn relay_call(
         &mut self,
         call: CallId,
         participants: impl IntoIterator<Item = PerNetworkIdentityId>,
-    ) {
-        self.relayed_calls
-            .insert(call, participants.into_iter().collect());
+    ) -> Result<(), MediaRelayDenied> {
+        self.media_relay.try_carry(call, participants)
     }
 
     /// Stops relaying a call.
     pub fn stop_relaying(&mut self, call: &CallId) {
-        self.relayed_calls.remove(call);
+        self.media_relay.stop_carrying(call);
     }
 
     /// Whether this node is relaying `call`.
     pub fn is_relaying(&self, call: &CallId) -> bool {
-        self.relayed_calls.contains_key(call)
+        self.media_relay.is_carrying(call)
+    }
+
+    /// The media relay's ceilings and current state.
+    pub fn media_relay(&self) -> &MediaRelayGuard {
+        &self.media_relay
+    }
+
+    /// Replaces the media relay's ceilings.
+    ///
+    /// Intended to be set from this node's own advertised `bandwidth_cap`
+    /// (`MediaRelayLimits::within`), which is what makes an advertisement binding
+    /// on the node that made it rather than merely readable by everyone else.
+    pub fn set_media_relay_limits(&mut self, limits: MediaRelayLimits) {
+        self.media_relay.set_limits(limits);
+    }
+
+    /// Refills the media relay's byte allowance — call this on a regular tick.
+    ///
+    /// This layer holds no clock on purpose (timestamps are passed in so the
+    /// harness can drive a virtual one), so a byte-per-second ceiling has to be
+    /// advanced by whoever does have one. A node that never calls this forwards
+    /// until its burst allowance is spent and then refuses everything: fail-closed,
+    /// which is the right direction, but a real obligation on the caller.
+    pub fn refill_media_allowance(&mut self, now: Timestamp) {
+        self.media_relay.refill(now);
     }
 
     /// Publishes an entry into an append-set collection — Storage Spec §2.5.
@@ -2837,67 +2888,59 @@ impl MemberNode {
                         // an open reflector by anyone who knows its address, and
                         // it matters more under fan-out than it did before: one
                         // accepted envelope now costs this node N−1 sends.
-                        let Some(participants) = self.relayed_calls.get(&request.call) else {
-                            continue;
-                        };
-                        // The sender must be in the call under both forms. Under
-                        // fan-out it is the *only* sender check there is — the
-                        // envelope names no target to check instead — so without
-                        // it anyone learning a carried call's id could have this
-                        // node spray a frame at every participant.
-                        if !participants.contains(&request.from) {
-                            continue;
-                        }
-                        // And it must really be them. A media envelope carries no
-                        // signature — deliberately, since the AEAD authenticates
-                        // it for the recipient (§2.2) — so `from` is a claim, and
-                        // a relay is the one node that cannot check it against the
-                        // frame. Binding it to the connection is the same answer a
-                        // chunk request and a signalling message already use.
                         //
-                        // This got sharper with fan-out rather than appearing with
-                        // it: an unbound `from` used to buy an attacker one
-                        // forwarded frame, and now buys N−1 sends per envelope at
-                        // the relay's expense. The check applies **only** here, on
-                        // the forwarding path. A participant receiving a relayed
-                        // frame sees the relay's peer id and the original sender's
-                        // `from`, which is exactly what relaying means; the AEAD is
-                        // what authenticates it there.
+                        // The claimed sender must also be the peer that
+                        // connected. A media envelope carries no signature —
+                        // deliberately, since the AEAD authenticates it for the
+                        // recipient (§2.2) — so `from` is a claim, and a relay is
+                        // the one node that cannot check it against the frame.
+                        // Binding it to the connection is the same answer a chunk
+                        // request and a signalling message already use. The check
+                        // applies **only** here, on the forwarding path: a
+                        // participant receiving a relayed frame sees the relay's
+                        // peer id and the original sender's `from`, which is
+                        // exactly what relaying means.
                         if request.from.peer_id() != peer {
                             continue;
                         }
-                        let targets: Vec<PerNetworkIdentityId> = match request.to {
-                            // Real-Time Spec §2.2.1. The fan-out set is what
-                            // this node was told when it agreed to carry the
-                            // call, never anything the sender supplied. Self is
-                            // excluded because a relay that is also a
-                            // participant already holds the frame, and handles
-                            // it below rather than sending it to itself.
-                            Recipient::Participants => participants
-                                .iter()
-                                .filter(|id| **id != request.from && **id != self.identity_id)
-                                .copied()
-                                .collect(),
-                            // The named form still works, and is still checked
-                            // against the participant set — a sender in a
-                            // carried call must not be able to point this node
-                            // at an arbitrary member.
-                            Recipient::One(to) if participants.contains(&to) => vec![to],
-                            Recipient::One(_) => continue,
+
+                        // Every other check, the fan-out set, and the byte
+                        // accounting live in the guard — asking it is the only way
+                        // to learn who this frame goes to, and it charges for the
+                        // answer (see `media_limits`). There is no path here that
+                        // forwards a frame the guard did not authorize and meter.
+                        let authorized = self.media_relay.authorize(
+                            &request.call,
+                            &request.from,
+                            &request.to,
+                            request.frame.ciphertext.len(),
+                            &self.identity_id,
+                        );
+                        let fan = match authorized {
+                            Ok(fan) => fan,
+                            Err(reason) => {
+                                // Surfaced rather than dropped silently: a
+                                // refusal that only appears in a log is
+                                // indistinguishable from a limiter that never
+                                // ran, and an operator watching their own
+                                // bandwidth needs to see the ceiling bite.
+                                return NodeEvent::MediaRefused {
+                                    call: request.call,
+                                    from: request.from,
+                                    reason,
+                                };
+                            }
                         };
 
                         // A relay that is itself a participant receives the
                         // frame as well as forwarding it — a participant with
                         // spare upload carrying the call is a sensible topology,
                         // not an exotic one.
-                        let fanned = matches!(request.to, Recipient::Participants);
-                        let local = (fanned && participants.contains(&self.identity_id)).then(|| {
-                            NodeEvent::MediaReceived {
-                                envelope: MediaEnvelope {
-                                    to: Recipient::One(self.identity_id),
-                                    ..request.clone()
-                                },
-                            }
+                        let local = fan.deliver_locally.then(|| NodeEvent::MediaReceived {
+                            envelope: MediaEnvelope {
+                                to: Recipient::One(self.identity_id),
+                                ..request.clone()
+                            },
                         });
 
                         // Returned, never buffered, when there is nothing to
@@ -2906,7 +2949,7 @@ impl MemberNode {
                         // inside its loop waits for some *other* event to return
                         // before it is delivered — and in a call whose only
                         // other participant is the sender, there may be none.
-                        match (local, targets.is_empty()) {
+                        match (local, fan.recipients.is_empty()) {
                             (Some(event), true) => return event,
                             (None, true) => continue,
                             (Some(event), false) => self.pending.push_back(event),
@@ -2914,7 +2957,7 @@ impl MemberNode {
                         }
 
                         let (call, from) = (request.call, request.from);
-                        for to in &targets {
+                        for to in &fan.recipients {
                             // Readdressed on every copy — §2.2.1 rule 4. What a
                             // participant receives is addressed to that
                             // participant, so it never holds a fan-out envelope
@@ -2930,7 +2973,7 @@ impl MemberNode {
                         return NodeEvent::MediaForwarded {
                             call,
                             from,
-                            to: targets,
+                            to: fan.recipients,
                         };
                     }
                 }
