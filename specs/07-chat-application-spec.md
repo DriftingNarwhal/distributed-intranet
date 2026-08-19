@@ -94,8 +94,11 @@ Renames, re-categorisation, archival and deletion are further entries against th
 
 **Two consequences of the generic form, both of which a client must handle.** The protocol
 authorizes the capability an entry *declares*, so a reader must additionally check that a
-`chat`-namespace entry declared the capability this document requires for its kind —
-`chat:manage-channel` for a channel definition — and refuse it otherwise. And application
+`chat`-namespace entry declared the capability this document requires for its kind — the
+mapping is fixed in §3.8 — and refuse it otherwise. Note what the check is *not*: the
+protocol has already verified the author holds what the entry declared, so this is not a
+second authorization pass. It closes the gap between holding *some* capability and holding
+the *right* one, which a generic carrier cannot know. And application
 entries do not count toward branch length (Core §2.7.2), so a partition may void channel
 structure that a competing branch did not see; clients resubmit from the voided-actions
 report, exactly as for any other voided action. A best-effort append-set at
@@ -311,7 +314,8 @@ collections, no clock read during encoding.
 
 ### 3.2 Domain tags
 
-`intranet.chat-record.v1`, `intranet.chat-segment.v1`, `intranet.chat-channel-id.v1`,
+`intranet.chat-record.v1`, `intranet.chat-segment.v1`, `intranet.chat-channel-entry.v1`,
+`intranet.chat-channel-id.v1`,
 `intranet.chat-conversation-id.v1`, `intranet.chat-thread-id.v1`,
 `intranet.chat-log-pointer.v1`, `intranet.chat-moderation-pointer.v1`,
 `intranet.chat-channel-key.v1`, `intranet.chat-topic.v1`,
@@ -407,6 +411,33 @@ versions, not a consistency failure, and it is the only such difference this doc
 accepts.
 
 ---
+
+### 3.8 Channel entry payloads
+
+§1.3 puts channel structure in the governance log as application entries (Core §2.7.2), which carry `namespace`, `kind`, a declared `required` capability, and an opaque payload. This section fixes those bytes. It is normative for the same reason §3.3 is: replay must produce identical channel state on every node, and the entry's hash covers the payload.
+
+```
+domain ‖ channel_id(32) ‖ kind(1) ‖ body
+```
+
+The header mirrors §3.3's deliberately. `network_id` is absent for the same reason: a channel id is derived from it (§3.6), so an entry cannot be replayed into another network. The `channel_id` is inside the signed payload rather than only in the entry's envelope so that it is covered by the entry hash and cannot be edited by anything that relays the entry.
+
+| `kind` (1) | `kind` string | Body | Required capability |
+|---|---|---|---|
+| `0x01` | `channel-definition` | `name ‖ category(1\|33) ‖ channel_kind(1) ‖ privacy(1) ‖ topic ‖ slowmode(4)` | `chat:create-channel:<scope>` |
+| `0x02` | `channel-update` | `change(1) ‖ change_body` | `chat:manage-channel:<scope>` |
+| `0x03` | `channel-membership` | `action(1) ‖ identity(32)` | `chat:manage-channel:<scope>` |
+| `0x04` | `channel-rotation` | `commit_ref(32) ‖ reason` | `chat:manage-channel:<scope>` |
+
+`channel_kind` is `0x01` Text, `0x02` Voice, `0x03` Stage. `privacy` is `0x01` Public, `0x02` Private. `action` is `0x01` Add, `0x02` Remove. `change` is `0x01` Rename (`name`), `0x02` Recategorise (`category(1|33)`), `0x03` SetTopic (`topic`), `0x04` SetSlowmode (`slowmode(4)`), `0x05` Archive, `0x06` Delete. Unallocated discriminants in any of these positions are **refused**, not ignored: unlike a record kind (§3.7), a channel entry carries structure a reader either applies correctly or must not apply at all, and silently skipping one would leave two nodes with different channel state.
+
+**Creating is ordinary, changing is governance, and the split is deliberate.** `chat:create-channel` is Ordinary (§4.1) because a definition grants nobody access to anything — a new private channel has an empty roster until a separate `channel-membership` entry adds someone, and that entry requires the governance-tier capability. The tiering follows what an action can actually widen, not how consequential it sounds.
+
+**A reader MUST check the declared capability matches this table**, refusing the entry otherwise. The protocol verified the author held what the entry *declared*; only a reader that understands `chat` knows what it *should* have declared. Without this check an author holding any registered `chat` capability — `chat:post:*`, the most ordinary grant a network issues — could mint channel structure by declaring that instead.
+
+**A reader MUST also check the scope** the declared capability names: it must be the channel's own scope or the category the definition places it in. A capability for one channel must not authorize an entry against another, which exact-name matching gives directly (Core §2.2, and see §7 E11 on why the names are exact today).
+
+**Every check in this section is application-layer.** The protocol carries these payloads without decoding them, so a client that skipped these checks would accept structure every conformant client refuses — the same honest limit §1.2 states for the profile rule, and for the same reason.
 
 ## 4. Authorization
 
