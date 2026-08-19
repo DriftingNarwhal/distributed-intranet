@@ -33,9 +33,38 @@ use intranet_storage::{
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, mdns, ping,
-    relay, request_response, request_response::ResponseChannel, swarm::SwarmEvent,
+    relay, request_response, request_response::ResponseChannel,
+    swarm::SwarmEvent, swarm::behaviour::toggle::Toggle,
 };
 use std::collections::BTreeMap;
+
+/// Whether a node participates in peer and content discovery.
+///
+/// The behaviour set a node runs should follow what the network *is*. Kademlia
+/// and mDNS answer "who else is out there, and who holds this content", and a
+/// pairwise network has no work in that question — two members, and the one that
+/// matters is known by construction.
+///
+/// **Distinct from how live a node is.** Whether a node exists, and whether it
+/// holds a relay reservation while nothing is happening, is a client's policy
+/// over time. This is a property of the network, fixed when the node is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discovery {
+    /// Kademlia and mDNS both run. The default, and right for any network whose
+    /// members are not all known in advance.
+    Full,
+    /// Neither runs. The node is still reachable, still relays, still
+    /// hole-punches and still serves every request-response protocol — it has
+    /// given up finding peers, not talking to them.
+    Off,
+}
+
+impl Discovery {
+    /// Whether discovery behaviours should be constructed.
+    const fn on(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
 
 /// The protocol identifier exchanged during `identify`.
 pub const PROTOCOL_VERSION: &str = "/intranet/0.1.0";
@@ -764,6 +793,26 @@ impl MemberNode {
     /// this is a hard requirement of the constructor rather than of the first
     /// `await` — a plain `#[test]` calling this will panic inside libp2p.
     pub fn new(identity: &PerNetworkIdentity) -> Result<Self, TransportError> {
+        Self::with_discovery(identity, Discovery::Full)
+    }
+
+    /// Starts a node, choosing whether it participates in peer discovery.
+    ///
+    /// [`Discovery::Off`] drops Kademlia and mDNS and keeps everything else. It
+    /// is for a network where discovery has no work to do — a pairwise network
+    /// has two members and nobody to find — and it exists because a client holds
+    /// one node per network (Core §5.1.1): a user with thirty conversations
+    /// otherwise runs thirty routing tables and thirty mDNS multicasters to
+    /// serve thirty networks that need neither.
+    ///
+    /// **This is not the same axis as how live a node is.** Whether a node
+    /// exists at all, and whether it holds a relay reservation while idle, is
+    /// the client's policy and needs nothing from here. This is what the node
+    /// *is*, decided once at construction from what the network *is*.
+    pub fn with_discovery(
+        identity: &PerNetworkIdentity,
+        discovery: Discovery,
+    ) -> Result<Self, TransportError> {
         let keypair = crate::keypair_for(identity);
 
         let swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -783,9 +832,13 @@ impl MemberNode {
                     crate::sync::gossip_behaviour().expect("the gossip configuration is valid");
                 MemberBehaviour {
                     gossip,
-                    kad: kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer)),
-                    mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
-                        .expect("mdns config is valid"),
+                    kad: Toggle::from(discovery.on().then(|| {
+                        kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer))
+                    })),
+                    mdns: Toggle::from(discovery.on().then(|| {
+                        mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
+                            .expect("mdns config is valid")
+                    })),
                     identify: identify::Behaviour::new(identify::Config::new(
                         PROTOCOL_VERSION.into(),
                         key.public(),
@@ -1354,11 +1407,16 @@ impl MemberNode {
     /// holders, which is why this exists rather than leaving callers to discover
     /// it.
     pub fn set_dht_server_mode(&mut self, enabled: bool) {
-        self.swarm.behaviour_mut().kad.set_mode(Some(if enabled {
-            kad::Mode::Server
-        } else {
-            kad::Mode::Client
-        }));
+        // Nothing to set on a node built without discovery; there is no DHT to
+        // be a server for, and that is the intended configuration rather than a
+        // degraded one.
+        if let Some(kad) = self.kad() {
+            kad.set_mode(Some(if enabled {
+                kad::Mode::Server
+            } else {
+                kad::Mode::Client
+            }));
+        }
     }
 
     /// Announces that this node holds `cid` — §4.4 step 1.
@@ -1368,12 +1426,10 @@ impl MemberNode {
     /// not yet connected to anything is ordinary rather than exceptional. The
     /// announcement is retried whenever the chunk is stored again.
     pub fn announce_chunk(&mut self, cid: Cid) {
-        if let Err(error) = self
-            .swarm
-            .behaviour_mut()
-            .kad
-            .start_providing(provider_key(&cid))
-        {
+        // Without discovery there is no provider record to publish, and none is
+        // wanted: a peer that already knows who holds what asks directly.
+        let Some(kad) = self.kad() else { return };
+        if let Err(error) = kad.start_providing(provider_key(&cid)) {
             tracing::debug!(cid = %cid.short(), %error, "could not announce chunk yet");
         }
     }
@@ -1393,10 +1449,9 @@ impl MemberNode {
     /// nobody — following a stale record has to cost a requester one round trip
     /// and nothing more.
     pub fn forget_chunk(&mut self, cid: &Cid) -> Option<Vec<u8>> {
-        self.swarm
-            .behaviour_mut()
-            .kad
-            .stop_providing(&provider_key(cid));
+        if let Some(kad) = self.kad() {
+            kad.stop_providing(&provider_key(cid));
+        }
         self.chunks.remove(cid)
     }
 
@@ -1553,11 +1608,9 @@ impl MemberNode {
             .entry(collection_id)
             .or_default()
             .insert(entry_id, payload);
-        if let Err(error) = self
-            .swarm
-            .behaviour_mut()
-            .kad
-            .start_providing(kad::RecordKey::new(&collection_id.as_bytes()))
+        if let Some(kad) = self.kad()
+            && let Err(error) =
+                kad.start_providing(kad::RecordKey::new(&collection_id.as_bytes()))
         {
             tracing::debug!(%error, "could not announce collection yet");
         }
@@ -1582,15 +1635,17 @@ impl MemberNode {
     /// discovery is the actual requirement — search — and unacceptable where a
     /// missing entry means a wrong answer rather than a shorter list, which is
     /// why name ownership anchors elsewhere (App Hosting Spec §4.3).
-    pub fn enumerate_collection(&mut self, collection_id: Hash) -> kad::QueryId {
+    ///
+    /// Returns `None` on a node built without discovery, where there is no query
+    /// to run: enumeration *is* a discovery operation, so its absence is the
+    /// configuration working rather than failing.
+    pub fn enumerate_collection(&mut self, collection_id: Hash) -> Option<kad::QueryId> {
         let id = self
-            .swarm
-            .behaviour_mut()
-            .kad
+            .kad()?
             .get_providers(kad::RecordKey::new(&collection_id.as_bytes()));
         self.collection_queries
             .insert(id, (collection_id, std::collections::BTreeSet::new()));
-        id
+        Some(id)
     }
 
     /// Asks one provider for its entries in a collection.
@@ -1751,15 +1806,14 @@ impl MemberNode {
     ///
     /// Results arrive as [`NodeEvent::ProvidersFound`], which also carries the
     /// holder count rarest-first ordering needs.
-    pub fn find_providers(&mut self, cid: Cid) -> kad::QueryId {
-        let id = self
-            .swarm
-            .behaviour_mut()
-            .kad
-            .get_providers(provider_key(&cid));
+    ///
+    /// Returns `None` on a node built without discovery — see
+    /// [`enumerate_collection`](Self::enumerate_collection).
+    pub fn find_providers(&mut self, cid: Cid) -> Option<kad::QueryId> {
+        let id = self.kad()?.get_providers(provider_key(&cid));
         self.provider_queries
             .insert(id, (cid, std::collections::BTreeSet::new()));
-        id
+        Some(id)
     }
 
     /// This node's own verification observations — Core Protocol Spec §4.6.
@@ -2531,8 +2585,19 @@ impl MemberNode {
     }
 
     /// Adds a known address for a peer to the Kademlia routing table.
+    ///
+    /// A no-op on a node built without discovery, which has no routing table to
+    /// hold it. Such a node dials by address rather than by peer id (Core
+    /// §5.1.1), so nothing there was going to read the cache back.
     pub fn add_address(&mut self, peer: &PeerId, address: Multiaddr) {
-        self.swarm.behaviour_mut().kad.add_address(peer, address);
+        if let Some(kad) = self.kad() {
+            kad.add_address(peer, address);
+        }
+    }
+
+    /// The Kademlia behaviour, absent on a node built without discovery.
+    fn kad(&mut self) -> Option<&mut kad::Behaviour<kad::store::MemoryStore>> {
+        self.swarm.behaviour_mut().kad.as_mut()
     }
 
     /// Drives the swarm until the next event.
@@ -3180,10 +3245,7 @@ impl MemberNode {
                     // "nobody" — which looks exactly like content genuinely
                     // having no providers.
                     for address in info.listen_addrs {
-                        self.swarm
-                            .behaviour_mut()
-                            .kad
-                            .add_address(&peer_id, address);
+                        self.add_address(&peer_id, address);
                     }
                 }
 

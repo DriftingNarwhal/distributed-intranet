@@ -40,7 +40,8 @@ pub use media_limits::{
     FanOut, MediaRelayDenied, MediaRelayGuard, MediaRelayLimits,
 };
 pub use node::{
-    EpochRequestId, JoinRequestId, MemberNode, NodeEvent, RelayNode, default_listen_addresses,
+    Discovery, EpochRequestId, JoinRequestId, MemberNode, NodeEvent, RelayNode,
+    default_listen_addresses,
 };
 pub use relay_limits::{
     CircuitClosure, CircuitId, RelayDenied, RelayGuard, RelayLimits, ReservationId, Requester,

@@ -104,7 +104,7 @@ Three shapes, in rough order of how most consumers would use it:
 ## Status
 
 **Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **636 tests, clippy clean.**
+and every layer is reachable over the network. **644 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -190,7 +190,7 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 636 tests
+cargo test --workspace      # 644 tests
 cargo clippy --workspace --all-targets
 cargo run -p intranet-harness -- --help
 ```

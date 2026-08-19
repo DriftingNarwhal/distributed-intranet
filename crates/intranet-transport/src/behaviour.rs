@@ -16,20 +16,35 @@ use crate::sync::{
 use libp2p::{
     dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response,
     swarm::NetworkBehaviour,
+    swarm::behaviour::toggle::Toggle,
 };
 
-/// The behaviour set every full member node runs.
+/// The behaviour set a member node runs.
 ///
 /// Carried forward from prior prototyping rather than relitigated: Kademlia for
 /// WAN routing, mDNS for LAN discovery (address caching only, never auto-dial),
 /// and identify plus ping for peer metadata and liveness. The relay *client* and
 /// dcutr halves are what let this node be the connecting party in tiers 2 and 3.
+///
+/// # Why the discovery halves are optional
+///
+/// Kademlia and mDNS answer one question — *who else is out there, and who has
+/// this content* — and there are networks where that question has no work in it.
+/// A pairwise network has exactly two members and nobody to discover; the one
+/// peer that matters is known by construction. Running a routing table and
+/// multicasting on the LAN for it is pure overhead, and a client holding one
+/// node per network (Core §5.1.1) pays that overhead once per conversation.
+///
+/// So both are [`Toggle`]d rather than fixed. Everything else stays: a node
+/// without discovery is still fully reachable, still relays, still hole-punches
+/// and still serves every request-response protocol. It has given up *finding*
+/// peers, not talking to them.
 #[derive(NetworkBehaviour)]
 pub struct MemberBehaviour {
-    /// WAN peer and content routing.
-    pub kad: kad::Behaviour<kad::store::MemoryStore>,
-    /// LAN peer discovery — informs address caching only.
-    pub mdns: mdns::tokio::Behaviour,
+    /// WAN peer and content routing, absent on a node built without discovery.
+    pub kad: Toggle<kad::Behaviour<kad::store::MemoryStore>>,
+    /// LAN peer discovery — address caching only. Absent without discovery.
+    pub mdns: Toggle<mdns::tokio::Behaviour>,
     /// Peer metadata exchange.
     pub identify: identify::Behaviour,
     /// Liveness.

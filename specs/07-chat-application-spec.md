@@ -593,14 +593,23 @@ names can be requested.
 | # | Amendment | Touches |
 |---|---|---|
 | **E2** | ✅ **Implemented, in generalised form.** Originally four chat-shaped entry variants; landed instead as **one generic application entry** (Core §2.7.2) carrying namespace, kind, required capability and an opaque payload. Chat's four records are payloads in the `chat` namespace, decoded by the client. Two consequences differ from the original proposal and are recorded in §1.3 and §1.2 | Core §2.7.2 |
-| **E4** | A publish/subscribe behaviour for live delivery, with per-topic subscribe/unsubscribe | Core §5.1 |
+| **E4** | ✅ **Implemented.** A publish/subscribe behaviour for live delivery, with per-topic subscribe/unsubscribe | Core §5.1 |
 | **E9** | ✅ **Implemented.** An app-layer policy map in `NetworkPolicy`: namespaced keys the protocol **stores, orders and encodes but does not interpret**, exactly as it already does for `extension_capabilities`. Core §0 is explicit that the platform must not be shaped around one application, so `chat:`-named fields do not belong in the core policy record. Specified in Core §2.6.2 | Core §2.6.2 |
 | **E10** | `/chat/dm-invite/1.0.0`, member to member | — |
-| **E11** | **Namespace registration for extension capabilities.** The tier registry matches names exactly, and every capability in §4.1 is parametrized by scope, so each scope would otherwise need a policy change. Resolution should take the **longest matching registered prefix**, so one entry per verb covers every scope of it. Note the platform did not encounter this itself because its own parametrized capabilities are built-in variants with computed tiers; `Extension(String)` plus exact match leaves a consuming spec nowhere to put them | Core §2.2 |
+| **E11** | ✅ **Implemented.** **Namespace registration for extension capabilities.** The tier registry matches names exactly, and every capability in §4.1 is parametrized by scope, so each scope would otherwise need a policy change. Resolution should take the **longest matching registered prefix**, so one entry per verb covers every scope of it. Note the platform did not encounter this itself because its own parametrized capabilities are built-in variants with computed tiers; `Extension(String)` plus exact match leaves a consuming spec nowhere to put them. Specified in Core §2.2.1 | Core §2.2.1 |
+| **E12** | ✅ **Implemented.** **Peer discovery is optional.** §1.5 makes a direct message its own network, and a node's identity is per-network, so a client runs one node per conversation — each with a Kademlia routing table and mDNS multicast serving a network of two members who already know each other. A node MAY now be built without either, keeping everything else, with discovery operations reporting their absence rather than returning a query that never resolves. Specified in Core §5.1.1 | Core §5.1.1 |
 
 Two amendments anticipated in earlier drafts proved unnecessary on inspection and are
 recorded here so they are not re-proposed: the extension-capability tier registry already
 exists, and `PointerId::from_bytes` already permits derived pointer ids.
+
+**E12 is narrower than the request that produced it, deliberately.** It was raised as
+*tiered node liveness* — a node holding a relay reservation without a full behaviour set,
+so a quiet conversation stays reachable cheaply. Only the behaviour-set half is a platform
+concern: the set is assembled here and a consuming client cannot assemble a partial one.
+Whether a node exists at the moment, and whether it holds a reservation while nothing is
+happening, is a client's policy over time and needs nothing from this platform — so the
+tiering itself stays in the client and is not requested here.
 
 ---
 

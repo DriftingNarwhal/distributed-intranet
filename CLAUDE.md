@@ -5,10 +5,11 @@ cross-reference each other extensively.
 
 specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
 consuming the platform rather than defining it. Read it only when working on something it
-touches — but do read its §7, which lists five amendments it asks of the platform, two of
+touches — but do read its §7, which lists the amendments it asks of the platform, two of
 which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). None are implemented yet. Treat them as authoritative; if an implementation
-choice isn't covered by them, flag it rather than guessing.
+map in NetworkPolicy). Five are implemented — E2, E4, E9, E11 and E12 — and E10 is not.
+Treat them as authoritative; if an implementation choice isn't covered by them, flag it
+rather than guessing.
 
 Several spec sections exist specifically to correct an earlier, subtly wrong version of
 themselves — those corrections are usually load-bearing, so prefer the current text over
@@ -87,6 +88,19 @@ before a fetch can use a source the DHT found — the layering is governance, th
 then fetch. Kademlia also has no un-publish: `forget_chunk` stops republishing but records
 already pushed persist until TTL, which is why `NotHeld` is an explicit response counting
 against nobody.
+
+Discovery is optional per node (Core §5.1.1): `MemberBehaviour`'s `kad` and `mdns` are
+`Toggle`d, and `MemberNode::with_discovery(.., Discovery::Off)` builds a node without
+either. It is for a network whose members are known by construction — a pairwise network
+has nobody to discover — and a client runs one node per network, so a user's conversations
+would otherwise each carry a routing table. `find_providers` and `enumerate_collection`
+return `Option`, and `None` means *there was no query to run*: returning a query id that
+never resolves would be indistinguishable from content that genuinely has no holders, the
+same confusion `set_dht_server_mode` exists to prevent above. Announcing is a no-op rather
+than an error, and so is `add_address` — without a routing table there is no address book,
+so such a node dials by address and never by peer id. This is what the node *is*, fixed at
+construction; how live a node is over time is the client's business and is deliberately
+not this axis.
 
 Append-set collections (Storage §2.5) run over `/intranet/append-set/1.0.0` carrying opaque
 payloads, so the one primitive serves both search postings and — later — the app name

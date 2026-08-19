@@ -525,6 +525,51 @@ Carried forward from prior prototyping (validated in an earlier implementation a
 
   The transport therefore **validates nothing** about a payload beyond the topic being subscribed. It cannot: it does not know what the payload means, and half a check would be worse than none, since a caller would reasonably read it as the check having been done. Signature, current membership and capability all belong to the consuming spec.
 
+#### 5.1.1 Peer Discovery Is Optional
+
+Kademlia and mDNS are the two behaviours above that answer one question: *who else is out
+there, and who holds this content*. **A node MAY be built without them**, and everything
+else in §5.1 stays.
+
+**Why this is a protocol concern rather than an implementation detail.** A node's identity
+is per-network (§1.2), and the transport keypair derives from it — so a client belonging to
+several networks runs **one node per network**, necessarily. Sharing one transport identity
+across networks would make those identities correlatable, defeating §1.2 at the point it
+matters most. The cost of doing it correctly is therefore paid per network, and a client
+holding many small networks pays it many times over.
+
+Some of those networks have no discovery work in them at all. A **pairwise network** has two
+members: the one peer that matters is known by construction, and there is no content whose
+holder is in doubt. Running a routing table and multicasting on the LAN for it consumes
+memory, timers and LAN traffic to answer questions with no answers in them. A consuming spec
+that builds a network per conversation — Chat Application Spec §1.5's direct messages are
+the first — multiplies that by the number of conversations a user has.
+
+**What a node without discovery keeps.** It listens, dials, is dialable, reserves relay
+circuits, hole-punches, gossips on subscribed topics, and serves every request-response
+protocol. It is a full participant that has given up *finding* peers, not talking to them.
+A network whose members are known by other means loses nothing.
+
+**One consequence of that, easy to miss.** The routing table is also an address book, so a
+node without discovery dials **by address** and never by peer id alone; caching an address
+against a peer is a no-op there. This costs such a network nothing — its peers are known by
+construction, so their addresses arrive by the same means their membership does — but a
+caller that had been relying on the routing table to supply an address must now carry one.
+
+**What it gives up, and how that must be reported.** Provider queries and collection
+enumeration are discovery operations, and on such a node there is no query to run. An
+implementation **MUST** report their absence distinguishably — as an explicit "no query"
+outcome — rather than returning a query that never resolves. The two are otherwise
+indistinguishable from *content that genuinely has no holders*, which §5.1's DHT-mode note
+already identifies as the confusion worth spending API surface to prevent. Announcing
+content is a no-op rather than an error: the content is still held and still served, and a
+peer that knows who holds what asks directly.
+
+**This is a property of the network, fixed when the node is built** — not a runtime state,
+and deliberately not the same axis as how live a node is. Whether a node exists at all, and
+whether it holds a relay reservation while nothing is happening, is a client's policy over
+time and needs nothing from this specification.
+
 ### 5.2 NAT Traversal — Concrete Connection Sequence
 
 A node attempting to connect to a peer (whether the very first connection during a join, or any later peer connection) follows a strict, ordered sequence, attempting each tier only after the previous one fails:
