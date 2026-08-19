@@ -125,7 +125,11 @@ impl ListenArgs {
                         vote_id.short()
                     );
                 }
-                NodeEvent::BallotSyncRefused { peer, vote_id, reason } => {
+                NodeEvent::BallotSyncRefused {
+                    peer,
+                    vote_id,
+                    reason,
+                } => {
                     println!(
                         "ballot-sync-refused: peer={peer} vote={} reason={reason}",
                         vote_id.short()
@@ -160,7 +164,12 @@ impl ListenArgs {
                 // Joins are surfaced and never answered, for the same reason
                 // key deliveries are not: admitting somebody to a network is
                 // the operator's decision, not a connectivity harness's.
-                NodeEvent::JoinRequested { peer, joiner, invite, .. } => {
+                NodeEvent::JoinRequested {
+                    peer,
+                    joiner,
+                    invite,
+                    ..
+                } => {
                     println!(
                         "join-requested: peer={peer} joiner={} invite={} (not answered)",
                         joiner.short(),
@@ -181,7 +190,9 @@ impl ListenArgs {
                 // a decision for whoever runs the node, not something a
                 // connectivity harness should make on their behalf — so the
                 // line records the request and the requester goes unanswered.
-                NodeEvent::EpochKeyRequested { peer, requester, .. } => {
+                NodeEvent::EpochKeyRequested {
+                    peer, requester, ..
+                } => {
                     println!(
                         "epoch-key-requested: peer={peer} requester={} (not answered)",
                         requester.short()
@@ -212,7 +223,10 @@ impl ListenArgs {
                     );
                 }
                 NodeEvent::ChunkReceived { peer, cid, bytes } => {
-                    println!("chunk-received: peer={peer} cid={} bytes={bytes}", cid.short());
+                    println!(
+                        "chunk-received: peer={peer} cid={} bytes={bytes}",
+                        cid.short()
+                    );
                 }
                 NodeEvent::ChunkUnavailable {
                     peer,
@@ -277,13 +291,15 @@ impl ListenArgs {
                     );
                 }
                 NodeEvent::SignalReceived { signal } => {
-                    println!("call-signal: from={} kind={}",
+                    println!(
+                        "call-signal: from={} kind={}",
                         signal.sender.short(),
                         match &signal.body {
                             intranet_realtime::SignalBody::Invite { .. } => "invite",
                             intranet_realtime::SignalBody::Propose { .. } => "propose",
                             intranet_realtime::SignalBody::Leave { .. } => "leave",
-                        });
+                        }
+                    );
                 }
                 NodeEvent::MediaReceived { envelope } => {
                     // Bytes and sequence only. Printing anything derived from
@@ -329,10 +345,19 @@ impl ListenArgs {
                     // spec owns the topic, and this layer holds no key for it
                     // and no idea what its shape is — printing anything derived
                     // from its contents would be inventing a meaning.
+                    //
+                    // Truncated by **characters, not bytes**. A topic is an
+                    // arbitrary string chosen by whoever published, so slicing it
+                    // at a byte offset panics whenever that offset lands inside a
+                    // multi-byte character — a remote peer could take this node
+                    // down by publishing to a topic with an accent in the right
+                    // place. Existing topics are hex and would never have shown
+                    // it.
                     println!(
                         "live: topic={} from={} bytes={}",
-                        &topic[..topic.len().min(12)],
-                        from.map(|peer| peer.to_string()).unwrap_or_else(|| "?".into()),
+                        topic.chars().take(12).collect::<String>(),
+                        from.map(|peer| peer.to_string())
+                            .unwrap_or_else(|| "?".into()),
                         payload.len()
                     );
                 }
@@ -353,12 +378,10 @@ impl ListenArgs {
                 // explicitly rather than with a catch-all: a wildcard here is how
                 // a future variant goes unnoticed, which is the failure mode that
                 // hid the relay's missing external address.
-                NodeEvent::DialFailed { peer, error } => {
-                    match peer {
-                        Some(peer) => println!("dial-failed: peer={peer} error={error}"),
-                        None => println!("dial-failed: error={error}"),
-                    }
-                }
+                NodeEvent::DialFailed { peer, error } => match peer {
+                    Some(peer) => println!("dial-failed: peer={peer} error={error}"),
+                    None => println!("dial-failed: error={error}"),
+                },
                 NodeEvent::ReservationGranted { peer } => {
                     println!("reservation-granted: peer={peer}");
                 }
