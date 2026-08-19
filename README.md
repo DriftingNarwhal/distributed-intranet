@@ -8,7 +8,9 @@ There is no required central authority. Bootstrap relays exist only to solve col
 start between two peers behind NAT, and nothing in steady-state operation depends
 on one: a relay that vanishes costs a reconnection, not a network.
 
-The design lives in [`specs/`](specs/) across six documents. **They are
+The design lives in [`specs/`](specs/): six platform documents, plus one
+application-layer document that consumes them (`07`, draft — a chat application,
+and the amendments it asks of the platform). **They are
 authoritative** — the code implements them, and where an implementation choice
 was not covered by them it is flagged in a comment at the point of the choice
 rather than decided silently.
@@ -112,6 +114,7 @@ and every layer is reachable over the network. **591 tests, clippy clean.**
 | 04 Real-time transport — calls, streams, VOD | Implemented; media uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
+| 07 Chat application (draft) | Specified; implementation in progress out of tree. Asks five amendments of the platform — see its §7 |
 
 ### Two things to know before you build on it
 
@@ -162,7 +165,7 @@ from what is not, and records the evidence behind each fix.
 ## Layout
 
 ```
-specs/     the six design documents — authoritative
+specs/     01-06 the platform, authoritative; 07 an application layer on top
 crates/    the implementation, one crate per layer
 harness/   Docker NAT topology and scenario runner
 ```

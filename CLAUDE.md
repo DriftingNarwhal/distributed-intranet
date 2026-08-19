@@ -1,7 +1,13 @@
 This project implements a distributed intranet protocol. Full architecture and design
 decisions are specified in specs/01-core-protocol-spec.md through specs/06-reference-test-harness-spec.md.
 Read all six before making architectural decisions — they're interdependent and
-cross-reference each other extensively. Treat them as authoritative; if an implementation
+cross-reference each other extensively.
+
+specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
+consuming the platform rather than defining it. Read it only when working on something it
+touches — but do read its §7, which lists five amendments it asks of the platform, two of
+which change types the core specs own (governance entry variants, and an app-layer policy
+map in NetworkPolicy). None are implemented yet. Treat them as authoritative; if an implementation
 choice isn't covered by them, flag it rather than guessing.
 
 Several spec sections exist specifically to correct an earlier, subtly wrong version of
