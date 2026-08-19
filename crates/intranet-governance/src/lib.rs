@@ -61,8 +61,9 @@ pub use error::GovernanceError;
 pub use group::{EVERYONE, FOUNDERS, Group, GroupId, MembershipRecord};
 pub use log::{GovernanceLog, Reconciliation, VoidedEntry};
 pub use policy::{
-    AdmissionMode, ContentType, FinalityParams, GovernanceModel, HistoryAccess, NetworkPolicy,
-    PolicyValue, is_valid_app_policy_key, starter_content_types,
+    AdmissionMode, ContentType, FinalityParams, GovernanceModel, HistoryAccess,
+    NAMESPACE_SEPARATOR, NetworkPolicy, PolicyValue, is_valid_app_policy_key,
+    starter_content_types,
 };
 pub use state::{AppNameRecord, GovernanceState};
 pub use wire::{

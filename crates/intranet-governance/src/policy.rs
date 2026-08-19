@@ -10,6 +10,15 @@ use crate::{GroupId, Tier};
 use intranet_crypto::Enc;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What separates a capability name's segments, and therefore what marks a
+/// registry entry as covering a namespace rather than one exact name.
+///
+/// A single convention shared by the protocol and every consuming spec, because
+/// resolution has to agree across nodes that may run different applications: a
+/// separator chosen per-spec would make one network's `chat:post:` a namespace
+/// and another's an exact name.
+pub const NAMESPACE_SEPARATOR: char = ':';
+
 /// A declared content type, e.g. `text` or `app-bundle`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContentType(String);
@@ -343,8 +352,56 @@ impl NetworkPolicy {
     }
 
     /// Looks up a registered extension capability's tier.
+    ///
+    /// # Exact names and namespaces
+    ///
+    /// A registration whose name ends in [`NAMESPACE_SEPARATOR`] covers every
+    /// name beneath it; any other registration matches exactly. So `chat:post:`
+    /// covers `chat:post:general` and every other channel, while `chat:post`
+    /// covers only itself.
+    ///
+    /// **The separator is what makes namespaces safe, and it is not decoration.**
+    /// Plain prefix matching would let a registration for `chat:post` also cover
+    /// `chat:postmortem` — a different capability that merely starts with the
+    /// same letters, silently inheriting a tier nobody chose for it. Requiring
+    /// the registration to end at a separator means a namespace can only ever
+    /// cover names that are genuinely *within* it.
+    ///
+    /// # Why namespaces exist at all
+    ///
+    /// A consuming spec's capabilities are routinely parametrized by scope —
+    /// `chat:post:<channel>` — so exact matching alone would need one registry
+    /// entry per scope, added by a policy change. Creating a channel would mean
+    /// amending network policy, which is a heavyweight action for a routine one,
+    /// and the registry would grow with the channel count forever. The protocol
+    /// does not hit this with its own parametrized capabilities because those are
+    /// built-in variants with computed tiers (`ManageMembership` derives its tier
+    /// from the target group); an extension gets a name and this lookup, and
+    /// nothing else.
+    ///
+    /// # Resolution
+    ///
+    /// The **longest** matching registration wins, so a more specific one still
+    /// overrides a broader one and an exact name overrides any namespace holding
+    /// it. This is deterministic across nodes without needing to be specified as
+    /// an ordering: registrations are unique, and two distinct registrations of
+    /// the same length cannot both match one name, so there is never a tie to
+    /// break.
+    ///
+    /// An unregistered name still resolves to `None` and is refused by the
+    /// caller. Namespaces widen what a network *can* register in one action;
+    /// they do not make anything resolvable that a network did not register.
     pub fn extension_tier(&self, name: &str) -> Option<Tier> {
-        self.extension_capabilities.get(name).copied()
+        if let Some(tier) = self.extension_capabilities.get(name) {
+            return Some(*tier);
+        }
+        self.extension_capabilities
+            .iter()
+            .filter(|(registered, _)| {
+                registered.ends_with(NAMESPACE_SEPARATOR) && name.starts_with(registered.as_str())
+            })
+            .max_by_key(|(registered, _)| registered.len())
+            .map(|(_, tier)| *tier)
     }
 
     /// Appends this policy to a canonical encoding.

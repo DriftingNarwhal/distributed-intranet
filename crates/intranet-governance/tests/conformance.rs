@@ -223,6 +223,130 @@ fn everyone_ceiling_covers_capabilities_defined_after_the_base_spec() {
 }
 
 #[test]
+fn a_namespace_registration_covers_every_scope_beneath_it() {
+    // E11. A consuming spec's capabilities are routinely parametrized by scope,
+    // so exact matching alone needs a registry entry per scope — meaning a policy
+    // change to create a channel, and a registry that grows with the channel
+    // count. One entry per verb covers every scope of that verb, forever.
+    let mut policy = policy();
+    policy
+        .extension_capabilities
+        .insert("chat:post:".into(), Tier::Ordinary);
+
+    assert_eq!(policy.extension_tier("chat:post:general"), Some(Tier::Ordinary));
+    assert_eq!(policy.extension_tier("chat:post:*"), Some(Tier::Ordinary));
+    assert_eq!(
+        policy.extension_tier("chat:post:cat:0badc0de"),
+        Some(Tier::Ordinary)
+    );
+}
+
+#[test]
+fn a_namespace_only_covers_names_genuinely_within_it() {
+    // The separator is what makes this safe. Plain prefix matching would let a
+    // registration for one capability silently set the tier of a different one
+    // that merely starts with the same letters.
+    let mut policy = policy();
+    policy
+        .extension_capabilities
+        .insert("chat:post".into(), Tier::Ordinary);
+
+    assert_eq!(policy.extension_tier("chat:post"), Some(Tier::Ordinary));
+    assert_eq!(
+        policy.extension_tier("chat:postmortem"),
+        None,
+        "a registration not ending at a separator must match exactly"
+    );
+    assert_eq!(policy.extension_tier("chat:post:general"), None);
+}
+
+#[test]
+fn the_longest_matching_registration_wins() {
+    // So a network can lock down one scope within an otherwise ordinary verb
+    // without re-registering every other scope of it.
+    let mut policy = policy();
+    policy.extension_capabilities.extend([
+        ("chat:".to_owned(), Tier::Ordinary),
+        ("chat:manage-channel:".to_owned(), Tier::Governance),
+        ("chat:manage-channel:public".to_owned(), Tier::Ordinary),
+    ]);
+
+    assert_eq!(policy.extension_tier("chat:post:x"), Some(Tier::Ordinary));
+    assert_eq!(
+        policy.extension_tier("chat:manage-channel:secret"),
+        Some(Tier::Governance),
+        "the more specific namespace must override the broader one"
+    );
+    assert_eq!(
+        policy.extension_tier("chat:manage-channel:public"),
+        Some(Tier::Ordinary),
+        "an exact name must override the namespace containing it"
+    );
+}
+
+#[test]
+fn a_namespace_registration_does_not_make_unregistered_names_resolvable() {
+    // Namespaces widen what a network can register in one action. They must not
+    // widen what resolves at all, or fail-closed stops meaning anything.
+    let mut policy = policy();
+    policy
+        .extension_capabilities
+        .insert("chat:post:".into(), Tier::Ordinary);
+
+    assert_eq!(policy.extension_tier("voice:speak:general"), None);
+    assert_eq!(policy.extension_tier("chat:moderate:general"), None);
+    assert_eq!(policy.extension_tier("chat"), None);
+}
+
+#[test]
+fn a_governance_tier_namespace_cannot_reach_everyone_at_any_scope() {
+    // The acceptance criterion that matters. If a namespace could be granted to
+    // `everyone` at some scope within it, E11 would have turned the registry
+    // from the thing that enforces the ceiling into a way around it.
+    let founder = identity(1);
+    let mut policy = policy();
+    policy.extension_capabilities.extend([
+        ("chat:post:".to_owned(), Tier::Ordinary),
+        ("chat:manage-channel:".to_owned(), Tier::Governance),
+    ]);
+
+    let mut chain = vec![genesis_with(&founder, policy, [Capability::ReadContent])];
+
+    // An ordinary namespace is grantable at a scope nobody registered by name.
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group(
+            EVERYONE,
+            [
+                Capability::ReadContent,
+                Capability::extension("chat:post:general"),
+            ],
+        ),
+    );
+    assert!(GovernanceState::replay(&chain).is_ok());
+
+    // The governance-tier one is not, at a scope equally unregistered by name.
+    append(
+        &mut chain,
+        &founder,
+        at(20),
+        define_group(
+            EVERYONE,
+            [
+                Capability::ReadContent,
+                Capability::extension("chat:manage-channel:general"),
+            ],
+        ),
+    );
+    assert!(matches!(
+        GovernanceState::replay(&chain),
+        Err(GovernanceError::EveryoneGovernanceTier { .. })
+    ));
+}
+
+#[test]
 fn an_unregistered_extension_capability_is_refused_not_assumed_ordinary() {
     // Fail-closed: assuming ordinary is exactly the hole the tier class closes.
     let founder = identity(1);

@@ -121,6 +121,48 @@ Example capabilities (non-exhaustive — the app-layer specs may define more, an
 
 Note the deliberate asymmetry between `define-group` and `manage-membership:<group>`: **defining what a group can do is a high-bar action**, gated the same way policy changes are (§2.6) — this is the structural guard against sprawl, since creating new permission surface is never a casual, low-friction action. **Managing who is currently in an already-defined group is comparatively low-bar and delegable** for ordinary groups, since it doesn't create new capability surface, only changes who currently holds capabilities that have already been reviewed and approved — but see §2.4 for why this delegability has a hard limit once the target group itself carries real governance power.
 
+#### 2.2.1 Registering a Consuming Spec's Capabilities
+
+A capability defined by a consuming spec carries no tier of its own — it is a name, and the
+network's policy carries a **registry** mapping names to tiers (`extension_capabilities`).
+This is what lets §2.4's `everyone` ceiling cover capabilities that did not exist when this
+document was written, without this section being patched every time one is added.
+
+**An unregistered name is refused outright, never assumed ordinary.** A missing tier would
+let a governance-tier grant pass as ordinary, which is a security failure rather than a
+missing default — the asymmetry with application-layer policy values (§2.6.2), where absent
+means the consuming spec's default, is deliberate for exactly this reason.
+
+**A registration whose name ends in `:` covers the namespace beneath it; any other
+registration matches exactly.** So `chat:post:` covers `chat:post:general` and every other
+scope of that verb, while `chat:post` covers only itself.
+
+The separator requirement is not decoration. Plain prefix matching would let a registration
+for `chat:post` also cover `chat:postmortem` — a *different* capability that merely starts
+with the same letters — silently giving it a tier nobody chose for it. Requiring a
+namespace to end at a separator means it can only ever cover names genuinely within it.
+
+**Why namespaces are needed at all:** a consuming spec's capabilities are routinely
+parametrized by scope, and exact matching alone would need one registry entry per scope.
+Creating a channel would then mean amending network policy — a heavyweight action for a
+routine one — and the registry would grow with the channel count forever. This document's
+own parametrized capabilities avoid the problem by being built-in variants with computed
+tiers (`manage-membership:<group>` derives its tier from the target group); an extension
+gets a name and this lookup and nothing else, so without namespaces it has nowhere to put
+a parametrized capability.
+
+**Resolution takes the longest matching registration**, so a more specific registration
+overrides a broader one and an exact name overrides any namespace containing it. A network
+can therefore lock down one scope of an otherwise ordinary verb without re-registering
+every other scope of it. This is deterministic across nodes without needing an ordering
+rule: registrations are unique, and two distinct registrations of the same length cannot
+both match one name, so there is never a tie to break.
+
+**Namespaces widen what a network can register in one action, never what resolves.** A name
+outside every registered namespace still resolves to nothing and is still refused, and a
+governance-tier namespace still cannot be granted to `everyone` at *any* scope within it —
+the ceiling keys off the resolved tier, so it covers scopes nobody registered by name.
+
 ### 2.3 Founder as Implicit Root Group
 
 Every network begins with a single **Founders** group, implicitly created at genesis, holding every capability, with the network creator as its sole initial member. This is not a special-cased individual identity with hardcoded permissions — it is an ordinary group under the same rules as every other group (§2.1), which keeps the authorization model fully uniform with no bootstrap-time exceptions to reason about. The Founders group is not required to be un-growable — its own membership can be managed like any other group's, per whatever `manage-membership:Founders` is granted to, though most networks will likely keep this tightly held.
