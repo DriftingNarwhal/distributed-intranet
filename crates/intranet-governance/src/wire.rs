@@ -54,7 +54,8 @@
 use crate::{
     AdmissionMode, AppName, Capability, CapabilitySet, Cascade, ContentType, EntryBody,
     FinalityParams, GovernanceModel, GroupId, HistoryAccess, InviteProvenance, LogEntry,
-    MembershipAction, ModerationAction, ModerationEntry, NetworkPolicy, PointerId, RotationReason,
+    MembershipAction, ModerationAction, ModerationEntry, NetworkPolicy, PointerId, PolicyValue,
+    RotationReason, is_valid_app_policy_key,
     Tier,
 };
 use intranet_crypto::{Dec, DecodeError, Enc, Hash, Signature, Timestamp};
@@ -110,6 +111,16 @@ pub enum WireError {
         got: usize,
         /// The ceiling.
         limit: usize,
+    },
+    /// An app-layer policy key was not namespaced.
+    ///
+    /// Namespacing is what keeps two applications sharing a network from
+    /// colliding on a key, so an unnamespaced one is refused at the decoder
+    /// rather than admitted into a namespace it does not have.
+    #[error("app policy key {key:?} is not namespaced as <namespace>:<name>")]
+    UnnamespacedPolicyKey {
+        /// The key as presented.
+        key: String,
     },
     /// A rotation entry carried a commit past [`MAX_COMMIT_BYTES`].
     #[error("epoch rotation commit is {got} bytes, over the {MAX_COMMIT_BYTES} ceiling")]
@@ -415,6 +426,22 @@ fn get_policy(d: &mut Dec<'_>) -> Result<NetworkPolicy, WireError> {
         })?
         .into_iter()
         .collect();
+    let app_policy: BTreeMap<String, PolicyValue> = d
+        .seq::<_, WireError>(|d| {
+            let key = d.str()?.to_owned();
+            if !is_valid_app_policy_key(&key) {
+                return Err(WireError::UnnamespacedPolicyKey { key });
+            }
+            let value = match d.variant()? {
+                0 => PolicyValue::Int(d.i64()?),
+                1 => PolicyValue::Text(d.str()?.to_owned()),
+                2 => PolicyValue::Flag(d.bool()?),
+                other => return Err(unknown("PolicyValue", other)),
+            };
+            Ok((key, value))
+        })?
+        .into_iter()
+        .collect();
     let finality = FinalityParams {
         k: d.u32()?,
         t_millis: d.i64()?,
@@ -434,6 +461,7 @@ fn get_policy(d: &mut Dec<'_>) -> Result<NetworkPolicy, WireError> {
         history_access,
         content_type_allowlist,
         extension_capabilities,
+        app_policy,
         finality,
         replication_factor,
         mesh_relay_threshold: d.u8()?,

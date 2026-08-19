@@ -61,7 +61,7 @@ pub use group::{EVERYONE, FOUNDERS, Group, GroupId, MembershipRecord};
 pub use log::{GovernanceLog, Reconciliation, VoidedEntry};
 pub use policy::{
     AdmissionMode, ContentType, FinalityParams, GovernanceModel, HistoryAccess, NetworkPolicy,
-    starter_content_types,
+    PolicyValue, is_valid_app_policy_key, starter_content_types,
 };
 pub use state::{AppNameRecord, GovernanceState};
 pub use wire::{

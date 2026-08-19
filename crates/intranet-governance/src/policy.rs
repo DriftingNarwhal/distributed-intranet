@@ -157,6 +157,87 @@ impl Default for FinalityParams {
     }
 }
 
+/// A value an application layer stores in network policy.
+///
+/// # Why the protocol carries values it does not understand
+///
+/// Consuming specs need settings that must be identical on every node — a chat
+/// application's flood ceiling is a *validity* rule, so two members computing it
+/// differently would render different history from the same records. Network
+/// policy is the only place with the properties that requires: replayed,
+/// ordered, tamper-evident, and gated on `define-policy`.
+///
+/// Naming those settings as fields here would be the wrong fix. Core Protocol
+/// Spec §0 is explicit that this platform is deliberately not shaped around one
+/// application, and a `chat_message_rate_per_minute` field would be exactly
+/// that. So the protocol **stores, orders and encodes** these values without
+/// interpreting them — the same division `extension_capabilities` already uses,
+/// where the governance layer carries a registry on a consuming spec's behalf
+/// without knowing what its entries mean.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PolicyValue {
+    /// A whole number — a rate ceiling, a size limit, a duration.
+    Int(i64),
+    /// Free text — a mode name, an identifier.
+    Text(String),
+    /// A flag.
+    Flag(bool),
+}
+
+impl PolicyValue {
+    /// Appends this value to a canonical encoding.
+    pub fn encode(&self, enc: &mut Enc) {
+        match self {
+            Self::Int(v) => {
+                enc.variant(0).i64(*v);
+            }
+            Self::Text(v) => {
+                enc.variant(1).str(v);
+            }
+            Self::Flag(v) => {
+                enc.variant(2).bool(*v);
+            }
+        }
+    }
+
+    /// The integer this holds, if it holds one.
+    pub const fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// The text this holds, if it holds text.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The flag this holds, if it holds one.
+    pub const fn as_flag(&self) -> Option<bool> {
+        match self {
+            Self::Flag(v) => Some(*v),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `key` is a well-formed app-policy key.
+///
+/// Keys must be namespaced — `<namespace>:<name>`, both non-empty — so two
+/// applications sharing a network cannot collide on one. An unnamespaced key is
+/// refused rather than accepted into a namespace it does not have, consistent
+/// with this project's fail-closed bias.
+pub fn is_valid_app_policy_key(key: &str) -> bool {
+    match key.split_once(':') {
+        Some((namespace, name)) => !namespace.is_empty() && !name.is_empty(),
+        None => false,
+    }
+}
+
 /// A network's complete governance configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkPolicy {
@@ -191,6 +272,14 @@ pub struct NetworkPolicy {
     /// connection. A network-level setting rather than a protocol constant,
     /// consistent with how every other tunable here is handled.
     pub mesh_relay_threshold: u8,
+    /// Settings owned by an application layer, carried but not interpreted.
+    ///
+    /// Keys are namespaced (`chat:message-rate-per-minute`). The protocol
+    /// stores, orders and encodes them; what they mean is a consuming spec's
+    /// business. An unrecognised key round-trips unchanged, which is what lets a
+    /// network run a newer client alongside an older one without a policy
+    /// migration — see [`PolicyValue`].
+    pub app_policy: BTreeMap<String, PolicyValue>,
     /// Content-defined chunking target size in bytes (Storage Spec §1.3).
     ///
     /// Must be network-wide rather than per-publisher: deduplication depends on
@@ -216,6 +305,7 @@ impl NetworkPolicy {
             finality: FinalityParams::DEFAULT,
             replication_factor: 3,
             mesh_relay_threshold: 4,
+            app_policy: BTreeMap::new(),
             target_chunk_size: 32 * 1024,
         }
     }
@@ -223,6 +313,33 @@ impl NetworkPolicy {
     /// Whether `content_type` may be published on this network at all.
     pub fn allows_content_type(&self, content_type: &ContentType) -> bool {
         self.content_type_allowlist.contains(content_type)
+    }
+
+    /// Looks up an app-layer policy value.
+    pub fn app_policy(&self, key: &str) -> Option<&PolicyValue> {
+        self.app_policy.get(key)
+    }
+
+    /// An app-layer integer, or `default` when unset.
+    ///
+    /// Consuming specs ship defaults for every value they define, so an absent
+    /// key means "the default", never "refuse". That is deliberately unlike the
+    /// extension-capability registry, where an absent name is refused: a missing
+    /// *capability* tier would let a governance-tier grant pass as ordinary,
+    /// while a missing *setting* just means nobody changed it.
+    pub fn app_policy_int(&self, key: &str, default: i64) -> i64 {
+        self.app_policy
+            .get(key)
+            .and_then(PolicyValue::as_int)
+            .unwrap_or(default)
+    }
+
+    /// An app-layer string, or `default` when unset.
+    pub fn app_policy_text<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.app_policy
+            .get(key)
+            .and_then(PolicyValue::as_text)
+            .unwrap_or(default)
     }
 
     /// Looks up a registered extension capability's tier.
@@ -264,6 +381,10 @@ impl NetworkPolicy {
                 Tier::Ordinary => 0,
                 Tier::Governance => 1,
             });
+        });
+        enc.seq(self.app_policy.iter(), |e, (key, value)| {
+            e.str(key);
+            value.encode(e);
         });
         enc.u32(self.finality.k)
             .i64(self.finality.t_millis)

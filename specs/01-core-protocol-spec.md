@@ -180,6 +180,43 @@ This deliberately avoids heavier distributed-consensus machinery (e.g. threshold
 
 **Explicitly out of scope:** delegated/liquid voting, where an individual member assigns a personal delegate to vote on their behalf (as opposed to a network simply designating a smaller electorate group per point 1 above). That's a materially heavier feature — per-voter delegation chains, revocability, transitivity — and isn't something this project has asked for; if ever wanted, it should be proposed as its own deliberate extension later, not designed around speculatively now.
 
+### 2.6.2 Application-Layer Policy Values — Added for Consuming Specs
+
+**Added at the request of the Chat Application Spec (§7, E9), and generalised rather than
+special-cased.** A consuming spec may need settings that must be identical on every node.
+The motivating case is a flood ceiling: if it is a *validity* rule — records past it are
+refused rather than merely discouraged — then two members computing it differently would
+render different history from the same records, which is the cross-node divergence this
+document is otherwise careful to design out.
+
+Network policy is the only place with the properties that requires: replayed, ordered,
+tamper-evident, and gated on `define-policy`. So a network's policy carries an additional
+map of **application-layer values**:
+
+- **Keys are namespaced**, `<namespace>:<name>`, both parts non-empty. This is enforced,
+  not conventional — an unnamespaced key is refused when decoded, so two applications
+  sharing a network cannot collide.
+- **The protocol stores, orders and encodes these values but does not interpret them.**
+  What a value means is the consuming spec's business entirely.
+- **An unrecognised key round-trips unchanged**, which is what lets a network run a newer
+  client alongside an older one without a policy migration.
+- **They are part of the entry hash**, like every other policy field. A policy change that
+  did not alter the hash would be a change no node could detect.
+
+**Why not named fields.** §0 states that this document describes a general-purpose
+platform and that application design is deferred entirely, "to keep the platform's
+architecture from being shaped around one particular use case". A
+`chat_message_rate_per_minute` field here would be exactly that shaping. The division used
+instead — the governance layer carrying a registry on a consuming spec's behalf without
+understanding it — is the one `extension_capabilities` (§2.2) already established, applied
+a second time rather than invented.
+
+**Absent means default, not refused** — deliberately unlike the extension-capability
+registry, where an unregistered name *is* refused. The asymmetry is not an inconsistency:
+a missing capability tier would let a governance-tier grant pass as ordinary, which is a
+security failure, while a missing setting simply means nobody changed it from whatever
+default the consuming spec ships.
+
 ### 2.7 Governance Log
 
 Every network maintains a single **hash-chained, append-only governance log**: every membership change, capability grant, group definition, policy change, moderation action (see **Moderation entries** below), and epoch rotation (§3.3) is recorded as a signed entry referencing the hash of the immediately prior entry, gossiped like all other network state (§5.1). This borrows the core structural idea behind blockchain-style ledgers — tamper-evident, independently verifiable history with no central authority — while deliberately discarding the parts of that model built for anonymous, permissionless participants (mining, proof-of-work/stake). Nothing here is needed, because every actor in this system already has a verified identity and explicit group membership (§1–2) before taking any action; the log's job is only to make the *sequence and content* of authorized actions tamper-evident and independently replayable, not to establish trust among strangers.
@@ -481,6 +518,7 @@ Concretely, once the first connection is live, the responding node(s) can push o
 - Membership-removal cascade defaults to non-cascading (§2.5), with an explicit, scoped opt-in for cascading removal — consuming specs should not assume removing someone automatically unwinds everything they did.
 - Vote-based governance policy (§2.6.1) is decided by **quorum certificate existence**, not by each node's local ballot computation (which can diverge near the close boundary) — absence of a valid certificate at close time means the vote fails, fail-closed. The electorate can be `everyone` (direct) or a smaller designated group (representative); per-member delegate assignment (liquid democracy) is explicitly out of scope.
 - Every network maintains a hash-chained governance log (§2.7) recording every membership, capability, group, policy, **moderation** (`ModerationEntry`, §2.7 — the concrete record behind "delisted," which Storage §2.5, Search §3.1/§6.1 and App Hosting §3.4 all resolve by replay rather than by any separate store), and epoch-rotation action — this is the network's decentralized "policy engine": any node can independently recompute current authorization state by replaying it. Concurrent/conflicting entries are resolved by an explicit fork-choice rule (§2.7.1: deterministic sibling tie-break; longest-branch reconciliation for deeper partitions, measured **only by capability-gated actions** — device-certificate entries don't count toward branch length, closing a free-grinding exploit) — entries unique to a losing branch are voided outright, not partially applied, with a **mandatory voided-actions report** so resubmission (especially of a voided revocation) is a defined, automatable client step, not something depending on someone noticing. **Reorg depth/age is bounded, and both bounds must be met**: a branch is final once it is buried under **k = 10 capability-gated governance actions** *and* is at least **T = 30 minutes** old (§2.7.1 — starting defaults, explicitly tunable, but concrete rather than abstract so downstream mechanisms can actually be built and tested against them). Past that point a branch can no longer be displaced, which is what gives MLS state a concrete point at which it's safe to stop retaining superseded epoch secrets (§3.3).
+- A network's policy may carry **application-layer values** (§2.6.2): namespaced keys the protocol stores, orders, encodes and hash-covers **without interpreting**. This is how a consuming spec gets a setting every node must agree on — a validity rule such as a flood ceiling — without the platform acquiring fields shaped around one application. Absent means the consuming spec's default, unlike the capability registry where absent means refused.
 - Every network also maintains a governance-configured, protocol-enforced **content-type allowlist** (§2.8): any publish must declare a `content_type`, and publishes outside the network's current allowlist are rejected outright. This is what lets a network stay meaningfully scoped to a specific purpose (e.g. a chat-style network excluding `app-bundle` entirely). A **second, independent gate**, the parametrized `publish:<content_type>` capability, governs which specific groups may publish an allowed type — a type being on the allowlist does not itself grant publish rights; consuming specs (Storage, App Hosting) must check both gates, not just the allowlist.
 - Group encryption uses MLS/TreeKEM (§3.3), not pairwise rekeying, giving O(log n) rekey cost — required at this project's target scale. **The epoch key wraps small per-object key material (envelope encryption); it does not directly encrypt content** — this is what makes rotation cheap. Members must **tentatively retain superseded-epoch MLS secrets until the corresponding rotation reaches finality** (§2.7.1's bounded reorg depth), enabling re-welcome if a tentative rotation is later voided. **Revocation's guarantee is now unconditional, not a per-network policy toggle**: a revoked member cannot obtain anything wrapped/served for the first time after removal, enforced regardless of network configuration — but *cannot* be made to un-know a key or forget content they already legitimately decrypted before removal. §3.4 (renamed from the earlier "retroactive opt-out" framing, which contradicted this) now covers a genuinely separate, still-configurable choice: how much *history* a brand-new member gets access to. Storage Spec §5 owns the concrete envelope-encryption mechanics this guarantee depends on, including a `read-content`-gated content-serving requirement (§2.2) that closes a residual gap DEK reuse would otherwise leave open.
 - Any subsystem that needs to know what a node is willing to contribute reads from the capability ledger (§4) — don't invent a parallel resource-declaration mechanism. The ledger is a **per-node converging cache, not a shared authority** (§4.5): algorithms over it are deterministic given a ledger, and agree between nodes once their ledgers agree rather than instantaneously. `reliability_signal` (§4.6) is a locally-observed, opportunistic reputation signal derived from mandatory verification checks the protocol already performs. It is **local-only and never gossiped or advertised** (not "by default" — this is not relaxable), and consequently may feed **only local, per-node selection decisions** with no cross-node consistency requirement: swarm source selection (Storage Spec §4.3) and media relay selection (Real-Time Spec §2.3). It **must never be an input to a deterministic, cross-node-recomputed algorithm** — notably replica placement (Storage Spec §3.3) and live-stream first-tier assignment (Real-Time Spec §3.3), which weight gossiped capacity only, since a function fed by per-observer-private state cannot produce the identical result on every node that those mechanisms require. It never gates membership or capabilities and never triggers automated revocation. It's disclosable on demand to `audit-reputation` holders for large-network oversight, mandatory-but-rate-limited to respond.

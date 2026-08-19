@@ -2134,3 +2134,215 @@ fn a_truncated_response_is_still_a_valid_prefix() {
     }
     assert_eq!(fresh.len(), 4);
 }
+
+// ---------------------------------------------------------------------------
+// App-layer policy — Chat Application Spec §7 (E9)
+// ---------------------------------------------------------------------------
+
+/// A policy carrying values the protocol does not interpret.
+fn policy_with_app_values() -> NetworkPolicy {
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.app_policy.extend([
+        ("chat:message-rate-per-minute".to_owned(), PolicyValue::Int(30)),
+        ("chat:network-profile".to_owned(), PolicyValue::Text("conversation".to_owned())),
+        ("chat:vod-retention".to_owned(), PolicyValue::Flag(true)),
+    ]);
+    policy
+}
+
+#[test]
+fn app_policy_values_survive_a_round_trip() {
+    let founder = identity(1);
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: policy_with_app_values(),
+            everyone_capabilities: BTreeSet::new(),
+        },
+    );
+
+    let decoded = decode_entry(&encode_entry(&entry)).expect("decodes");
+    assert_eq!(decoded, entry);
+
+    let EntryBody::Genesis { policy, .. } = &decoded.body else {
+        panic!("genesis");
+    };
+    assert_eq!(policy.app_policy_int("chat:message-rate-per-minute", 0), 30);
+    assert_eq!(
+        policy.app_policy_text("chat:network-profile", "server"),
+        "conversation"
+    );
+}
+
+#[test]
+fn an_unknown_app_policy_key_round_trips_unchanged() {
+    // The property that lets a network run a newer client beside an older one:
+    // a key this build has never heard of must survive, not be dropped.
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.app_policy.insert(
+        "somefutureapp:setting-nobody-here-knows".to_owned(),
+        PolicyValue::Int(7),
+    );
+    let founder = identity(1);
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy,
+            everyone_capabilities: BTreeSet::new(),
+        },
+    );
+
+    let decoded = decode_entry(&encode_entry(&entry)).expect("decodes");
+    let EntryBody::Genesis { policy, .. } = &decoded.body else {
+        panic!("genesis");
+    };
+    assert_eq!(
+        policy.app_policy("somefutureapp:setting-nobody-here-knows"),
+        Some(&PolicyValue::Int(7))
+    );
+}
+
+#[test]
+fn app_policy_encoding_is_order_independent() {
+    // Two nodes building the same logical policy must produce identical bytes,
+    // or their genesis entries hash differently and the network forks at birth.
+    let mut one = NetworkPolicy::conservative_default();
+    let mut other = NetworkPolicy::conservative_default();
+    for (key, value) in [
+        ("chat:a", PolicyValue::Int(1)),
+        ("chat:b", PolicyValue::Text("two".to_owned())),
+        ("chat:c", PolicyValue::Flag(false)),
+    ] {
+        one.app_policy.insert(key.to_owned(), value);
+    }
+    for (key, value) in [
+        ("chat:c", PolicyValue::Flag(false)),
+        ("chat:a", PolicyValue::Int(1)),
+        ("chat:b", PolicyValue::Text("two".to_owned())),
+    ] {
+        other.app_policy.insert(key.to_owned(), value);
+    }
+
+    let mut a = intranet_crypto::Enc::new();
+    one.encode(&mut a);
+    let mut b = intranet_crypto::Enc::new();
+    other.encode(&mut b);
+    assert_eq!(a.finish(), b.finish());
+}
+
+#[test]
+fn an_unnamespaced_app_policy_key_is_refused_on_the_wire() {
+    let mut policy = NetworkPolicy::conservative_default();
+    policy
+        .app_policy
+        .insert("nonamespace".to_owned(), PolicyValue::Int(1));
+    let founder = identity(1);
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy,
+            everyone_capabilities: BTreeSet::new(),
+        },
+    );
+
+    // Namespacing keeps two applications on one network from colliding, so a
+    // key without one is refused rather than admitted to a namespace it lacks.
+    assert!(matches!(
+        decode_entry(&encode_entry(&entry)),
+        Err(WireError::UnnamespacedPolicyKey { .. })
+    ));
+}
+
+#[test]
+fn app_policy_is_part_of_the_entry_hash() {
+    // It must be: policy is what a PolicyChange entry carries, and a change
+    // that did not alter the hash would be a change no node could detect.
+    let founder = identity(1);
+    let base = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: NetworkPolicy::conservative_default(),
+            everyone_capabilities: BTreeSet::new(),
+        },
+    );
+    let with_values = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: policy_with_app_values(),
+            everyone_capabilities: BTreeSet::new(),
+        },
+    );
+    assert_ne!(base.hash(), with_values.hash());
+}
+
+#[test]
+fn changing_app_policy_requires_define_policy() {
+    // No new capability: app-layer settings ride the existing gate, so a
+    // consuming spec gets governance for free rather than inventing its own.
+    let founder = identity(1);
+    let member = identity(2);
+    let mut chain = vec![LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: NetworkPolicy::conservative_default(),
+            everyone_capabilities: [Capability::ReadContent].into_iter().collect(),
+        },
+    )];
+    let parent = chain[0].hash();
+    chain.push(LogEntry::create(
+        &founder,
+        Some(parent),
+        at(5),
+        EntryBody::MembershipChange {
+            group: GroupId::everyone(),
+            identity: member.id(),
+            action: MembershipAction::Add { via_invite: None },
+        },
+    ));
+
+    let parent = chain.last().unwrap().hash();
+    let by_member = LogEntry::create(
+        &member,
+        Some(parent),
+        at(10),
+        EntryBody::PolicyChange {
+            policy: policy_with_app_values(),
+        },
+    );
+    let mut attempted = chain.clone();
+    attempted.push(by_member);
+    assert!(
+        GovernanceState::replay(&attempted).is_err(),
+        "an ordinary member must not be able to change app policy"
+    );
+
+    let by_founder = LogEntry::create(
+        &founder,
+        Some(parent),
+        at(10),
+        EntryBody::PolicyChange {
+            policy: policy_with_app_values(),
+        },
+    );
+    chain.push(by_founder);
+    let state = GovernanceState::replay(&chain).expect("a founder may");
+    assert_eq!(state.policy.app_policy_int("chat:message-rate-per-minute", 0), 30);
+}
