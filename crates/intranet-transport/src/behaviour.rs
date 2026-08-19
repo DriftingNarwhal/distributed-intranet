@@ -14,7 +14,8 @@ use crate::sync::{
     PointerCodec, SignalCodec, SyncCodec,
 };
 use libp2p::{
-    dcutr, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
+    dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response,
+    swarm::NetworkBehaviour,
 };
 
 /// The behaviour set every full member node runs.
@@ -95,6 +96,22 @@ pub struct MemberBehaviour {
     /// the app name registry (App Hosting Spec §4.3–4.4) both build on it, which
     /// is why it carries opaque payloads rather than either consumer's type.
     pub collection: request_response::Behaviour<CollectionCodec>,
+    /// Live delivery for consuming specs — Chat Application Spec §6.1.
+    ///
+    /// The one broadcast primitive here, and the only place a broadcast is the
+    /// right shape: everything else in this behaviour is pull-based because it
+    /// carries state a partitioned node must be able to obtain *late*, and a
+    /// broadcast has no history. Live delivery is the opposite case — a payload
+    /// nobody needs to receive at all. Missing one costs latency and nothing
+    /// else, because the same record arrives on the durable path.
+    ///
+    /// **Message signing is deliberately `None`.** A consuming spec's payload is
+    /// expected to carry its own signature — chat records do (spec 07 §2.5) — so
+    /// gossipsub-level signing would sign the same bytes a second time with a
+    /// second key, and a receiver would then have two answers to "who wrote
+    /// this" and no rule for which wins. Validation belongs to the consumer,
+    /// which is the only layer that knows what the payload means.
+    pub gossip: gossipsub::Behaviour,
     /// Call signalling — Real-Time Spec §1.4.
     ///
     /// The session-scoped channel §1.4 says participants already need for the

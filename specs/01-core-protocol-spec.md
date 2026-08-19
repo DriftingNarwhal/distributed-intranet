@@ -477,6 +477,11 @@ Carried forward from prior prototyping (validated in an earlier implementation a
 - **Kademlia DHT** for WAN peer/content routing at scale.
 - **mDNS** for LAN peer discovery — **must not auto-dial** discovered peers; LAN discovery informs address caching only, actual connections still flow through the invite/join authorization path (§2), so LAN visibility never bypasses membership control.
 - **Identify + Ping protocols** for peer metadata exchange and liveness.
+- **Gossipsub**, carried for consuming specs that need *live* delivery — Chat Application Spec §6.1 is the first. It is the one broadcast primitive in this stack and the exception proves the rule: everything else here is pull-based because it carries state a partitioned node must be able to obtain **late**, and a broadcast has no history. A live payload is the opposite case, one nobody needs to receive at all, because the same content reaches every member through the durable path regardless. **Nothing in this protocol or any consuming spec may depend on it.**
+
+  Two configuration choices are load-bearing rather than incidental. **Message signing is off**: a consuming spec's payload carries its own signature over its own canonical bytes, and signing those again with the transport keypair would leave a receiver with two authorities for "who wrote this" and no rule for choosing. **Message ids are content hashes**, not the default sender-and-sequence pair, because a payload may legitimately arrive twice — once live and once through the durable path — and deduplication has to agree with the consumer's own content addressing rather than treating one record as two messages.
+
+  The transport therefore **validates nothing** about a payload beyond the topic being subscribed. It cannot: it does not know what the payload means, and half a check would be worse than none, since a caller would reasonably read it as the check having been done. Signature, current membership and capability all belong to the consuming spec.
 
 ### 5.2 NAT Traversal — Concrete Connection Sequence
 

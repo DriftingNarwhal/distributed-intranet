@@ -320,6 +320,22 @@ impl ListenArgs {
                         reason
                     );
                 }
+                NodeEvent::LiveReceived {
+                    topic,
+                    from,
+                    payload,
+                } => {
+                    // Length and topic only. The payload belongs to whichever
+                    // spec owns the topic, and this layer holds no key for it
+                    // and no idea what its shape is — printing anything derived
+                    // from its contents would be inventing a meaning.
+                    println!(
+                        "live: topic={} from={} bytes={}",
+                        &topic[..topic.len().min(12)],
+                        from.map(|peer| peer.to_string()).unwrap_or_else(|| "?".into()),
+                        payload.len()
+                    );
+                }
                 NodeEvent::SyncFailed { peer, error } => {
                     println!("sync-failed: peer={peer} error={error}");
                 }

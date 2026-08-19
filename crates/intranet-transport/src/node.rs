@@ -32,8 +32,8 @@ use intranet_storage::{
 };
 use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, identify, kad, mdns, ping, relay,
-    request_response, request_response::ResponseChannel, swarm::SwarmEvent,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, mdns, ping,
+    relay, request_response, request_response::ResponseChannel, swarm::SwarmEvent,
 };
 use std::collections::BTreeMap;
 
@@ -456,6 +456,26 @@ pub enum NodeEvent {
         /// Why it was refused.
         reason: MediaRelayDenied,
     },
+    /// A live-delivery payload arrived — Chat Application Spec §6.1.
+    ///
+    /// **Unvalidated, and deliberately so.** This crate does not know what the
+    /// payload means, so it checks nothing beyond the topic being one this node
+    /// subscribed to. The consuming spec validates: signature, current
+    /// membership, and the capability its record kind requires — the same
+    /// three-part discipline an append-set entry gets, for the same reason.
+    ///
+    /// A node that skipped that validation would be accepting whatever any peer
+    /// chose to broadcast. Nothing here can catch that for it.
+    LiveReceived {
+        /// The topic it arrived on.
+        topic: String,
+        /// The peer that forwarded it, which is **not** necessarily its author:
+        /// gossip is a mesh, so this is whoever this node happened to hear it
+        /// from. Authorship comes from the payload's own signature.
+        from: Option<PeerId>,
+        /// The payload, exactly as published.
+        payload: Vec<u8>,
+    },
     /// A sync request to a peer failed.
     ///
     /// Not fatal — the protocol is pull-based, so the next reconnect retries in
@@ -759,7 +779,10 @@ impl MemberNode {
             .map_err(|e| TransportError::Build(e.to_string()))?
             .with_behaviour(|key, relay_client| {
                 let peer = key.public().to_peer_id();
+                let gossip =
+                    crate::sync::gossip_behaviour().expect("the gossip configuration is valid");
                 MemberBehaviour {
+                    gossip,
                     kad: kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer)),
                     mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
                         .expect("mdns config is valid"),
@@ -860,6 +883,18 @@ impl MemberNode {
         self.keyring.record(genesis, epoch, key);
         self.group = Some(session);
         Ok(())
+    }
+
+    /// Whether this identity currently occupies a leaf in this node's group.
+    ///
+    /// Lets a caller tell "already excluded" from "needs excluding" without
+    /// attempting a rotation to find out — which matters because attempting one
+    /// is an append, and appends are the expensive, serialised thing.
+    pub fn is_keyed_member(&self, identity: &PerNetworkIdentityId) -> bool {
+        self.group
+            .as_ref()
+            .and_then(|group| group.leaf_index_for(identity))
+            .is_some()
     }
 
     /// Saves this node's MLS group state, for restoring after a restart.
@@ -1363,6 +1398,56 @@ impl MemberNode {
             .kad
             .stop_providing(&provider_key(cid));
         self.chunks.remove(cid)
+    }
+
+    /// Subscribes to a live-delivery topic — spec 07 §6.1.
+    ///
+    /// The topic name is the consuming spec's to derive; this crate does not
+    /// know what a channel is. Subscribing is **on demand** rather than for
+    /// everything a member belongs to, because each topic carries its own mesh
+    /// maintenance: a member of a four-hundred-channel network should carry a
+    /// handful of meshes, not four hundred.
+    pub fn subscribe_live(&mut self, topic: &str) -> Result<bool, TransportError> {
+        let topic = gossipsub::IdentTopic::new(topic);
+        self.swarm
+            .behaviour_mut()
+            .gossip
+            .subscribe(&topic)
+            .map_err(|err| TransportError::Build(err.to_string()))
+    }
+
+    /// Stops carrying a live topic, and its mesh with it.
+    pub fn unsubscribe_live(&mut self, topic: &str) -> bool {
+        let topic = gossipsub::IdentTopic::new(topic);
+        self.swarm.behaviour_mut().gossip.unsubscribe(&topic)
+    }
+
+    /// Publishes a payload to a live topic — spec 07 §6.1.
+    ///
+    /// **Failure here is not an error worth propagating upward as fatal.** The
+    /// commonest cause is having no peer subscribed to this topic yet, which is
+    /// the ordinary state of a quiet channel, and §6.1 is explicit that nothing
+    /// may depend on this path: the same record reaches everybody through the
+    /// durable one. A caller that treated this as a failed send would be
+    /// reporting a problem that does not exist.
+    pub fn publish_live(&mut self, topic: &str, payload: Vec<u8>) -> Result<(), TransportError> {
+        let topic = gossipsub::IdentTopic::new(topic);
+        self.swarm
+            .behaviour_mut()
+            .gossip
+            .publish(topic, payload)
+            .map(|_| ())
+            .map_err(|err| TransportError::Build(err.to_string()))
+    }
+
+    /// Topics this node currently carries.
+    pub fn live_topics(&self) -> Vec<String> {
+        self.swarm
+            .behaviour()
+            .gossip
+            .topics()
+            .map(|topic| topic.to_string())
+            .collect()
     }
 
     /// Sends a signed signalling message to a participant — §1.4.
@@ -2895,6 +2980,26 @@ impl MemberNode {
                             return NodeEvent::SignalReceived { signal: request };
                         }
                     }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Gossip(
+                    gossipsub::Event::Message {
+                        propagation_source,
+                        message,
+                        ..
+                    },
+                )) => {
+                    // Returned as it arrived. Nothing here can judge it: the
+                    // payload's meaning belongs to whichever spec owns the
+                    // topic, and so does deciding whether its author may have
+                    // written it. Doing half the check at this layer would be
+                    // worse than doing none, because a caller would reasonably
+                    // read it as the check having been done.
+                    return NodeEvent::LiveReceived {
+                        topic: message.topic.into_string(),
+                        from: Some(propagation_source),
+                        payload: message.data,
+                    };
                 }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Media(

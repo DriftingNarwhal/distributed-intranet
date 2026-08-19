@@ -230,6 +230,45 @@ wire_message!(CollectionResponse);
 wire_message!(Signal);
 wire_message!(SignalAck);
 wire_message!(MediaEnvelope, MAX_MEDIA_MESSAGE_BYTES);
+
+/// The gossipsub behaviour carrying live delivery — spec 07 §6.1.
+///
+/// # Why signing is off and validation is permissive
+///
+/// Both settings hand the same job to one layer instead of splitting it. A
+/// consuming spec's payload carries its own signature over its own canonical
+/// bytes, so gossipsub signing them again with the transport keypair would give
+/// a receiver two authorities for "who wrote this" and no rule for choosing.
+/// `ValidationMode::None` follows for the same reason: this crate cannot decide
+/// whether a chat record is admissible, because it does not know what one is.
+///
+/// # Why message ids are content hashes
+///
+/// Duplicate delivery has to be idempotent — a record may arrive live and again
+/// in a segment — and identifying a message by its bytes is what makes the
+/// deduplication agree with the consumer's own content addressing. The default
+/// id is derived from the sender and a sequence number, which would make the
+/// same record from two paths two different messages.
+/// Takes no keypair, and that absence is the point: with signing off there is
+/// nothing for one to sign, so accepting one would imply an authentication this
+/// behaviour does not perform.
+pub fn gossip_behaviour() -> Result<libp2p::gossipsub::Behaviour, String> {
+    use libp2p::gossipsub;
+
+    let config = gossipsub::ConfigBuilder::default()
+        .validation_mode(gossipsub::ValidationMode::None)
+        .message_id_fn(|message: &gossipsub::Message| {
+            gossipsub::MessageId::from(intranet_crypto::hash_bytes(&message.data).as_bytes().to_vec())
+        })
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Anonymous,
+        config,
+    )
+    .map_err(|err| err.to_string())
+}
 wire_message!(MediaAck);
 
 /// Codec carrying any [`WireMessage`] pair.
