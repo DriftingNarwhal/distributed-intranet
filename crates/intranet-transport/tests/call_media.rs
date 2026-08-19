@@ -15,7 +15,8 @@ use intranet_governance::{
 };
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_realtime::{
-    CallId, CallKey, CallKeyEnvelope, MediaEnvelope, RenegotiationTrigger, SignalBody, Topology,
+    CallId, CallKey, CallKeyEnvelope, MediaEnvelope, Recipient, RenegotiationTrigger, SignalBody,
+    Topology,
     TopologyProposal,
 };
 use intranet_transport::{MemberNode, NodeEvent};
@@ -136,6 +137,72 @@ async fn trio() -> (MemberNode, MemberNode, MemberNode) {
     (caller, callee, relay)
 }
 
+/// Drives four nodes until `done`, or the deadline passes.
+async fn drive4(
+    nodes: &mut [MemberNode; 4],
+    limit: Duration,
+    done: impl Fn(&[MemberNode; 4]) -> bool,
+) -> bool {
+    tokio::time::timeout(limit, async {
+        loop {
+            if done(nodes) {
+                return true;
+            }
+            let [a, b, c, d] = nodes;
+            tokio::select! {
+                _ = a.next_event() => {}
+                _ = b.next_event() => {}
+                _ = c.next_event() => {}
+                _ = d.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Four connected nodes that agree on governance: caller, two callees, relay.
+///
+/// Three participants is the smallest call where fan-out and the per-recipient
+/// form differ at all — with two, "everyone but the sender" is one node and the
+/// two forms cost the same. So this is the minimum honest test of §1.1's claim.
+async fn quartet() -> [MemberNode; 4] {
+    let founder = identity(1);
+    let (caller, caller_addr) = node(1).await;
+    let (callee_a, a_addr) = node(2).await;
+    let (relay, relay_addr) = node(3).await;
+    let (callee_b, b_addr) = node(4).await;
+    let mut nodes = [caller, callee_a, relay, callee_b];
+
+    let mut parent = nodes[0].append_entry(genesis(&founder)).unwrap();
+    for (seed, at) in [(2u8, 5i64), (3, 6), (4, 7)] {
+        parent = nodes[0]
+            .append_entry(admit(&founder, parent, &identity(seed), at))
+            .unwrap();
+    }
+
+    // Dialled pairwise rather than through the relay: governance is pull-based,
+    // so a node with no connection to a holder of the log simply never learns
+    // it, and a media test that failed for that reason would look like a
+    // forwarding bug.
+    let addrs = [caller_addr, a_addr, relay_addr, b_addr];
+    for (i, node) in nodes.iter_mut().enumerate() {
+        for addr in addrs.iter().skip(i + 1) {
+            node.dial_candidates([addr.clone()]).unwrap();
+        }
+    }
+
+    assert!(
+        drive4(&mut nodes, Duration::from_secs(30), |n| n
+            .iter()
+            .all(|node| node.governance_log().len() == 4))
+        .await,
+        "all four should agree on governance"
+    );
+
+    nodes
+}
+
 /// Waits for the callee's next media frame.
 async fn await_media(
     receiver: &mut MemberNode,
@@ -212,7 +279,7 @@ async fn a_call_key_reaches_the_callee_and_opens_media() {
         MediaEnvelope {
             call,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame,
         },
     );
@@ -257,7 +324,7 @@ async fn a_relay_forwards_media_it_cannot_read() {
         MediaEnvelope {
             call,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame: key.seal_frame(&call, 1, plaintext),
         },
     );
@@ -304,6 +371,407 @@ async fn a_relay_forwards_media_it_cannot_read() {
 }
 
 #[tokio::test]
+async fn a_relay_fans_one_envelope_out_to_the_rest_of_the_call() {
+    // Real-Time Spec §2.2.1, and the reason a relay exists at all (§1.1). The
+    // claim under test is a ratio: the sender emits **one** envelope per frame
+    // and the relay emits N−1, regardless of N. Before this landed the sender
+    // emitted N−1 itself and the relay emitted one each — a relay that saved
+    // nobody anything and added a hop while not saving it.
+    let [mut caller, mut callee_a, mut relay, mut callee_b] = quartet().await;
+    let caller_identity = identity(1);
+    let a_identity = identity(2);
+    let relay_identity = identity(3);
+    let b_identity = identity(4);
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+    relay.relay_call(
+        call,
+        [caller_identity.id(), a_identity.id(), b_identity.id()],
+    );
+
+    let plaintext = b"one envelope in, two out";
+    // One send. Not one per recipient — that is the whole measurement.
+    caller.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 1, plaintext),
+        },
+    );
+
+    let mut got_a = None;
+    let mut got_b = None;
+    let mut forwarded_to = Vec::new();
+    let delivered = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            tokio::select! {
+                event = callee_a.next_event() => {
+                    if let NodeEvent::MediaReceived { envelope } = event {
+                        got_a = Some(envelope);
+                    }
+                }
+                event = callee_b.next_event() => {
+                    if let NodeEvent::MediaReceived { envelope } = event {
+                        got_b = Some(envelope);
+                    }
+                }
+                event = relay.next_event() => {
+                    if let NodeEvent::MediaForwarded { call: got, to, .. } = event
+                        && got == call
+                    {
+                        forwarded_to = to;
+                    }
+                }
+                _ = caller.next_event() => {}
+            }
+            if got_a.is_some() && got_b.is_some() {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        delivered,
+        "one envelope from the sender must reach every other participant"
+    );
+    let (a, b) = (got_a.unwrap(), got_b.unwrap());
+    assert_eq!(key.open_frame(&call, &a.frame).unwrap(), plaintext);
+    assert_eq!(key.open_frame(&call, &b.frame).unwrap(), plaintext);
+
+    // §2.2.1 rule 4. Each copy is readdressed to the participant receiving it,
+    // so what arrives is a named envelope — a participant never holds a fan-out
+    // envelope, which is what leaves a forwarding loop nowhere to start.
+    assert_eq!(a.to, Recipient::One(a_identity.id()));
+    assert_eq!(b.to, Recipient::One(b_identity.id()));
+    assert_eq!(a.from, caller_identity.id(), "the sender is not rewritten");
+
+    // The ratio, asserted rather than described: one in, N−1 out, and the sender
+    // is not one of them.
+    forwarded_to.sort();
+    let mut expected = vec![a_identity.id(), b_identity.id()];
+    expected.sort();
+    assert_eq!(
+        forwarded_to, expected,
+        "the relay forwards to the participant set minus the sender"
+    );
+
+    // The relay still cannot read a byte of what it multiplied.
+    assert!(
+        CallKeyEnvelope::seal(&caller_identity, &a_identity.id(), call, &key)
+            .unwrap()
+            .open(&relay_identity)
+            .is_err(),
+        "fanning out must not have given the relay a way in"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_refuses_to_fan_out_for_a_sender_outside_the_call() {
+    // Under the named form the relay checked both ends, and the recipient check
+    // was the one doing the work. Fan-out removes that check entirely — there is
+    // no recipient in the envelope to check — so the sender check is now the
+    // only thing standing between a carried call's id and having this node spray
+    // a frame at every participant. Anyone who learns a call id could otherwise
+    // do it.
+    let [mut caller, mut callee_a, mut relay, mut callee_b] = quartet().await;
+    let caller_identity = identity(1);
+    let a_identity = identity(2);
+    let relay_identity = identity(3);
+    let b_identity = identity(4);
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+
+    // Control first, so a silent drop cannot be mistaken for enforcement: the
+    // relay does fan out for this call when the sender is in it.
+    relay.relay_call(call, [caller_identity.id(), a_identity.id()]);
+    caller.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 1, b"control"),
+        },
+    );
+    assert!(
+        await_media(&mut callee_a, &mut caller, &mut relay).await.is_some(),
+        "precondition: the relay fans out for a sender who is in the call"
+    );
+
+    // Now callee_b — a member of the network, not a participant of this call —
+    // asks for the same fan-out.
+    callee_b.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: b_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 2, b"unsolicited"),
+        },
+    );
+
+    let leaked = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            tokio::select! {
+                event = callee_a.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) {
+                        return true;
+                    }
+                }
+                event = relay.next_event() => {
+                    if matches!(event, NodeEvent::MediaForwarded { .. }) {
+                        return true;
+                    }
+                }
+                _ = caller.next_event() => {}
+                _ = callee_b.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        !leaked,
+        "a relay must not fan out for a sender who is not in the call"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_will_not_fan_out_for_a_spoofed_sender() {
+    // A media envelope carries no signature, so `from` is a claim, and a blind
+    // relay is precisely the node that cannot check a claim against the frame.
+    // Fan-out is what makes that matter: the claim used to be worth one
+    // forwarded frame and is now worth N−1 sends at the relay's expense, to
+    // anyone who knows a carried call's id and one participant's identity.
+    //
+    // The relay therefore binds `from` to the connection it arrived on, the same
+    // way a chunk request and a signalling message are already bound. Note where
+    // the check does *not* apply: a participant receiving a relayed frame sees
+    // the relay's peer id and the sender's `from`, which is what relaying is.
+    let [mut caller, mut callee_a, mut relay, mut callee_b] = quartet().await;
+    let caller_identity = identity(1);
+    let a_identity = identity(2);
+    let relay_identity = identity(3);
+    let b_identity = identity(4);
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+    relay.relay_call(
+        call,
+        [caller_identity.id(), a_identity.id(), b_identity.id()],
+    );
+
+    // Control: the real caller's fan-out is carried.
+    caller.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 1, b"control"),
+        },
+    );
+    assert!(
+        await_media(&mut callee_a, &mut caller, &mut relay).await.is_some(),
+        "precondition: the relay fans out for the participant that really sent it"
+    );
+
+    // callee_b is a participant of this call, so the participant check passes —
+    // and it claims to be the caller, so only the connection binding can catch
+    // it. Without that check this frame reaches everyone.
+    callee_b.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 2, b"spoofed"),
+        },
+    );
+
+    let leaked = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            tokio::select! {
+                event = callee_a.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) {
+                        return true;
+                    }
+                }
+                event = relay.next_event() => {
+                    if matches!(event, NodeEvent::MediaForwarded { .. }) {
+                        return true;
+                    }
+                }
+                _ = caller.next_event() => {}
+                _ = callee_b.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        !leaked,
+        "a relay must not fan out an envelope whose sender is not the peer that sent it"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_that_is_also_a_participant_receives_as_well_as_forwards() {
+    // A participant with spare upload carrying the call for everyone else is a
+    // sensible topology, not an exotic one, and it is the case where fan-out
+    // could quietly go wrong: the obvious loop sends the node a copy of a frame
+    // it is already holding. It should receive it locally and forward to the
+    // others, exactly once each.
+    let [mut caller, mut callee_a, mut relay, mut callee_b] = quartet().await;
+    let caller_identity = identity(1);
+    let a_identity = identity(2);
+    let relay_identity = identity(3);
+    let b_identity = identity(4);
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+    // The relay is in the call this time.
+    relay.relay_call(
+        call,
+        [
+            caller_identity.id(),
+            a_identity.id(),
+            relay_identity.id(),
+            b_identity.id(),
+        ],
+    );
+
+    let plaintext = b"the carrier is listening too";
+    caller.send_media(
+        relay_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 1, plaintext),
+        },
+    );
+
+    let mut relay_heard = None;
+    let mut forwarded_to = Vec::new();
+    let mut others = 0;
+    let done = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            tokio::select! {
+                event = relay.next_event() => match event {
+                    NodeEvent::MediaReceived { envelope } => relay_heard = Some(envelope),
+                    NodeEvent::MediaForwarded { call: got, to, .. } if got == call => {
+                        forwarded_to = to;
+                    }
+                    _ => {}
+                },
+                event = callee_a.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { others += 1; }
+                }
+                event = callee_b.next_event() => {
+                    if matches!(event, NodeEvent::MediaReceived { .. }) { others += 1; }
+                }
+                _ = caller.next_event() => {}
+            }
+            if relay_heard.is_some() && others == 2 {
+                return true;
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        done,
+        "a relaying participant should hear the frame and the others should still get it"
+    );
+    assert_eq!(
+        key.open_frame(&call, &relay_heard.unwrap().frame).unwrap(),
+        plaintext,
+        "a participant that is relaying can still open frames it is entitled to"
+    );
+    assert!(
+        !forwarded_to.contains(&relay_identity.id()),
+        "a relay must not send a frame to itself over the network"
+    );
+    assert!(
+        !forwarded_to.contains(&caller_identity.id()),
+        "the sender is never a recipient of its own frame"
+    );
+}
+
+#[tokio::test]
+async fn a_relaying_participant_hears_a_frame_it_has_nobody_to_forward_to() {
+    // The degenerate fan-out: two participants, one of whom is carrying the
+    // call. "Everyone but the sender" is just the carrier, so there is nothing
+    // to forward and the only thing to do with the frame is hear it.
+    //
+    // This is a trap rather than a corner. `next_swarm_event` drains its buffered
+    // events on entry only, so an event pushed from inside its loop is delivered
+    // when some *other* event returns — and here there is no other event coming.
+    // Buffering the local delivery would strand it until unrelated traffic
+    // happened to arrive, which is a bug that only shows up on a quiet call.
+    let (mut caller, mut callee, mut idle) = trio().await;
+    let caller_identity = identity(1);
+    let callee_identity = identity(2);
+
+    let call = CallId::generate().unwrap();
+    let key = CallKey::generate().unwrap();
+    // The callee carries the call *and* is in it, with nobody else present.
+    callee.relay_call(call, [caller_identity.id(), callee_identity.id()]);
+
+    let plaintext = b"nobody to pass this on to";
+    caller.send_media(
+        callee_identity.id(),
+        MediaEnvelope {
+            call,
+            from: caller_identity.id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call, 1, plaintext),
+        },
+    );
+
+    // Deliberately tight. On loopback a correct implementation delivers this in
+    // one round trip; a buffered one delivers it whenever unrelated traffic next
+    // happens to return an event, which on an otherwise quiet call is a keepalive
+    // interval away. A generous deadline here would pass under both and pin
+    // nothing.
+    let heard = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            tokio::select! {
+                event = callee.next_event() => {
+                    if let NodeEvent::MediaReceived { envelope } = event {
+                        return envelope;
+                    }
+                }
+                _ = caller.next_event() => {}
+                _ = idle.next_event() => {}
+            }
+        }
+    })
+    .await
+    .expect("the carrier is a participant and must hear the frame promptly");
+    assert_eq!(
+        key.open_frame(&call, &heard.frame).unwrap(),
+        plaintext,
+        "a fanned-out frame with no onward recipients still reaches the carrier"
+    );
+    assert_eq!(
+        heard.to,
+        Recipient::One(callee_identity.id()),
+        "and arrives readdressed, like any other delivery"
+    );
+}
+
+#[tokio::test]
 async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
     // Without this a media relay is an open reflector: anyone knowing its
     // address could have it forward arbitrary traffic to arbitrary members, at
@@ -325,7 +793,7 @@ async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
         MediaEnvelope {
             call: carried,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame: key.seal_frame(&carried, 1, b"control"),
         },
     );
@@ -343,7 +811,7 @@ async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
         MediaEnvelope {
             call,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame: key.seal_frame(&call, 1, b"unsolicited"),
         },
     );
@@ -397,7 +865,7 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
         MediaEnvelope {
             call,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame: key.seal_frame(&call, 1, b"control"),
         },
     );
@@ -414,7 +882,7 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
         MediaEnvelope {
             call,
             from: caller_identity.id(),
-            to: callee_identity.id(),
+            to: Recipient::One(callee_identity.id()),
             frame: key.seal_frame(&call, 1, b"redirected"),
         },
     );

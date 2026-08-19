@@ -40,7 +40,7 @@ pub use call::{CallSession, ProposalOutcome, RenegotiationTrigger, Topology, Top
 pub use keying::{CallId, CallKey, CallKeyEnvelope, MediaFrame};
 pub use relay::{RelayChoice, RelayObservation};
 pub use wire::{
-    MAX_FRAME_BYTES, MediaAck, MediaEnvelope, Signal, SignalAck, SignalBody,
+    MAX_FRAME_BYTES, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody,
 };
 pub use stream::{LiveStream, StreamConfidentiality, StreamId, VodRetention, assign_tier};
 

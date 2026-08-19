@@ -298,11 +298,15 @@ impl ListenArgs {
                     );
                 }
                 NodeEvent::MediaForwarded { call, from, to } => {
+                    // Every recipient, not a count: the fan-out set is the
+                    // routing metadata §2.2 says a relay operator may see, and
+                    // its size is the amplification this node agreed to when it
+                    // took the call (§2.2.1).
                     println!(
                         "call-relayed: call={} from={} to={}",
                         call.short(),
                         from.short(),
-                        to.short()
+                        to.iter().map(|id| id.short()).collect::<Vec<_>>().join(",")
                     );
                 }
                 NodeEvent::SyncFailed { peer, error } => {

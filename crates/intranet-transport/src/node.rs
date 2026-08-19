@@ -22,7 +22,7 @@ use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
-use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Signal, SignalAck, SignalBody};
+use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
     CollectionResponse, DekWrapping, FetchPlan, MAX_COLLECTION_ENTRIES,
@@ -426,13 +426,19 @@ pub enum NodeEvent {
     /// *not* here: no plaintext, no key, no frame contents. A relay operator can
     /// see that they carried traffic and for whom, which is exactly the routing
     /// metadata §2.2 says a relay sees, and nothing more.
+    ///
+    /// `to` is a set rather than one identity because one inbound envelope
+    /// becomes N−1 outbound under §2.2.1's fan-out. Its length is the
+    /// amplification factor this node accepted when it agreed to carry the call,
+    /// which is the number an operator watching their own bandwidth wants.
     MediaForwarded {
         /// The call.
         call: CallId,
         /// Who sent the frame.
         from: PerNetworkIdentityId,
-        /// Who it was forwarded to.
-        to: PerNetworkIdentityId,
+        /// Who it was forwarded to. One recipient for a named envelope; the
+        /// participant set minus the sender for a fanned-out one.
+        to: Vec<PerNetworkIdentityId>,
     },
     /// A sync request to a peer failed.
     ///
@@ -2809,7 +2815,7 @@ impl MemberNode {
                 }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Media(
-                    request_response::Event::Message { message, .. },
+                    request_response::Event::Message { peer, message, .. },
                 )) => {
                     if let request_response::Message::Request {
                         request, channel, ..
@@ -2821,26 +2827,111 @@ impl MemberNode {
                             .media
                             .send_response(channel, MediaAck);
 
-                        if request.to == self.identity_id {
+                        if request.to.is(&self.identity_id) {
                             return NodeEvent::MediaReceived { envelope: request };
                         }
-                        // Not for us — forward it if we agreed to relay this
-                        // call, and drop it otherwise. Refusing to forward for a
-                        // call this node never agreed to carry is what stops a
-                        // media relay being usable as an open reflector by
-                        // anyone who knows its address.
-                        let carries = self
-                            .relayed_calls
-                            .get(&request.call)
-                            .is_some_and(|participants| {
-                                participants.contains(&request.to)
-                                    && participants.contains(&request.from)
-                            });
-                        if carries {
-                            let (call, from, to) = (request.call, request.from, request.to);
-                            self.send_media(to, request);
-                            return NodeEvent::MediaForwarded { call, from, to };
+                        // Not addressed to us personally — forward it if we
+                        // agreed to relay this call, and drop it otherwise.
+                        // Refusing to forward for a call this node never agreed
+                        // to carry is what stops a media relay being usable as
+                        // an open reflector by anyone who knows its address, and
+                        // it matters more under fan-out than it did before: one
+                        // accepted envelope now costs this node N−1 sends.
+                        let Some(participants) = self.relayed_calls.get(&request.call) else {
+                            continue;
+                        };
+                        // The sender must be in the call under both forms. Under
+                        // fan-out it is the *only* sender check there is — the
+                        // envelope names no target to check instead — so without
+                        // it anyone learning a carried call's id could have this
+                        // node spray a frame at every participant.
+                        if !participants.contains(&request.from) {
+                            continue;
                         }
+                        // And it must really be them. A media envelope carries no
+                        // signature — deliberately, since the AEAD authenticates
+                        // it for the recipient (§2.2) — so `from` is a claim, and
+                        // a relay is the one node that cannot check it against the
+                        // frame. Binding it to the connection is the same answer a
+                        // chunk request and a signalling message already use.
+                        //
+                        // This got sharper with fan-out rather than appearing with
+                        // it: an unbound `from` used to buy an attacker one
+                        // forwarded frame, and now buys N−1 sends per envelope at
+                        // the relay's expense. The check applies **only** here, on
+                        // the forwarding path. A participant receiving a relayed
+                        // frame sees the relay's peer id and the original sender's
+                        // `from`, which is exactly what relaying means; the AEAD is
+                        // what authenticates it there.
+                        if request.from.peer_id() != peer {
+                            continue;
+                        }
+                        let targets: Vec<PerNetworkIdentityId> = match request.to {
+                            // Real-Time Spec §2.2.1. The fan-out set is what
+                            // this node was told when it agreed to carry the
+                            // call, never anything the sender supplied. Self is
+                            // excluded because a relay that is also a
+                            // participant already holds the frame, and handles
+                            // it below rather than sending it to itself.
+                            Recipient::Participants => participants
+                                .iter()
+                                .filter(|id| **id != request.from && **id != self.identity_id)
+                                .copied()
+                                .collect(),
+                            // The named form still works, and is still checked
+                            // against the participant set — a sender in a
+                            // carried call must not be able to point this node
+                            // at an arbitrary member.
+                            Recipient::One(to) if participants.contains(&to) => vec![to],
+                            Recipient::One(_) => continue,
+                        };
+
+                        // A relay that is itself a participant receives the
+                        // frame as well as forwarding it — a participant with
+                        // spare upload carrying the call is a sensible topology,
+                        // not an exotic one.
+                        let fanned = matches!(request.to, Recipient::Participants);
+                        let local = (fanned && participants.contains(&self.identity_id)).then(|| {
+                            NodeEvent::MediaReceived {
+                                envelope: MediaEnvelope {
+                                    to: Recipient::One(self.identity_id),
+                                    ..request.clone()
+                                },
+                            }
+                        });
+
+                        // Returned, never buffered, when there is nothing to
+                        // forward alongside it. `next_swarm_event` drains
+                        // `pending` on entry only, so an event pushed from
+                        // inside its loop waits for some *other* event to return
+                        // before it is delivered — and in a call whose only
+                        // other participant is the sender, there may be none.
+                        match (local, targets.is_empty()) {
+                            (Some(event), true) => return event,
+                            (None, true) => continue,
+                            (Some(event), false) => self.pending.push_back(event),
+                            (None, false) => {}
+                        }
+
+                        let (call, from) = (request.call, request.from);
+                        for to in &targets {
+                            // Readdressed on every copy — §2.2.1 rule 4. What a
+                            // participant receives is addressed to that
+                            // participant, so it never holds a fan-out envelope
+                            // and a forwarding loop has nowhere to start.
+                            self.send_media(
+                                *to,
+                                MediaEnvelope {
+                                    to: Recipient::One(*to),
+                                    ..request.clone()
+                                },
+                            );
+                        }
+                        return NodeEvent::MediaForwarded {
+                            call,
+                            from,
+                            to: targets,
+                        };
                     }
                 }
 

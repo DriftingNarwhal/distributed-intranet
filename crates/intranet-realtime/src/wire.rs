@@ -58,7 +58,15 @@ const SIGNAL_SIGNATURE_DOMAIN: &str = "intranet.call-signal.v1";
 /// Domain tag for a signalling message on the wire.
 const SIGNAL_DOMAIN: &str = "intranet.wire.call-signal.v1";
 /// Domain tag for a media envelope on the wire.
-const MEDIA_DOMAIN: &str = "intranet.wire.call-media.v1";
+///
+/// **v2, and the version is the point.** v1 encoded the recipient as a bare
+/// identity, which left no room for the fan-out form §2.2.1 requires. Adding a
+/// discriminant in place is not additive — a v1 envelope decoded under a v2
+/// reader would read the first byte of its recipient as the discriminant and,
+/// twice in every 256 envelopes, succeed at parsing something wrong. Advancing
+/// the tag turns that into a decode failure, which is what domain separation is
+/// for.
+const MEDIA_DOMAIN: &str = "intranet.wire.call-media.v2";
 
 /// The largest sealed key an envelope will carry.
 ///
@@ -311,6 +319,75 @@ impl SignalAck {
     }
 }
 
+/// Who a media envelope is for — §2.2.1.
+///
+/// # Why this is not just an identity
+///
+/// A relay exists to stop each participant paying (N−1) × bitrate in upload
+/// (§1.1). With a bare identity in this field the sender emits one envelope per
+/// recipient and the relay forwards each to the one it names, which spends the
+/// sender exactly what mesh spends and adds a hop — a relay that saves nobody
+/// anything. [`Recipient::Participants`] is the form that actually does the job:
+/// the sender emits one envelope per frame and the relay replicates it.
+///
+/// # What the sender may not say
+///
+/// Note what is deliberately absent: there is no variant carrying a *list*. The
+/// fan-out set is the participant list the relay was told when it agreed to
+/// carry the call, never one travelling in the envelope. That makes this form
+/// strictly safer than the per-recipient one — a sender cannot aim a relay at a
+/// non-participant, because it has no field in which to ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recipient {
+    /// One named participant.
+    ///
+    /// The mesh form, where the sender addresses each peer directly. It is also
+    /// what a relay produces: each forwarded copy is readdressed to the
+    /// participant receiving it, so a participant never holds a fan-out envelope
+    /// and a forwarding loop has nowhere to start (§2.2.1 rule 4).
+    One(PerNetworkIdentityId),
+    /// Every participant of the call except the sender.
+    ///
+    /// Only a relay acts on this. A node that receives one for a call it did not
+    /// agree to carry drops it.
+    Participants,
+}
+
+impl Recipient {
+    /// The participant named, if this is the named form.
+    pub fn named(&self) -> Option<PerNetworkIdentityId> {
+        match self {
+            Self::One(id) => Some(*id),
+            Self::Participants => None,
+        }
+    }
+
+    /// Whether this envelope is addressed to `identity` personally.
+    pub fn is(&self, identity: &PerNetworkIdentityId) -> bool {
+        matches!(self, Self::One(id) if id == identity)
+    }
+
+    fn encode(&self, e: &mut Enc) {
+        match self {
+            Self::One(id) => {
+                e.u8(0);
+                id.encode(e);
+            }
+            Self::Participants => {
+                e.u8(1);
+            }
+        }
+    }
+
+    fn decode(d: &mut Dec<'_>) -> Result<Self, WireError> {
+        match d.u8()? {
+            0 => Ok(Self::One(get_identity(d)?)),
+            1 => Ok(Self::Participants),
+            other => Err(unknown("Recipient", other)),
+        }
+    }
+}
+
 /// One media frame in transit, with the routing a relay needs — §2.2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaEnvelope {
@@ -318,8 +395,8 @@ pub struct MediaEnvelope {
     pub call: CallId,
     /// The participant that produced it.
     pub from: PerNetworkIdentityId,
-    /// The participant it is for.
-    pub to: PerNetworkIdentityId,
+    /// Who it is for — one participant, or the rest of the call (§2.2.1).
+    pub to: Recipient,
     /// The sealed frame.
     pub frame: MediaFrame,
 }
@@ -345,7 +422,7 @@ impl MediaEnvelope {
         let mut d = Dec::domain(bytes, MEDIA_DOMAIN)?;
         let call = CallId::from_bytes(d.fixed::<32>()?);
         let from = get_identity(&mut d)?;
-        let to = get_identity(&mut d)?;
+        let to = Recipient::decode(&mut d)?;
         let sequence = d.u64()?;
         let ciphertext = d.bytes()?;
         if ciphertext.len() > MAX_FRAME_BYTES {
@@ -527,7 +604,7 @@ mod tests {
         let envelope = MediaEnvelope {
             call: call(),
             from: identity(1).id(),
-            to: identity(2).id(),
+            to: Recipient::One(identity(2).id()),
             frame,
         };
         let decoded = MediaEnvelope::decode(&envelope.encode()).unwrap();
@@ -536,6 +613,93 @@ mod tests {
             key.open_frame(&call(), &decoded.frame).unwrap(),
             b"audio samples"
         );
+    }
+
+    #[test]
+    fn a_fanned_out_envelope_round_trips_and_names_nobody() {
+        // §2.2.1's central shape: the sender emits one envelope per frame and
+        // does not say who it is for. What is being pinned here is the absence —
+        // there is no list on the wire for a sender to fill in, so a sender
+        // cannot aim a relay at a non-participant even in principle.
+        let key = CallKey::generate().unwrap();
+        let envelope = MediaEnvelope {
+            call: call(),
+            from: identity(1).id(),
+            to: Recipient::Participants,
+            frame: key.seal_frame(&call(), 7, b"audio samples"),
+        };
+
+        let decoded = MediaEnvelope::decode(&envelope.encode()).unwrap();
+        assert_eq!(decoded, envelope);
+        assert_eq!(decoded.to.named(), None, "fan-out names no recipient");
+        assert!(
+            !decoded.to.is(&identity(2).id()),
+            "a fan-out envelope is addressed to nobody personally, so a receiver \
+             never mistakes one for its own and never has one to forward again"
+        );
+    }
+
+    #[test]
+    fn the_two_recipient_forms_do_not_decode_as_each_other() {
+        // The discriminant is the whole reason the domain tag advanced. If these
+        // two encodings were confusable, a relay could read a named envelope as
+        // a fan-out and spray a frame at a call that never asked for it.
+        let key = CallKey::generate().unwrap();
+        let named = MediaEnvelope {
+            call: call(),
+            from: identity(1).id(),
+            to: Recipient::One(identity(2).id()),
+            frame: key.seal_frame(&call(), 1, b"x"),
+        };
+        let fanned = MediaEnvelope {
+            to: Recipient::Participants,
+            ..named.clone()
+        };
+
+        assert_ne!(named.encode(), fanned.encode());
+        assert_eq!(MediaEnvelope::decode(&named.encode()).unwrap().to, named.to);
+        assert_eq!(
+            MediaEnvelope::decode(&fanned.encode()).unwrap().to,
+            Recipient::Participants
+        );
+    }
+
+    #[test]
+    fn a_v1_envelope_does_not_decode_as_a_v2_one() {
+        // The break is deliberate and this is what makes it safe: a v1 envelope
+        // encoded the recipient as a bare 32-byte identity, so read under v2 its
+        // first byte would become the discriminant. The domain tag rejects it
+        // before that can happen, rather than leaving a 2-in-256 chance of
+        // parsing into a plausible wrong answer.
+        let key = CallKey::generate().unwrap();
+        let mut v1 = Enc::domain("intranet.wire.call-media.v1");
+        v1.fixed(call().as_bytes());
+        identity(1).id().encode(&mut v1);
+        identity(2).id().encode(&mut v1);
+        let frame = key.seal_frame(&call(), 1, b"audio samples");
+        v1.u64(frame.sequence).bytes(&frame.ciphertext);
+
+        assert!(
+            MediaEnvelope::decode(&v1.finish()).is_err(),
+            "a v1 envelope must fail to decode rather than parse as a v2 one"
+        );
+    }
+
+    #[test]
+    fn an_unknown_recipient_form_is_refused() {
+        // Fail closed on a form this build does not understand. Guessing would
+        // mean either dropping a frame silently or forwarding one whose routing
+        // was never read — and the second is how a reflector gets built.
+        let mut e = Enc::domain(MEDIA_DOMAIN);
+        e.fixed(call().as_bytes());
+        identity(1).id().encode(&mut e);
+        e.u8(7);
+        e.u64(1).bytes(b"whatever");
+
+        assert!(matches!(
+            MediaEnvelope::decode(&e.finish()).unwrap_err(),
+            WireError::Malformed(DecodeError::UnknownVariant { .. })
+        ));
     }
 
     #[test]
@@ -549,7 +713,7 @@ mod tests {
         let mut envelope = MediaEnvelope {
             call: call(),
             from: identity(1).id(),
-            to: identity(2).id(),
+            to: Recipient::One(identity(2).id()),
             frame: key.seal_frame(&call(), 7, b"audio samples"),
         };
         envelope.frame.ciphertext[0] ^= 0x01;
@@ -579,7 +743,7 @@ mod tests {
         let envelope = MediaEnvelope {
             call: call(),
             from: identity(1).id(),
-            to: identity(2).id(),
+            to: Recipient::One(identity(2).id()),
             frame: MediaFrame {
                 sequence: 0,
                 ciphertext: vec![0u8; MAX_FRAME_BYTES + 1],
