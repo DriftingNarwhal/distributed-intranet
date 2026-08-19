@@ -416,6 +416,14 @@ impl GovernanceState {
             // low-bar ordinary action, while taking one somebody already holds
             // is governance-tier. Deciding this from replayed state is what
             // stops a broad grant of the former from also conferring the latter.
+            // The consuming spec names the capability; replay enforces it. What
+            // the protocol cannot check is whether the *right* one was named —
+            // a reader that understands the namespace must verify that a
+            // `chat:channel-definition` demands `chat:manage-channel` and not
+            // something weaker. The protocol's job is that the declared
+            // capability was genuinely held.
+            EntryBody::AppEntry { required, .. } => required.clone(),
+
             EntryBody::AppNameRegistration { name, .. } => {
                 if self.app_names.contains_key(name) {
                     Capability::extension(RECLAIM_APP_NAME)
@@ -680,6 +688,11 @@ impl GovernanceState {
                 self.device_certificates.remove(&revocation.device);
                 self.revoked_devices.insert(revocation.device);
             }
+
+            // Nothing to apply: the protocol carries these without knowing what
+            // they mean. A consuming spec replays the log itself, filtering for
+            // its own namespace, and keeps whatever state it derives.
+            EntryBody::AppEntry { .. } => {}
 
             EntryBody::AppNameRegistration { name, app_id } => {
                 self.app_names.insert(

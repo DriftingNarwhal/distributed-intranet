@@ -57,10 +57,17 @@ state:
 | Membership | `Founders`, others, `everyone` | Every participant is a `Founder` (§1.5) |
 | `app-bundle` | An allowlist choice | Never allowed |
 
-**Enforcement is structural, not conventional: a `ChannelDefinition` entry in a
-`conversation`-profile network is invalid and MUST be rejected on replay.** The profile
-lives in replayed policy state, so every node reaches the same verdict and a client cannot
-create a channel that other clients merely decline to show.
+**A channel entry in a `conversation`-profile network is invalid and MUST be rejected**,
+by every reader that understands the `chat` namespace. The profile lives in replayed policy
+state (Core §2.6.2), so every such reader reaches the same verdict.
+
+**Honest scope, changed by E2's generalised form.** The rejection is an application-layer
+rule, not a protocol-layer one: the protocol carries `chat`-namespace payloads without
+decoding them, so it cannot enforce this and does not claim to. What that costs is bounded
+— minting the entry still requires the declared capability, and every conformant client
+refuses it — but a client that ignored the profile would see a channel where others see
+none. This document previously said "rejected on replay" without qualifying whose replay,
+which read as a stronger guarantee than any generic mechanism can offer.
 
 A network with no profile declared is treated as `server`. That is the safe reading: it
 permits channel entries rather than retroactively invalidating history a node legitimately
@@ -72,7 +79,8 @@ for and is enforced while it holds.
 
 ### 1.3 Channel definitions are governance-log anchored
 
-A channel is defined by a governance log entry (§7, E2), not by an append-set. This follows
+A channel is defined by a governance log entry (§7, E2) — specifically an **application
+entry** in the `chat` namespace (Core §2.7.2), not by an append-set. This follows
 App Hosting Spec §4.3's correction exactly, for the same two reasons: an append-set has no
 trustworthy ordering, so "who named this channel first" could be backdated; and its entries
 lapse when unrefreshed, so a channel would silently vanish while its creator was offline.
@@ -82,7 +90,15 @@ ChannelDefinition { channel_id, name, category, kind, privacy, topic, slowmode }
 ```
 
 Renames, re-categorisation, archival and deletion are further entries against the same
-`channel_id`; current state is what replay produces. A best-effort append-set at
+`channel_id`; current state is what replay produces.
+
+**Two consequences of the generic form, both of which a client must handle.** The protocol
+authorizes the capability an entry *declares*, so a reader must additionally check that a
+`chat`-namespace entry declared the capability this document requires for its kind —
+`chat:manage-channel` for a channel definition — and refuse it otherwise. And application
+entries do not count toward branch length (Core §2.7.2), so a partition may void channel
+structure that a competing branch did not see; clients resubmit from the voided-actions
+report, exactly as for any other voided action. A best-effort append-set at
 `collection_id(network, "chat:channels")` mirrors every definition purely so a client can
 enumerate channels without walking the log — it is never authoritative, and if it disagrees
 with replay, replay wins.
@@ -545,7 +561,7 @@ names can be requested.
 
 | # | Amendment | Touches |
 |---|---|---|
-| **E2** | Governance entry variants: `ChannelDefinition`, `ChannelUpdate`, `ChannelMembership`, `ChannelRotation`. All capability-gated, so all count toward branch length (Core §2.7.1). A channel entry in a `conversation`-profile network is invalid on replay | Core §2.7 |
+| **E2** | ✅ **Implemented, in generalised form.** Originally four chat-shaped entry variants; landed instead as **one generic application entry** (Core §2.7.2) carrying namespace, kind, required capability and an opaque payload. Chat's four records are payloads in the `chat` namespace, decoded by the client. Two consequences differ from the original proposal and are recorded in §1.3 and §1.2 | Core §2.7.2 |
 | **E4** | A publish/subscribe behaviour for live delivery, with per-topic subscribe/unsubscribe | Core §5.1 |
 | **E9** | ✅ **Implemented.** An app-layer policy map in `NetworkPolicy`: namespaced keys the protocol **stores, orders and encodes but does not interpret**, exactly as it already does for `extension_capabilities`. Core §0 is explicit that the platform must not be shaped around one application, so `chat:`-named fields do not belong in the core policy record. Specified in Core §2.6.2 | Core §2.6.2 |
 | **E10** | `/chat/dm-invite/1.0.0`, member to member | — |

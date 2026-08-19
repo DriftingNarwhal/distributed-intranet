@@ -55,7 +55,7 @@ use crate::{
     AdmissionMode, AppName, Capability, CapabilitySet, Cascade, ContentType, EntryBody,
     FinalityParams, GovernanceModel, GroupId, HistoryAccess, InviteProvenance, LogEntry,
     MembershipAction, ModerationAction, ModerationEntry, NetworkPolicy, PointerId, PolicyValue,
-    RotationReason, is_valid_app_policy_key,
+    MAX_APP_ENTRY_PAYLOAD_BYTES, RotationReason, is_valid_app_entry_name, is_valid_app_policy_key,
     Tier,
 };
 use intranet_crypto::{Dec, DecodeError, Enc, Hash, Signature, Timestamp};
@@ -121,6 +121,24 @@ pub enum WireError {
     UnnamespacedPolicyKey {
         /// The key as presented.
         key: String,
+    },
+    /// An app entry's namespace or kind was malformed.
+    #[error("app entry {namespace:?}/{kind:?} is not a valid namespace and kind")]
+    MalformedAppEntry {
+        /// The namespace as presented.
+        namespace: String,
+        /// The kind as presented.
+        kind: String,
+    },
+    /// An app entry carried a payload past [`MAX_APP_ENTRY_PAYLOAD_BYTES`].
+    ///
+    /// The log is replayed in full by every joiner and never shrinks, so an
+    /// unbounded payload would let one application make a network permanently
+    /// expensive to join.
+    #[error("app entry payload is {got} bytes, over the {MAX_APP_ENTRY_PAYLOAD_BYTES} ceiling")]
+    AppPayloadTooLarge {
+        /// Size actually presented.
+        got: usize,
     },
     /// A rotation entry carried a commit past [`MAX_COMMIT_BYTES`].
     #[error("epoch rotation commit is {got} bytes, over the {MAX_COMMIT_BYTES} ceiling")]
@@ -285,6 +303,16 @@ fn put_body(e: &mut Enc, body: &EntryBody) {
         EntryBody::AppNameRegistration { name, app_id } => {
             e.variant(9).str(name.as_str()).fixed(app_id.as_bytes());
         }
+        EntryBody::AppEntry {
+            namespace,
+            kind,
+            required,
+            payload,
+        } => {
+            e.variant(12).str(namespace).str(kind);
+            required.encode(e);
+            e.bytes(payload);
+        }
     }
 }
 
@@ -378,6 +406,24 @@ fn get_body(d: &mut Dec<'_>) -> Result<EntryBody, WireError> {
             name: AppName::new(d.str()?),
             app_id: PointerId::from_bytes(d.fixed::<32>()?),
         },
+        12 => {
+            let namespace = d.str()?.to_owned();
+            let kind = d.str()?.to_owned();
+            if !is_valid_app_entry_name(&namespace, &kind) {
+                return Err(WireError::MalformedAppEntry { namespace, kind });
+            }
+            let required = get_capability(d)?;
+            let payload = d.bytes()?.to_vec();
+            if payload.len() > MAX_APP_ENTRY_PAYLOAD_BYTES {
+                return Err(WireError::AppPayloadTooLarge { got: payload.len() });
+            }
+            EntryBody::AppEntry {
+                namespace,
+                kind,
+                required,
+                payload,
+            }
+        }
         other => return Err(unknown("EntryBody", other)),
     })
 }

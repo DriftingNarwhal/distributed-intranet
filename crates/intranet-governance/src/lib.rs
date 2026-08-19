@@ -53,6 +53,7 @@ pub use capability::{
     APPROVE_APP_PUBLISH, Capability, CapabilitySet, RECLAIM_APP_NAME, REGISTER_APP_NAME, Tier,
 };
 pub use entry::{
+    MAX_APP_ENTRY_PAYLOAD_BYTES, is_valid_app_entry_name,
     AppName, Cascade, EntryBody, InviteProvenance, LogEntry, MembershipAction, ModerationAction,
     ModerationEntry, PointerId, RotationReason,
 };

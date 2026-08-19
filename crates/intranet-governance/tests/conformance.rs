@@ -2346,3 +2346,253 @@ fn changing_app_policy_requires_define_policy() {
     let state = GovernanceState::replay(&chain).expect("a founder may");
     assert_eq!(state.policy.app_policy_int("chat:message-rate-per-minute", 0), 30);
 }
+
+// ---------------------------------------------------------------------------
+// App-layer entries — Chat Application Spec §7 (E2)
+// ---------------------------------------------------------------------------
+
+fn app_entry(required: Capability, payload: &[u8]) -> EntryBody {
+    EntryBody::AppEntry {
+        namespace: "chat".to_owned(),
+        kind: "channel-definition".to_owned(),
+        required,
+        payload: payload.to_vec(),
+    }
+}
+
+/// A network where `everyone` may post but only Founders may manage channels.
+fn app_entry_chain(founder: &PerNetworkIdentity, member: &PerNetworkIdentity) -> Vec<LogEntry> {
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.extension_capabilities.extend([
+        ("chat:post:*".to_owned(), Tier::Ordinary),
+        ("chat:manage-channel:*".to_owned(), Tier::Governance),
+    ]);
+
+    let mut chain = vec![LogEntry::create(
+        &founder.clone(),
+        None,
+        at(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy,
+            everyone_capabilities: [Capability::extension("chat:post:*")]
+                .into_iter()
+                .collect(),
+        },
+    )];
+    let parent = chain[0].hash();
+    chain.push(LogEntry::create(
+        founder,
+        Some(parent),
+        at(5),
+        EntryBody::MembershipChange {
+            group: GroupId::everyone(),
+            identity: member.id(),
+            action: MembershipAction::Add { via_invite: None },
+        },
+    ));
+    chain
+}
+
+#[test]
+fn an_app_entry_requires_the_capability_it_declares() {
+    let founder = identity(1);
+    let member = identity(2);
+    let mut chain = app_entry_chain(&founder, &member);
+    let parent = chain.last().unwrap().hash();
+
+    // The member holds chat:post:* but not chat:manage-channel:*.
+    let refused = LogEntry::create(
+        &member,
+        Some(parent),
+        at(10),
+        app_entry(Capability::extension("chat:manage-channel:*"), b"payload"),
+    );
+    let mut attempted = chain.clone();
+    attempted.push(refused);
+    assert!(
+        GovernanceState::replay(&attempted).is_err(),
+        "an app entry must be refused when its author lacks the declared capability"
+    );
+
+    // A Founder holds everything.
+    chain.push(LogEntry::create(
+        &founder,
+        Some(parent),
+        at(10),
+        app_entry(Capability::extension("chat:manage-channel:*"), b"payload"),
+    ));
+    assert!(GovernanceState::replay(&chain).is_ok());
+}
+
+#[test]
+fn the_protocol_does_not_interpret_an_app_payload() {
+    // Arbitrary bytes, including ones that are not valid UTF-8 and would not
+    // decode as anything this crate knows.
+    let founder = identity(1);
+    let member = identity(2);
+    let mut chain = app_entry_chain(&founder, &member);
+    let parent = chain.last().unwrap().hash();
+    chain.push(LogEntry::create(
+        &founder,
+        Some(parent),
+        at(10),
+        app_entry(Capability::extension("chat:manage-channel:*"), &[0xFF, 0x00, 0xFE]),
+    ));
+
+    let state = GovernanceState::replay(&chain).expect("replays");
+    // Replay authorized it and changed nothing else: the payload is a consuming
+    // spec's business, and this crate keeps no state derived from it.
+    assert!(state.is_member(&member.id()));
+}
+
+#[test]
+fn an_app_entry_does_not_count_toward_branch_length() {
+    // The grinding property. If app entries counted, an attacker holding any
+    // broadly-granted capability could mint a long branch during a partition
+    // and void an unfavourable revocation — which is exactly what §2.7.1
+    // point 2's metric exists to prevent.
+    let body = app_entry(Capability::extension("chat:post:*"), b"x");
+    assert!(!body.is_capability_gated());
+
+    // Contrast: the core actions that must survive a partition still count.
+    assert!(
+        EntryBody::MembershipChange {
+            group: GroupId::everyone(),
+            identity: identity(2).id(),
+            action: MembershipAction::Remove { cascade: None },
+        }
+        .is_capability_gated()
+    );
+}
+
+#[test]
+fn app_entries_round_trip_on_the_wire() {
+    let founder = identity(1);
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        app_entry(Capability::extension("chat:manage-channel:*"), b"opaque bytes"),
+    );
+    let decoded = decode_entry(&encode_entry(&entry)).expect("decodes");
+    assert_eq!(decoded, entry);
+}
+
+#[test]
+fn a_malformed_app_entry_name_is_refused_on_the_wire() {
+    let founder = identity(1);
+    for (namespace, kind) in [("", "k"), ("chat", ""), ("has:colon", "k")] {
+        let entry = LogEntry::create(
+            &founder,
+            None,
+            at(0),
+            EntryBody::AppEntry {
+                namespace: namespace.to_owned(),
+                kind: kind.to_owned(),
+                required: Capability::ReadContent,
+                payload: Vec::new(),
+            },
+        );
+        assert!(
+            matches!(
+                decode_entry(&encode_entry(&entry)),
+                Err(WireError::MalformedAppEntry { .. })
+            ),
+            "{namespace:?}/{kind:?} should be refused"
+        );
+    }
+}
+
+#[test]
+fn an_oversized_app_payload_is_refused_on_the_wire() {
+    // The log is replayed in full by every joiner and never shrinks, so one
+    // application must not be able to make a network permanently expensive to
+    // join. Content belongs in storage behind a CID; this carries structure.
+    let founder = identity(1);
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        at(0),
+        app_entry(
+            Capability::ReadContent,
+            &vec![0u8; MAX_APP_ENTRY_PAYLOAD_BYTES + 1],
+        ),
+    );
+    assert!(matches!(
+        decode_entry(&encode_entry(&entry)),
+        Err(WireError::AppPayloadTooLarge { .. })
+    ));
+}
+
+/// Every entry body must round-trip, which is also what catches a discriminant
+/// collision between the two encodings.
+///
+/// There are two of them — the signing/hashing encoding in `entry.rs` and the
+/// wire encoding in `wire.rs` — and they number their variants independently.
+/// Adding a variant means picking a free number in each, and picking a taken
+/// one produced exactly one symptom during E2: a decode that read a `str` where
+/// a payload was, and reported an implausible length.
+///
+/// The wire collision is merely a bug. The *signing* collision is worse: two
+/// different bodies sharing a discriminant weakens the domain separation that
+/// keeps one signed action from being reinterpreted as another. This test fails
+/// on either.
+#[test]
+fn every_entry_body_round_trips() {
+    let founder = identity(1);
+    let member = identity(2);
+
+    let bodies = vec![
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: NetworkPolicy::conservative_default(),
+            everyone_capabilities: BTreeSet::new(),
+        },
+        EntryBody::DefineGroup {
+            group: GroupId::new("moderators"),
+            capabilities: CapabilitySet::explicit([Capability::ModerateContent]),
+        },
+        EntryBody::MembershipChange {
+            group: GroupId::everyone(),
+            identity: member.id(),
+            action: MembershipAction::Add { via_invite: None },
+        },
+        EntryBody::PolicyChange {
+            policy: NetworkPolicy::conservative_default(),
+        },
+        EntryBody::ContentTypePolicy {
+            allowlist: [ContentType::new("text")].into_iter().collect(),
+        },
+        EntryBody::Moderation(ModerationEntry {
+            action: ModerationAction::Delist,
+            target_pointer_id: PointerId::from_bytes([3u8; 32]),
+        }),
+        EntryBody::AppNameRegistration {
+            name: AppName::new("wiki"),
+            app_id: PointerId::from_bytes([4u8; 32]),
+        },
+        EntryBody::AppEntry {
+            namespace: "chat".to_owned(),
+            kind: "channel-definition".to_owned(),
+            required: Capability::extension("chat:manage-channel:*"),
+            payload: b"opaque".to_vec(),
+        },
+    ];
+
+    let mut action_hashes = BTreeSet::new();
+    for body in bodies {
+        let entry = LogEntry::create(&founder, None, at(0), body.clone());
+        let decoded = decode_entry(&encode_entry(&entry))
+            .unwrap_or_else(|err| panic!("{} did not decode: {err}", body.kind()));
+        assert_eq!(decoded, entry, "{} did not round-trip", body.kind());
+
+        // Distinct bodies must hash distinctly under the signing encoding, which
+        // a shared discriminant would undermine.
+        assert!(
+            action_hashes.insert(body.action_hash()),
+            "{} shares an action hash with another body",
+            body.kind()
+        );
+    }
+}

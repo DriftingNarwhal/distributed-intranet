@@ -244,6 +244,48 @@ ModerationEntry {
 
 This is the concrete mechanism several consuming specs already depend on and which each previously referred to only as an undefined "delisted"/"moderated" state: append-set entry validation (Storage Spec §2.5), search posting validation (Search Spec §3.1, §6.1), and app takedown (App Hosting Spec §3.4). All three now resolve that state the same way, through this one record type.
 
+### 2.7.2 Application-Layer Entries — Added for Consuming Specs
+
+**Added at the request of the Chat Application Spec (§7, E2), and generalised rather than
+special-cased**, for the same reason §2.6.2 was.
+
+An application layer sometimes needs durable, ordered, tamper-evident records for its own
+structure — a chat application's channel definitions, say. A Distributed Append-Set cannot
+hold those: its entries lapse when unrefreshed (Storage Spec §2.5), so a channel would
+silently vanish while its creator was offline. The governance log is the only mechanism
+with the required properties.
+
+The log therefore carries an **application entry**: a namespace, a kind, the capability the
+consuming spec says the record requires, and an opaque payload.
+
+- **The protocol orders, hash-covers and authorizes these entries. It does not decode
+  them.** Replay refuses an entry whose author did not hold the declared capability at that
+  point in the chain, and does nothing else with it; a consuming spec replays the log
+  itself, filtering for its own namespace.
+- **What the protocol cannot check is whether the *right* capability was declared.** A
+  reader that understands the namespace must verify that too — that a channel definition
+  demands channel-management authority and not something weaker. The protocol enforces the
+  capability that was named; the consuming spec decides which one should have been.
+- **Payloads are bounded.** The log is replayed in full by every joiner and never shrinks,
+  so an unbounded payload would let one application make a network permanently expensive to
+  join. Application *content* belongs in storage behind a CID an entry can reference; this
+  carries structure.
+- **Application entries do not count toward branch length** (§2.7.1, point 2). Whether one
+  is cheap to mint depends on whether its declared capability is scarce, and answering that
+  means resolving a tier against replayed state — which the branch-length metric
+  deliberately cannot do. Excluding them fails closed against grinding. The cost is that an
+  application's actions carry no weight in fork choice and a partition may void them, which
+  is acceptable: everything that must survive a partition — membership, revocation, policy,
+  epoch rotation — is a core entry that still counts, and a voided application entry is
+  resubmittable through the voided-actions report like any other.
+
+**Why this is generic.** §0 says this document describes a general-purpose platform and
+defers application design entirely. Naming each consuming spec's records here would shape
+the log around whichever applications arrived first — and that has already happened once:
+`AppNameRegistration` is App Hosting's record sitting in this document's entry vocabulary.
+Adding four chat-shaped variants beside it would have made a pattern of an exception. One
+door, used by every application layer, is the correction.
+
 ### 2.7.1 Fork-Choice and Reconciliation Rule — Resolved, With a Bounded-Finality Correction
 
 **"Whichever entry attaches first is canonical" is not itself a well-defined rule in a distributed system** — with two concurrent entries both referencing the same parent hash, gossiped into different parts of the network, each side can honestly observe its own entry as having "attached first" from its own local vantage point. There is no global "first" without an explicit, deterministic rule, so this document specifies one directly rather than leaving it implicit:
@@ -519,6 +561,7 @@ Concretely, once the first connection is live, the responding node(s) can push o
 - Vote-based governance policy (§2.6.1) is decided by **quorum certificate existence**, not by each node's local ballot computation (which can diverge near the close boundary) — absence of a valid certificate at close time means the vote fails, fail-closed. The electorate can be `everyone` (direct) or a smaller designated group (representative); per-member delegate assignment (liquid democracy) is explicitly out of scope.
 - Every network maintains a hash-chained governance log (§2.7) recording every membership, capability, group, policy, **moderation** (`ModerationEntry`, §2.7 — the concrete record behind "delisted," which Storage §2.5, Search §3.1/§6.1 and App Hosting §3.4 all resolve by replay rather than by any separate store), and epoch-rotation action — this is the network's decentralized "policy engine": any node can independently recompute current authorization state by replaying it. Concurrent/conflicting entries are resolved by an explicit fork-choice rule (§2.7.1: deterministic sibling tie-break; longest-branch reconciliation for deeper partitions, measured **only by capability-gated actions** — device-certificate entries don't count toward branch length, closing a free-grinding exploit) — entries unique to a losing branch are voided outright, not partially applied, with a **mandatory voided-actions report** so resubmission (especially of a voided revocation) is a defined, automatable client step, not something depending on someone noticing. **Reorg depth/age is bounded, and both bounds must be met**: a branch is final once it is buried under **k = 10 capability-gated governance actions** *and* is at least **T = 30 minutes** old (§2.7.1 — starting defaults, explicitly tunable, but concrete rather than abstract so downstream mechanisms can actually be built and tested against them). Past that point a branch can no longer be displaced, which is what gives MLS state a concrete point at which it's safe to stop retaining superseded epoch secrets (§3.3).
 - A network's policy may carry **application-layer values** (§2.6.2): namespaced keys the protocol stores, orders, encodes and hash-covers **without interpreting**. This is how a consuming spec gets a setting every node must agree on — a validity rule such as a flood ceiling — without the platform acquiring fields shaped around one application. Absent means the consuming spec's default, unlike the capability registry where absent means refused.
+- The log also carries **application-layer entries** (§2.7.2): namespace, kind, a declared capability and an opaque payload, which the protocol orders, hash-covers and authorizes without decoding. This is how a consuming spec gets durable ordered structure — which an append-set cannot provide, since its entries lapse — without the log acquiring that spec's record types. They do **not** count toward branch length, because whether one is cheap to mint depends on a tier the metric cannot resolve.
 - Every network also maintains a governance-configured, protocol-enforced **content-type allowlist** (§2.8): any publish must declare a `content_type`, and publishes outside the network's current allowlist are rejected outright. This is what lets a network stay meaningfully scoped to a specific purpose (e.g. a chat-style network excluding `app-bundle` entirely). A **second, independent gate**, the parametrized `publish:<content_type>` capability, governs which specific groups may publish an allowed type — a type being on the allowlist does not itself grant publish rights; consuming specs (Storage, App Hosting) must check both gates, not just the allowlist.
 - Group encryption uses MLS/TreeKEM (§3.3), not pairwise rekeying, giving O(log n) rekey cost — required at this project's target scale. **The epoch key wraps small per-object key material (envelope encryption); it does not directly encrypt content** — this is what makes rotation cheap. Members must **tentatively retain superseded-epoch MLS secrets until the corresponding rotation reaches finality** (§2.7.1's bounded reorg depth), enabling re-welcome if a tentative rotation is later voided. **Revocation's guarantee is now unconditional, not a per-network policy toggle**: a revoked member cannot obtain anything wrapped/served for the first time after removal, enforced regardless of network configuration — but *cannot* be made to un-know a key or forget content they already legitimately decrypted before removal. §3.4 (renamed from the earlier "retroactive opt-out" framing, which contradicted this) now covers a genuinely separate, still-configurable choice: how much *history* a brand-new member gets access to. Storage Spec §5 owns the concrete envelope-encryption mechanics this guarantee depends on, including a `read-content`-gated content-serving requirement (§2.2) that closes a residual gap DEK reuse would otherwise leave open.
 - Any subsystem that needs to know what a node is willing to contribute reads from the capability ledger (§4) — don't invent a parallel resource-declaration mechanism. The ledger is a **per-node converging cache, not a shared authority** (§4.5): algorithms over it are deterministic given a ledger, and agree between nodes once their ledgers agree rather than instantaneously. `reliability_signal` (§4.6) is a locally-observed, opportunistic reputation signal derived from mandatory verification checks the protocol already performs. It is **local-only and never gossiped or advertised** (not "by default" — this is not relaxable), and consequently may feed **only local, per-node selection decisions** with no cross-node consistency requirement: swarm source selection (Storage Spec §4.3) and media relay selection (Real-Time Spec §2.3). It **must never be an input to a deterministic, cross-node-recomputed algorithm** — notably replica placement (Storage Spec §3.3) and live-stream first-tier assignment (Real-Time Spec §3.3), which weight gossiped capacity only, since a function fed by per-observer-private state cannot produce the identical result on every node that those mechanisms require. It never gates membership or capabilities and never triggers automated revocation. It's disclosable on demand to `audit-reputation` holders for large-network oversight, mandatory-but-rate-limited to respond.

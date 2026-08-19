@@ -1,6 +1,6 @@
 //! Governance log entries — Core Protocol Spec §2.7.
 
-use crate::{CapabilitySet, ContentType, GovernanceError, GroupId, NetworkPolicy};
+use crate::{Capability, CapabilitySet, ContentType, GovernanceError, GroupId, NetworkPolicy};
 use intranet_crypto::{Enc, Hash, Signature, Timestamp, hash_bytes, to_hex};
 use intranet_identity::{
     DeviceCertificate, DeviceCertificateRevocation, NetworkId, PerNetworkIdentity,
@@ -373,6 +373,60 @@ pub enum EntryBody {
         /// The app this name should resolve to.
         app_id: PointerId,
     },
+    /// A record belonging to a consuming spec, carried but not interpreted.
+    ///
+    /// # Why this is generic rather than one variant per record type
+    ///
+    /// An application layer needs durable, ordered, tamper-evident records for
+    /// its own structure — a chat application's channel definitions, for
+    /// instance, which an append-set cannot hold because its entries lapse when
+    /// unrefreshed (Storage Spec §2.5). The governance log is the only place
+    /// with those properties.
+    ///
+    /// Naming each such record here would shape this document around whichever
+    /// applications happened to arrive first, which §0 says it must not be. It
+    /// has already happened once: [`Self::AppNameRegistration`] is App Hosting's
+    /// record sitting in the core enum, and adding four chat-shaped variants
+    /// beside it would have made a pattern of an exception.
+    ///
+    /// So this variant is the door every application layer uses. The protocol
+    /// **orders, hash-covers and authorizes** these entries; it does not decode
+    /// `payload`, and a consuming spec owns what is inside it.
+    ///
+    /// # What the protocol still checks
+    ///
+    /// `required` is the capability the consuming spec says this record needs,
+    /// and replay refuses the entry unless its author held that capability at
+    /// that point in the chain. The protocol cannot tell whether a spec declared
+    /// the *right* capability — a reader that understands the namespace must
+    /// check that too — but it can and does enforce the one that was declared.
+    AppEntry {
+        /// The consuming spec's namespace, e.g. `chat`.
+        namespace: String,
+        /// Which record within that namespace, e.g. `channel-definition`.
+        kind: String,
+        /// The capability the consuming spec requires for this record.
+        required: Capability,
+        /// The record itself, opaque to this crate.
+        payload: Vec<u8>,
+    },
+}
+
+/// Largest payload an [`EntryBody::AppEntry`] may carry.
+///
+/// The governance log is replayed in full by every joiner and never shrinks, so
+/// an unbounded payload would let one application make a network permanently
+/// expensive to join. Application *content* belongs in storage, addressed by a
+/// CID an entry can reference; this is for structure.
+pub const MAX_APP_ENTRY_PAYLOAD_BYTES: usize = 8 * 1024;
+
+/// Whether a namespace and kind are well-formed for an [`EntryBody::AppEntry`].
+///
+/// Both must be non-empty, and a namespace may not contain `:` — the separator
+/// reserved for composing the two, so allowing it would make `a:b`/`c` and
+/// `a`/`b:c` indistinguishable to anything that joins them.
+pub fn is_valid_app_entry_name(namespace: &str, kind: &str) -> bool {
+    !namespace.is_empty() && !kind.is_empty() && !namespace.contains(':')
 }
 
 impl EntryBody {
@@ -406,6 +460,24 @@ impl EntryBody {
             | Self::ContentTypePolicy { .. }
             | Self::Moderation(_)
             | Self::AppNameRegistration { .. } => true,
+
+            // Deliberately **not** counted, which is the conservative reading.
+            //
+            // The metric exists to stop an attacker grinding a long branch from
+            // entries that are free to mint (§2.7.1, point 2). Whether an app
+            // entry is free depends on whether its declared capability is
+            // scarce, and answering that means resolving the capability's tier
+            // against replayed state — which this function deliberately cannot
+            // do, being a pure function of the body.
+            //
+            // Excluding them fails closed against grinding. The cost is that
+            // app-layer actions carry no weight in fork choice, so a partition
+            // may void them; that is acceptable because everything which must
+            // survive a partition — membership, revocation, policy, epoch
+            // rotation — is a core entry that still counts, and a voided app
+            // entry is resubmittable through the voided-actions report like any
+            // other.
+            Self::AppEntry { .. } => false,
         }
     }
 
@@ -431,6 +503,7 @@ impl EntryBody {
             Self::DeviceRevocation(_) => "device-revocation",
             Self::Moderation(_) => "moderation",
             Self::AppNameRegistration { .. } => "app-name-registration",
+            Self::AppEntry { .. } => "app-entry",
         }
     }
 
@@ -543,6 +616,16 @@ impl EntryBody {
                 enc.variant(9)
                     .str(name.as_str())
                     .fixed(app_id.as_bytes());
+            }
+            Self::AppEntry {
+                namespace,
+                kind,
+                required,
+                payload,
+            } => {
+                enc.variant(12).str(namespace).str(kind);
+                required.encode(enc);
+                enc.bytes(payload);
             }
             Self::Moderation(moderation) => {
                 enc.variant(8)
