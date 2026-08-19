@@ -58,3 +58,17 @@ async-trait = "0.1"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+# Debug builds here are dominated by debug information, not code: a test binary
+# statically links libp2p, quinn, rustls and openmls, and 83% of the 369 MB one
+# measured was DWARF — `.debug_str` alone was 182 MB. Every integration test is
+# its own binary carrying its own copy of that, so the target directory reached
+# tens of gigabytes in a couple of days of ordinary work.
+#
+# `line-tables-only` keeps what this project actually reads — file and line in a
+# backtrace, and a panic location that means something — and drops the type and
+# variable descriptions a stepping debugger would want. `unpacked` leaves the
+# rest in object files instead of copying it into every test binary.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
