@@ -42,6 +42,16 @@ indistinguishable from one never sent. The wire codec is hand-written and delibe
 untrusted: every decoded entry is re-verified against its author's signature, so a codec
 bug is a rejected entry rather than silent divergence.
 
+MLS group state is live and must be persisted: `GroupSession::save`/`restore`
+(Core §3.3.1). Without it a restarted member keeps its epoch keys, can still read, and can
+never rotate, welcome or revoke again — a founder in that state cannot key anybody in, and
+the §3.1 revocation guarantee quietly stops being available. openmls keeps that state in an
+in-memory provider by default, which is why this is easy to get wrong and invisible in
+tests that never restart anything. The blob holds the group's secret tree and the member's
+signature private key, so it is secret in the same sense `EpochKey::expose_for_delivery` is:
+seal it at rest. Note the save path reads `MemoryStorage::values` directly rather than
+calling `serialize`, which openmls gates behind its `test-utils` feature.
+
 The capability ledger gossips over the same machinery (`intranet-ledger::wire`,
 `/intranet/capability-ledger/1.0.0`), but reconciles differently: it is a set keyed by
 node, refreshed wholesale, so its digest is `(node, issued_at)` rather than branch tips.

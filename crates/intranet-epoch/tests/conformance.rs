@@ -56,6 +56,132 @@ fn adding_a_member_advances_the_epoch_and_both_derive_the_same_key() {
 }
 
 #[test]
+fn a_restored_session_holds_the_same_epoch_key() {
+    // The cheapest thing that could be wrong, and the one that would look like
+    // success: a session that comes back with a *different* key reads none of
+    // the content the network already has, while every other symptom is absent.
+    let session = GroupSession::create(b"founder").unwrap();
+    let before = session.epoch_key().unwrap();
+
+    let restored = GroupSession::restore(&session.save().unwrap()).unwrap();
+
+    assert_eq!(
+        restored.epoch_key().unwrap().fingerprint(),
+        before.fingerprint(),
+        "a restart must not change what this member can read"
+    );
+    assert_eq!(restored.member_count(), session.member_count());
+}
+
+#[test]
+fn a_restored_session_can_still_add_a_member() {
+    // The property the persistence exists for. Adding requires the signature
+    // key and the group's secret tree, so a session that restored without
+    // either would fail exactly here — which, before this existed, is the state
+    // every founder was in the moment their process exited.
+    let founder = GroupSession::create(b"founder").unwrap();
+    let mut restored = GroupSession::restore(&founder.save().unwrap()).unwrap();
+
+    let joiner = GroupSession::prepare_join(b"joiner").unwrap();
+    let rotation = restored
+        .add_member(&joiner.key_package().unwrap())
+        .expect("a restored founder can still key somebody in");
+
+    assert_eq!(restored.member_count(), 2);
+    let joined = joiner.join(rotation.welcome.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        joined.epoch_key().unwrap().fingerprint(),
+        rotation.key.fingerprint(),
+        "the member added by a restored session derives the same key as everyone else"
+    );
+}
+
+#[test]
+fn a_restored_session_can_still_remove_a_member() {
+    // Rotation on *remove* is the half that carries the revocation guarantee:
+    // without it a removed member keeps reading everything published
+    // afterwards. It needs the same live state adding does.
+    // Real identity labels, so the leaf can be found the way a caller finds it —
+    // by identity rather than by a guessed index. That also checks the
+    // credential survived the round trip, since looking a member up matches on
+    // it.
+    let founder_id = identity(1).id();
+    let joiner_id = identity(2).id();
+    let mut founder = GroupSession::create(&intranet_epoch::identity_label(&founder_id)).unwrap();
+    let joiner = GroupSession::prepare_join(&intranet_epoch::identity_label(&joiner_id)).unwrap();
+    let added = founder.add_member(&joiner.key_package().unwrap()).unwrap();
+    let joined = joiner.join(added.welcome.as_ref().unwrap()).unwrap();
+
+    let mut restored = GroupSession::restore(&founder.save().unwrap()).unwrap();
+    let index = restored
+        .leaf_index_for(&joiner_id)
+        .expect("a restored session can still find a member by identity");
+    let rotation = restored
+        .remove_member(index)
+        .expect("a restored session can still revoke");
+
+    assert_ne!(
+        rotation.key.fingerprint(),
+        joined.epoch_key().unwrap().fingerprint(),
+        "removal must rekey beyond the removed member's reach"
+    );
+    assert_eq!(restored.member_count(), 1);
+}
+
+#[test]
+fn state_survives_more_than_one_round_trip() {
+    // Saving a restored session must produce something restorable in turn.
+    // A save path that only worked on a freshly created group would fail on the
+    // second restart rather than the first, which is a much worse place to find
+    // it.
+    let founder = GroupSession::create(b"founder").unwrap();
+    let once = GroupSession::restore(&founder.save().unwrap()).unwrap();
+    let twice = GroupSession::restore(&once.save().unwrap()).unwrap();
+
+    assert_eq!(
+        twice.epoch_key().unwrap().fingerprint(),
+        founder.epoch_key().unwrap().fingerprint()
+    );
+
+    // And an advance after two round trips still works.
+    let mut twice = twice;
+    let joiner = GroupSession::prepare_join(b"joiner").unwrap();
+    twice.add_member(&joiner.key_package().unwrap()).unwrap();
+    assert_eq!(twice.member_count(), 2);
+}
+
+#[test]
+fn saving_twice_without_a_change_produces_identical_bytes() {
+    // Not cosmetic: a caller writing this to disk needs "has anything changed"
+    // to be answerable, and a blob that differed on every save would force a
+    // rewrite — and a re-seal — every time anything looked at it.
+    let session = GroupSession::create(b"founder").unwrap();
+    assert_eq!(session.save().unwrap(), session.save().unwrap());
+}
+
+#[test]
+fn a_corrupted_or_foreign_blob_is_refused_rather_than_half_loaded() {
+    // Fail closed. A session that came back missing its group would look alive
+    // and fail at the first rotation, which is the worst moment to discover it
+    // and gives the caller no reason to re-fetch.
+    let session = GroupSession::create(b"founder").unwrap();
+    let good = session.save().unwrap();
+
+    assert!(GroupSession::restore(b"not a session at all").is_err());
+    assert!(
+        GroupSession::restore(&good[..good.len() / 2]).is_err(),
+        "a truncated blob must not restore"
+    );
+
+    let mut trailing = good.clone();
+    trailing.push(0);
+    assert!(
+        GroupSession::restore(&trailing).is_err(),
+        "trailing bytes mean this is not the thing it claims to be"
+    );
+}
+
+#[test]
 fn removing_a_member_rekeys_beyond_their_reach() {
     // The cryptographic half of the revocation guarantee. The other half —
     // blocking new ciphertext — is the serving gate's job.

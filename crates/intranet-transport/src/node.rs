@@ -26,7 +26,7 @@ use crate::media_limits::{MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
 use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
-    CollectionResponse, DekWrapping, FetchPlan, MAX_COLLECTION_ENTRIES,
+    CollectionResponse, DekWrapping, EpochKey, FetchPlan, MAX_COLLECTION_ENTRIES,
     MAX_POINTERS_PER_RESPONSE, MutablePointer, PointerDigestEntry, PointerRecord, PointerRefusal,
     PointerRequest, PointerResponse, StorageError, may_serve,
 };
@@ -860,6 +860,38 @@ impl MemberNode {
         self.keyring.record(genesis, epoch, key);
         self.group = Some(session);
         Ok(())
+    }
+
+    /// Saves this node's MLS group state, for restoring after a restart.
+    ///
+    /// `None` when this node holds no group — a waiting-room member, or one that
+    /// has not been welcomed yet. Core §3.3.1 requires this state to survive a
+    /// restart: a member that comes back with its keys but without its group can
+    /// still read and can never rotate, welcome or revoke again.
+    ///
+    /// **The bytes are secret** — the group's secret tree and this node's
+    /// signature private key — and the caller owes them sealing at rest.
+    pub fn save_epoch_group(&self) -> Result<Option<Vec<u8>>, EpochError> {
+        self.group.as_ref().map(GroupSession::save).transpose()
+    }
+
+    /// Restores a group saved by [`save_epoch_group`](Self::save_epoch_group).
+    ///
+    /// The epoch key it derives is recorded against `rotation_ref`, which is the
+    /// rotation the caller knows this state belongs to — this node's own record
+    /// of what it was on when it saved. Re-deriving it rather than trusting a
+    /// stored copy means a restore that produced the wrong group is caught by
+    /// the key not matching, rather than by content failing to open later.
+    pub fn restore_epoch_group(
+        &mut self,
+        saved: &[u8],
+        rotation_ref: Hash,
+    ) -> Result<EpochKey, EpochError> {
+        let session = GroupSession::restore(saved)?;
+        let key = session.epoch_key()?;
+        self.keyring.record(rotation_ref, session.epoch(), key.clone());
+        self.group = Some(session);
+        Ok(key)
     }
 
     /// Sends an already-built key delivery request — §3.5.

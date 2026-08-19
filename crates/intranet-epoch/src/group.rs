@@ -27,6 +27,7 @@ use intranet_storage::EpochKey;
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
+use intranet_crypto::{Dec, Enc};
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 
@@ -43,6 +44,13 @@ const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA2
 /// epoch key is a proper derived secret, and changes with every commit by
 /// construction.
 const EXPORTER_LABEL: &str = "intranet.epoch-key.v1";
+
+/// Domain tag for a serialised group session.
+///
+/// Domain-separated like every other encoding here so a saved session cannot be
+/// mistaken for any other blob this project writes, and so a future change to
+/// what it carries becomes a new tag rather than a silent reinterpretation.
+const SESSION_DOMAIN: &str = "intranet.epoch-session.v1";
 
 /// The credential label an identity presents inside MLS.
 ///
@@ -116,6 +124,133 @@ impl GroupSession {
 
         let group = MlsGroup::new(&provider, &signer, &Self::config(), credential.clone())
             .map_err(|e| EpochError::Mls(format!("group create: {e:?}")))?;
+
+        Ok(Self {
+            provider,
+            signer,
+            credential,
+            group,
+        })
+    }
+
+    /// Serialises this session so it can be restored after a restart.
+    ///
+    /// # Why this exists, and what it costs
+    ///
+    /// An MLS group is live cryptographic state, and `OpenMlsRustCrypto` keeps
+    /// it in memory: a process that exits loses the group. That is fatal for a
+    /// long-lived member rather than inconvenient, because the group is what
+    /// rotation and key delivery need. Core §3.3 makes every rotation a
+    /// governance entry and §3.5 delivers keys point-to-point; neither is
+    /// possible from a node whose group vanished when it restarted, and a
+    /// founder in that state can never key anybody in again.
+    ///
+    /// **These bytes are secret and must be sealed at rest.** They contain the
+    /// group's secret tree and this member's signature private key — everything
+    /// an attacker needs to impersonate this member and read the network's
+    /// content. This is the same sanctioned-exception shape as
+    /// `EpochKey::expose_for_delivery`: key material leaves the type only for a
+    /// purpose that cannot be served otherwise, and the caller owes it
+    /// protection. A client writing this to disk unsealed has given away the
+    /// network.
+    ///
+    /// The signature key pair is written into the provider's storage first,
+    /// because `create` does not put it there — openmls stores what it is asked
+    /// to, and nothing had asked.
+    pub fn save(&self) -> Result<Vec<u8>, EpochError> {
+        self.signer
+            .store(self.provider.storage())
+            .map_err(|e| EpochError::Mls(format!("store signer: {e:?}")))?;
+
+        // Read out of the provider's own map rather than through
+        // `MemoryStorage::serialize`, which exists only under openmls's
+        // `test-utils` feature and says so — enabling a test-only feature in a
+        // shipping build would be a worse dependency than reaching for a public
+        // field. Nothing here interprets the entries; they are opaque bytes
+        // openmls wrote and only openmls reads.
+        let values = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .map_err(|_| EpochError::Mls("storage lock poisoned".into()))?;
+
+        // Sorted so that saving twice without an intervening change produces
+        // identical bytes. A HashMap iterates in an arbitrary order, and a blob
+        // that differed every time would make "did this change" unanswerable.
+        let mut entries: Vec<_> = values.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+
+        let mut e = Enc::domain(SESSION_DOMAIN);
+        e.bytes(self.group.group_id().as_slice());
+        e.bytes(&self.identity_label());
+        e.bytes(self.signer.public());
+        e.seq(entries.into_iter(), |e, (key, value)| {
+            e.bytes(key);
+            e.bytes(value);
+        });
+        Ok(e.finish())
+    }
+
+    /// Restores a session saved by [`save`](Self::save).
+    ///
+    /// Refuses rather than improvising if the group is not in the restored
+    /// storage. A session that silently came back without its group would look
+    /// alive and fail at the first rotation, which is the worst moment to find
+    /// out — and a caller that got `Ok` would have no reason to re-fetch.
+    pub fn restore(bytes: &[u8]) -> Result<Self, EpochError> {
+        let mut d = Dec::domain(bytes, SESSION_DOMAIN)
+            .map_err(|e| EpochError::Mls(format!("decode session: {e}")))?;
+        let group_id = d
+            .bytes()
+            .map_err(|e| EpochError::Mls(format!("decode group id: {e}")))?
+            .to_vec();
+        let label = d
+            .bytes()
+            .map_err(|e| EpochError::Mls(format!("decode label: {e}")))?
+            .to_vec();
+        let public = d
+            .bytes()
+            .map_err(|e| EpochError::Mls(format!("decode public key: {e}")))?
+            .to_vec();
+        let entries = d
+            .seq(|d| {
+                let key = d.bytes()?.to_vec();
+                let value = d.bytes()?.to_vec();
+                Ok::<_, intranet_crypto::DecodeError>((key, value))
+            })
+            .map_err(|e| EpochError::Mls(format!("decode storage: {e}")))?;
+        d.finish()
+            .map_err(|e| EpochError::Mls(format!("trailing bytes: {e}")))?;
+
+        let provider = OpenMlsRustCrypto::default();
+        {
+            let mut values = provider
+                .storage()
+                .values
+                .write()
+                .map_err(|_| EpochError::Mls("storage lock poisoned".into()))?;
+            values.extend(entries);
+        }
+
+        // Read back rather than reconstructed from raw halves: `save` puts the
+        // key pair into the provider's storage precisely so the private half
+        // never has to travel as a field of its own, and openmls's own accessor
+        // for it is test-only.
+        let signer = SignatureKeyPair::read(
+            provider.storage(),
+            &public,
+            CIPHERSUITE.signature_algorithm(),
+        )
+        .ok_or_else(|| EpochError::Mls("the saved state holds no signature key".into()))?;
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(label).into(),
+            signature_key: public.into(),
+        };
+
+        let group = MlsGroup::load(provider.storage(), &GroupId::from_slice(&group_id))
+            .map_err(|e| EpochError::Mls(format!("load group: {e:?}")))?
+            .ok_or_else(|| EpochError::Mls("the saved state holds no group".into()))?;
 
         Ok(Self {
             provider,
