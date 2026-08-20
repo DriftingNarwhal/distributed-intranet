@@ -475,7 +475,11 @@ wearing the clothes of a display concern:
    be seen cannot be checked by the person it misleads.
 2. **Normalize** to Unicode **NFKC**.
 3. **Trim** leading and trailing whitespace (`White_Space=Yes`), then **collapse** every
-   internal run of whitespace to a single `U+0020`.
+   internal run of whitespace to a single `U+0020`. Note what step 1 has already removed:
+   tab, line feed and carriage return are control characters and were **refused**, not
+   collapsed, so this step operates on separators alone. Refusing is the consistent answer —
+   silently collapsing a character the claimant cannot see is exactly what step 1 exists to
+   prevent, and doing it here would reintroduce it one line later.
 4. **Lower-case** using the Unicode default lowercase mapping (`Lowercase_Mapping`, what
    Rust's `str::to_lowercase` implements). Deliberately *not* full case folding: folding is
    the more correct tool for caseless matching and differs from lowercasing for a handful of

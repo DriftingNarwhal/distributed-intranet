@@ -39,6 +39,8 @@ const REQUEST_SIGNATURE_DOMAIN: &str = "intranet.join-request.v1";
 const REQUEST_DOMAIN: &str = "intranet.wire.join-request.v1";
 /// Domain tag for a response on the wire.
 const RESPONSE_DOMAIN: &str = "intranet.wire.join-response.v1";
+/// Domain tag for an invite carried on its own — §5.6.
+const INVITE_DOMAIN: &str = "intranet.invite.v1";
 
 /// The most bootstrap addresses an invite on the wire may carry.
 ///
@@ -282,6 +284,36 @@ impl JoinResponse {
         d.finish()?;
         Ok(response)
     }
+}
+
+/// Encodes an invite so it can be handed to somebody.
+///
+/// **An invite that cannot be serialized is not an invite.** §5.6 defines it as
+/// a credential carried to a prospective member out of band — pasted into a
+/// message, put behind a link — and until this existed the only way its bytes
+/// appeared was already inside a [`JoinRequest`], which is the *other* end of
+/// the journey. Issuing one and having no way to give it to anybody was a gap
+/// nobody hit because nothing had tried to invite a person yet.
+///
+/// Its own domain tag rather than the request's, so an invite cannot be decoded
+/// as a join request or the reverse.
+pub fn encode_invite(invite: &Invite) -> Vec<u8> {
+    let mut e = Enc::domain(INVITE_DOMAIN);
+    put_invite(&mut e, invite);
+    e.finish()
+}
+
+/// Decodes an invite handed over out of band.
+///
+/// Verifies nothing beyond the framing. An invite is a *claim* until
+/// [`Invite::validate`] checks it against replayed governance state, and a
+/// decoder that verified the signature here would invite the reading that
+/// decoding had already established something.
+pub fn decode_invite(bytes: &[u8]) -> Result<Invite, WireError> {
+    let mut d = Dec::domain(bytes, INVITE_DOMAIN)?;
+    let invite = get_invite(&mut d)?;
+    d.finish()?;
+    Ok(invite)
 }
 
 fn put_invite(e: &mut Enc, invite: &Invite) {

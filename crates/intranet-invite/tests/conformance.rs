@@ -605,3 +605,45 @@ fn content_type_policy_is_untouched_by_joining() {
     let state = state_of(&chain);
     assert_eq!(state.policy.content_type_allowlist, starter_content_types());
 }
+
+#[test]
+fn an_invite_survives_being_handed_to_somebody() {
+    // §5.6's whole shape — a credential carried out of band — needs an invite to
+    // have bytes of its own. Until this existed the only place its encoding
+    // appeared was inside a JoinRequest, which is the far end of the journey.
+    let issuer = identity(1);
+    let invite = valid_invite(&issuer);
+
+    let carried = intranet_invite::encode_invite(&invite);
+    let back = intranet_invite::decode_invite(&carried).expect("decodes");
+    assert_eq!(back, invite);
+    assert_eq!(back.invite_id(), invite.invite_id());
+}
+
+#[test]
+fn an_invite_and_a_join_request_cannot_be_decoded_as_each_other() {
+    // Distinct domain tags, so a credential and the message presenting it are
+    // not interchangeable on the wire.
+    let issuer = identity(1);
+    let joiner = identity(2);
+    let invite = valid_invite(&issuer);
+    let request = intranet_invite::JoinRequest::create(&joiner, invite.clone());
+
+    assert!(intranet_invite::decode_invite(&request.encode()).is_err());
+    assert!(intranet_invite::JoinRequest::decode(&intranet_invite::encode_invite(&invite)).is_err());
+}
+
+#[test]
+fn decoding_an_invite_establishes_nothing_about_it() {
+    // A decoder that verified the signature would invite the reading that
+    // decoding had already validated the invite. It has not: validate() is what
+    // asks whether the issuer holds approve-node *now*.
+    let issuer = identity(1);
+    let mut invite = valid_invite(&issuer);
+    invite.max_uses = 99; // the signature no longer covers this
+
+    let carried = intranet_invite::encode_invite(&invite);
+    let back = intranet_invite::decode_invite(&carried).expect("still decodes");
+    assert_eq!(back.max_uses, 99);
+    assert!(back.verify_signature().is_err(), "tampering is caught later, not here");
+}
