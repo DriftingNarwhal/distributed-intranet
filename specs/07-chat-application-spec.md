@@ -476,13 +476,28 @@ wearing the clothes of a display concern:
 2. **Normalize** to Unicode **NFKC**.
 3. **Trim** leading and trailing whitespace (`White_Space=Yes`), then **collapse** every
    internal run of whitespace to a single `U+0020`.
-4. **Case-fold** using Unicode full case folding.
+4. **Lower-case** using the Unicode default lowercase mapping (`Lowercase_Mapping`, what
+   Rust's `str::to_lowercase` implements). Deliberately *not* full case folding: folding is
+   the more correct tool for caseless matching and differs from lowercasing for a handful of
+   code points, but lowercasing is available identically in every environment likely to
+   implement this, and a rule everybody applies the same way beats a better rule applied two
+   ways. The visible consequence is that `ß` and `SS` are distinct keys.
 5. **Reject** if the result is empty, or if the *claimed* form exceeds **64 bytes** of UTF-8
    or the normalized form exceeds **32 extended grapheme clusters**. Both bounds are checked:
    bytes bound what a node must store and relay, graphemes bound what a name can occupy on a
    screen, and neither implies the other.
 
 The result is the **name key**. Two claims collide exactly when their name keys are equal.
+
+**The name key is only as stable as the Unicode version a client embeds, and that is a real
+limit rather than a theoretical one.** Step 1's categories and step 2's normalization are both
+defined against a Unicode version, so two nodes on different versions can in principle disagree
+about a name built from code points assigned between them — one refuses it as unassigned, the
+other accepts and binds it. Three things bound the damage: the Unicode stability policy
+guarantees normalization is fixed for code points that already exist, so only *newly assigned*
+ones are in play; the disagreement is confined to the one name involved; and upgrading resolves
+it. This is also precisely why §3.9.1 refuses to fold confusables — that table changes far more
+than these do, and it would put the same hazard on names people actually use.
 
 **What this does not catch, stated because a reader will assume otherwise.** Homoglyphs
 survive: `alice` and `alicе` (Cyrillic `е`), or `l` against capital `I` in many typefaces, are
