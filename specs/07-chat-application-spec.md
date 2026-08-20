@@ -315,6 +315,7 @@ collections, no clock read during encoding.
 ### 3.2 Domain tags
 
 `intranet.chat-record.v1`, `intranet.chat-segment.v1`, `intranet.chat-channel-entry.v1`,
+`intranet.chat-name-claim.v1`,
 `intranet.chat-channel-id.v1`,
 `intranet.chat-conversation-id.v1`, `intranet.chat-thread-id.v1`,
 `intranet.chat-log-pointer.v1`, `intranet.chat-moderation-pointer.v1`,
@@ -439,6 +440,80 @@ The header mirrors §3.3's deliberately. `network_id` is absent for the same rea
 
 **Every check in this section is application-layer.** The protocol carries these payloads without decoding them, so a client that skipped these checks would accept structure every conformant client refuses — the same honest limit §1.2 states for the profile rule, and for the same reason.
 
+### 3.9 Member name claim payloads
+
+A member's display name is a `chat` application entry, `kind` string `member-name`, discriminant `0x10`.
+
+```
+domain ‖ name
+```
+
+**The payload carries no identity, and that is the security property.** A claim binds the
+identity that authored the entry, which the protocol has already verified. There is no field
+in which to name somebody else, so claiming a name on another member's behalf is not refused —
+it is unsayable. This is the same structural move §3.8 makes by putting the channel id inside
+the signed payload rather than trusting an envelope.
+
+**Why the governance log rather than a profile object.** A member's avatar and status live in
+a mutable pointer they own, and a name could have too — except that uniqueness is a question
+about the whole network at a moment in time, and a single-writer object cannot answer it. Two
+members publishing the same name to their own pointers produces two nodes that disagree about
+who is who, with nothing to settle it. Ordering is what makes uniqueness decidable, and the
+log is what has ordering. This is the conclusion App Hosting §4.3 reached for app names and
+§1.3 reached for channels, for the third time.
+
+#### 3.9.1 Normalization
+
+Uniqueness compares **normalized** forms; display uses the name exactly as claimed. A claim is
+**refused** if normalization fails any step. The steps are ordered and exhaustive, because two
+nodes that normalized differently would disagree about what is a duplicate — a consensus bug
+wearing the clothes of a display concern:
+
+1. **Reject** any name containing a Unicode `Cc` (control), `Cf` (format, including
+   zero-width joiners and bidirectional overrides), `Cs` (surrogate), `Co` (private use) or
+   `Cn` (unassigned) code point. These are invisible or unrenderable, and a name that cannot
+   be seen cannot be checked by the person it misleads.
+2. **Normalize** to Unicode **NFKC**.
+3. **Trim** leading and trailing whitespace (`White_Space=Yes`), then **collapse** every
+   internal run of whitespace to a single `U+0020`.
+4. **Case-fold** using Unicode full case folding.
+5. **Reject** if the result is empty, or if the *claimed* form exceeds **64 bytes** of UTF-8
+   or the normalized form exceeds **32 extended grapheme clusters**. Both bounds are checked:
+   bytes bound what a node must store and relay, graphemes bound what a name can occupy on a
+   screen, and neither implies the other.
+
+The result is the **name key**. Two claims collide exactly when their name keys are equal.
+
+**What this does not catch, stated because a reader will assume otherwise.** Homoglyphs
+survive: `alice` and `alicе` (Cyrillic `е`), or `l` against capital `I` in many typefaces, are
+distinct keys and both may be held. Confusable-skeleton folding would close it and is
+deliberately not specified here — the tables are large, they collide names across scripts that
+have every right to exist, and two nodes on different table versions would disagree about what
+is a duplicate, which turns a display nicety into a fork. **Interfaces are therefore expected
+to render a name alongside enough of its identity to distinguish two holders** (§8).
+
+#### 3.9.2 Uniqueness and permanence
+
+On replay, in canonical order:
+
+- A claim whose name key is **unheld** binds that key to the entry's author.
+- A claim whose name key is **held by another identity** is **invalid and ignored**. It is not
+  an error that stops replay; the entry stays in the log and has no effect, exactly as a
+  channel entry from an unauthorized author does.
+- A claim whose name key is **already held by the same author** re-displays under the newly
+  claimed spelling, since the key is unchanged.
+- A member may hold **several** keys over time by claiming new ones. The most recent claim is
+  their current name.
+
+**A name key is bound permanently, including after its holder leaves the network.** Releasing
+it would let a later member inherit it, and history renders by author id with names resolved
+at display time — so an inherited name silently relabels somebody else's past messages, and
+every line stays honestly attributed while the conversation as a whole becomes a lie. The
+registry therefore only grows. It grows by one entry per member per rename, which is bounded
+by membership rather than by traffic.
+
+**Removal does not free a name.** Neither does a member abandoning it for another.
+
 ## 4. Authorization
 
 ### 4.1 Vocabulary
@@ -451,8 +526,14 @@ Extension capabilities (Core §2.2), each tier-tagged as that section requires:
 | `chat:post:<scope>` | Ordinary |
 | `chat:read:<scope>` | Ordinary |
 | `chat:connect-voice:<scope>` / `chat:speak-voice:<scope>` | Ordinary |
+| `chat:set-name:<scope>` | Ordinary |
 | `chat:manage-channel:<scope>` | **Governance** |
 | `chat:moderate:<scope>` | **Governance** |
+
+`chat:set-name` is Ordinary and is expected to be granted to `everyone` at genesis. It
+authorizes a claim on the claimant's *own* name and nothing else — §3.9's payload carries no
+identity, so the capability cannot be used against another member however broadly it is
+granted.
 
 `chat:manage-channel` is governance-tier because it can add an identity to a private
 channel's roster, which is the ability to widen access to content other members cannot see.
@@ -629,6 +710,11 @@ tiering itself stays in the client and is not requested here.
 - **Direct messages are their own networks** (§1.5), so nothing about them burdens a shared
   log or a third party's disk.
 - **The live path is an optimization and never a dependency** (§6.1).
+- **A display name is unique per network, permanently bound, and not sufficient on its own**
+  (§3.9). Uniqueness is decided on a normalized key that deliberately does not fold
+  confusables, so an interface MUST render a name alongside enough of its holder's identity to
+  tell two similar-looking names apart. A name is a convenience over an identity, never a
+  replacement for one.
 
 ---
 
