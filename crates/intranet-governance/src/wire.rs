@@ -51,6 +51,7 @@
 //! one that was never sent. [`ancestors_first`] is the single place that
 //! ordering is established.
 
+use crate::policy::{MAX_BOOTSTRAP_RELAYS, MAX_RELAY_ADDRESS_BYTES};
 use crate::{
     AdmissionMode, AppName, Capability, CapabilitySet, Cascade, ContentType, EntryBody,
     FinalityParams, GovernanceModel, GroupId, HistoryAccess, InviteProvenance, LogEntry,
@@ -488,6 +489,27 @@ fn get_policy(d: &mut Dec<'_>) -> Result<NetworkPolicy, WireError> {
         })?
         .into_iter()
         .collect();
+    // Bounded on the way in. A policy record is replayed by every node, so an
+    // address list is a place a hostile entry could make everybody store an
+    // arbitrary amount — the same reasoning §5.6's invite bounds apply, and the
+    // same numbers, since these are the same addresses.
+    let bootstrap_relays: Vec<String> = d.seq::<_, WireError>(|d| {
+        let address = d.str()?.to_owned();
+        if address.len() > MAX_RELAY_ADDRESS_BYTES {
+            return Err(WireError::Malformed(DecodeError::ImplausibleLength {
+                claimed: address.len() as u64,
+                remaining: MAX_RELAY_ADDRESS_BYTES,
+            }));
+        }
+        Ok(address)
+    })?;
+    if bootstrap_relays.len() > MAX_BOOTSTRAP_RELAYS {
+        return Err(WireError::Malformed(DecodeError::ImplausibleLength {
+            claimed: bootstrap_relays.len() as u64,
+            remaining: MAX_BOOTSTRAP_RELAYS,
+        }));
+    }
+
     let finality = FinalityParams {
         k: d.u32()?,
         t_millis: d.i64()?,
@@ -508,6 +530,7 @@ fn get_policy(d: &mut Dec<'_>) -> Result<NetworkPolicy, WireError> {
         content_type_allowlist,
         extension_capabilities,
         app_policy,
+        bootstrap_relays,
         finality,
         replication_factor,
         mesh_relay_threshold: d.u8()?,

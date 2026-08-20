@@ -2720,3 +2720,76 @@ fn every_entry_body_round_trips() {
         );
     }
 }
+
+#[test]
+fn designated_relays_survive_replay_and_a_policy_change() {
+    // The carrier that exists because a hosted relay is not a member and cannot
+    // advertise itself in the ledger (§5.5): a relay deployed after somebody
+    // joined reaches them by replay or not at all.
+    let founder = identity(1);
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.bootstrap_relays = vec!["/ip4/198.51.100.7/tcp/4001/p2p/12D3KooWFirst".to_owned()];
+
+    let mut chain = vec![LogEntry::create(
+        &founder,
+        None,
+        Timestamp::from_millis(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy: policy.clone(),
+            everyone_capabilities: Default::default(),
+        },
+    )];
+
+    let state = GovernanceState::replay(&chain).expect("replays");
+    assert_eq!(state.policy.bootstrap_relays, policy.bootstrap_relays);
+
+    // Replacing the hosted relay with a second one is an ordinary governance
+    // action, which is the point: as a network matures and members volunteer,
+    // swapping the entry points should not need anybody told out of band.
+    let mut replaced = policy.clone();
+    replaced.bootstrap_relays = vec![
+        "/ip4/198.51.100.7/tcp/4001/p2p/12D3KooWFirst".to_owned(),
+        "/ip4/203.0.113.9/tcp/4001/p2p/12D3KooWSecond".to_owned(),
+    ];
+    chain.push(LogEntry::create(
+        &founder,
+        Some(chain[0].hash()),
+        Timestamp::from_millis(1),
+        EntryBody::PolicyChange {
+            policy: replaced.clone(),
+        },
+    ));
+
+    let after = GovernanceState::replay(&chain).expect("replays");
+    assert_eq!(after.policy.bootstrap_relays.len(), 2);
+    assert_eq!(after.policy.bootstrap_relays, replaced.bootstrap_relays);
+}
+
+#[test]
+fn a_relay_list_is_bounded_on_the_way_in() {
+    // A policy record is replayed by every node, so an unbounded address list is
+    // a place one hostile entry makes everybody store whatever it likes.
+    let founder = identity(1);
+    let mut policy = NetworkPolicy::conservative_default();
+    policy.bootstrap_relays = (0..intranet_governance::MAX_BOOTSTRAP_RELAYS + 1)
+        .map(|i| format!("/ip4/198.51.100.{i}/tcp/4001"))
+        .collect();
+
+    let entry = LogEntry::create(
+        &founder,
+        None,
+        Timestamp::from_millis(0),
+        EntryBody::Genesis {
+            network: NETWORK,
+            policy,
+            everyone_capabilities: Default::default(),
+        },
+    );
+
+    let bytes = encode_entry(&entry);
+    assert!(
+        decode_entry(&bytes).is_err(),
+        "too many relays decoded without complaint"
+    );
+}

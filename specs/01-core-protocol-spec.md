@@ -209,6 +209,8 @@ The policy module's job, abstractly, is to answer one question: **"is this actio
 
 **A network also cannot *open* under member-vote, which follows from the mechanism rather than being a separate rule.** Admission requires a quorum of a frozen electorate (§2.6.1), and at genesis that electorate is empty or holds only the creator, so the first admission could never reach quorum. A network reaches member-vote by starting under capability-holder policy, admitting a founding electorate, and then switching via `define-policy` — which is an ordinary governance action, recorded and replayable like any other. This is worth stating because the alternative reading, that member-vote is a genesis-time choice, produces a network that is permanently unable to admit anybody and gives no indication why.
 
+Policy also carries the network's designated **bootstrap relays** — the entry points a member needs to reconnect and a joiner needs to arrive at all. They are defined in §5.5 rather than here, because that is where relays are specified; what belongs here is the consequence, that changing them is a `define-policy` action like any other tunable.
+
 ### 2.6.1 Member-Vote Quorum Mechanism — Resolved
 
 The mechanism below resolves the previously open question of how vote-based admission reaches a decision without any central tallying authority, at any network scale:
@@ -631,6 +633,21 @@ Critical architectural requirement, restated as a hard constraint: **bootstrap n
 - From that point on, the node caches enough peer addresses (and participates in the DHT) that it does **not** need to re-contact the bootstrap node to reconnect after a restart, as long as at least one previously-known peer is reachable.
 - As a network matures, `relay_bootstrap_willing` nodes from the capability ledger (§4) become additional, decentralized entry points — new joiners can be handed a mix of the original bootstrap node and several willing member peers as candidate bootstrap targets, further diluting reliance on any single host over time.
 - The bootstrap node should be understood, architecturally, as a **convenience for cold start**, never a component whose downtime prevents an established network from functioning. This is the direct answer to the takedown-resistance goal.
+
+**Honest correction to the point above, which was optimistic.** "Does not need to re-contact the bootstrap node to reconnect, as long as at least one previously-known peer is reachable" assumes a reachable peer, and two members behind ordinary residential NAT are not reachable by each other. Neither can be dialled directly; a cached address for a peer who is also behind NAT is not something you can connect to. So for a network whose members are all NATed and where none has volunteered as a relay, a bootstrap relay is **a standing dependency, not scaffolding** — the network keeps functioning, but a member who disconnects cannot get back in without one. Dependency becomes genuinely temporary at the point where the network has either a publicly reachable member or a `relay_bootstrap_willing` one, which is what the third point above describes and is worth reaching deliberately rather than assuming.
+
+**A network therefore designates its relays in policy: `NetworkPolicy.bootstrap_relays`, defined here and carried by the policy record §2.6 governs.** Four carriers exist and each is load-bearing for a different moment, which is why none of them replaces the others:
+
+| Carrier | Reaches | Why it must exist |
+|---|---|---|
+| The invite (§5.6) | A joiner who has never synced | They have no log, no cache, and no peers. This is the only channel they have |
+| `NetworkPolicy.bootstrap_relays` | Every member, by replay | The only thing that propagates a **newly deployed** relay to members who already joined. Their invite is spent and their cache may name a relay that is gone |
+| A node's local cache of the above | The same node after a restart | Reading policy requires a synced log; syncing requires a connection; connecting is what the relay is for. A node that consulted only replayed state could never use it |
+| The capability ledger (§4) | Members, while connected | `relay_bootstrap_willing` members, discovered dynamically and needing no governance action to appear or disappear |
+
+The distinction that makes the second row necessary: **a hosted bootstrap relay is not a member of the network it serves.** It holds no capabilities, replays no log, and does not speak the ledger protocols (§5.2's behaviour set is deliberately minimal), so it cannot advertise itself the way a volunteering member does. Nothing else carries it to members already in the network.
+
+Changing the designated set is a `PolicyChange` gated on `define-policy`, which is the appropriate bar for what infrastructure a network depends on — and is what makes replacing a hosted relay with member-hosted ones, as the network matures, an ordinary governance action rather than a redeployment everybody has to be told about out of band.
 
 ### 5.6 Invites
 

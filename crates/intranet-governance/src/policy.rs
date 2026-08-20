@@ -247,6 +247,19 @@ pub fn is_valid_app_policy_key(key: &str) -> bool {
     }
 }
 
+/// The most relays a network may designate.
+///
+/// **Flagged: §5.5 sets no ceiling.** More than a handful defeats the purpose —
+/// a joiner tries them in order and a long list is a long wait — and this bounds
+/// what a policy record makes every node store.
+pub const MAX_BOOTSTRAP_RELAYS: usize = 8;
+
+/// The longest relay address this build will accept.
+///
+/// Matches the invite's bound (`intranet_invite::MAX_ADDRESS_BYTES`) because
+/// these are the same addresses travelling by a different route.
+pub const MAX_RELAY_ADDRESS_BYTES: usize = 256;
+
 /// A network's complete governance configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkPolicy {
@@ -289,6 +302,34 @@ pub struct NetworkPolicy {
     /// network run a newer client alongside an older one without a policy
     /// migration — see [`PolicyValue`].
     pub app_policy: BTreeMap<String, PolicyValue>,
+    /// The relays this network designates as entry points — §5.5.
+    ///
+    /// Multiaddrs, held as strings for the reason [`crate`] holds addresses as
+    /// strings everywhere: an address is dialled by the transport and this layer
+    /// has no business parsing one.
+    ///
+    /// # Why this is replayed rather than configured per node
+    ///
+    /// §5.5 gives a joiner their first entry point in the invite and expects a
+    /// node to cache peers afterwards, so that reconnecting needs no bootstrap
+    /// node "as long as at least one previously-known peer is reachable". Two
+    /// members behind NAT do not satisfy that: neither is dialable directly, so
+    /// reconnection needs a rendezvous even between peers who know each other.
+    ///
+    /// A *member* volunteering as a relay is discoverable through the capability
+    /// ledger (§4) and needs nothing here. A hosted bootstrap relay is not a
+    /// member and does not speak those protocols, so nothing propagates a newly
+    /// deployed one to members who already joined — their invite is spent and
+    /// their cache names a relay that may be gone. This field is that missing
+    /// carrier: replayed, so every member learns the current set by syncing, and
+    /// changed by `define-policy`, which is the right bar for what infrastructure
+    /// a network depends on.
+    ///
+    /// **A node must cache what it last replayed.** Reading this requires a
+    /// synced log, and syncing requires a connection, which is what the relay is
+    /// for — so a node that only ever consulted replayed state could never use
+    /// it after a restart.
+    pub bootstrap_relays: Vec<String>,
     /// Content-defined chunking target size in bytes (Storage Spec §1.3).
     ///
     /// Must be network-wide rather than per-publisher: deduplication depends on
@@ -315,6 +356,10 @@ impl NetworkPolicy {
             replication_factor: 3,
             mesh_relay_threshold: 4,
             app_policy: BTreeMap::new(),
+            // Empty, because a network's relays are chosen when it is created
+            // and there is no sensible default to guess. A network with none is
+            // reachable only by members who can already dial each other.
+            bootstrap_relays: Vec::new(),
             target_chunk_size: 32 * 1024,
         }
     }
@@ -442,6 +487,9 @@ impl NetworkPolicy {
         enc.seq(self.app_policy.iter(), |e, (key, value)| {
             e.str(key);
             value.encode(e);
+        });
+        enc.seq(self.bootstrap_relays.iter(), |e, address| {
+            e.str(address);
         });
         enc.u32(self.finality.k)
             .i64(self.finality.t_millis)

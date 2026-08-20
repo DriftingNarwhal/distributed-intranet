@@ -61,6 +61,7 @@ pub use error::GovernanceError;
 pub use group::{EVERYONE, FOUNDERS, Group, GroupId, MembershipRecord};
 pub use log::{GovernanceLog, Reconciliation, VoidedEntry};
 pub use policy::{
+    MAX_BOOTSTRAP_RELAYS, MAX_RELAY_ADDRESS_BYTES,
     AdmissionMode, ContentType, FinalityParams, GovernanceModel, HistoryAccess,
     NAMESPACE_SEPARATOR, NetworkPolicy, PolicyValue, is_valid_app_policy_key,
     starter_content_types,
