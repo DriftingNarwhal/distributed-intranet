@@ -557,3 +557,4 @@ async fn a_node_without_a_group_refuses_rather_than_pretending() {
         "refusal should name the missing group, got: {reason}"
     );
 }
+

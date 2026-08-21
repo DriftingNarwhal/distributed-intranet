@@ -425,3 +425,81 @@ async fn revoking_a_member_who_was_never_keyed_in_needs_no_commit() {
         "and therefore no rotation entry was appended"
     );
 }
+
+#[tokio::test]
+async fn a_member_who_asked_for_a_key_twice_is_still_revocable() {
+    // A client whose key request goes unanswered must be able to ask again, or
+    // one lost request strands a member permanently — in the log, served by
+    // honest nodes, holding nothing that opens any of it. Making the retry safe
+    // is the point of §3.5's replacement rule, and this is the consequence of
+    // getting it wrong.
+    //
+    // Answering a second request by *adding* the member again mints a second
+    // leaf for one identity. Nothing looks broken: they hold a key, everyone
+    // agrees on the epoch, the log extends rather than forks. It surfaces later,
+    // at revocation, because `leaf_index_for` matches a credential and finds the
+    // *first* leaf holding it — so removing them removes the abandoned leaf,
+    // rekeys, and hands the new key to the member who was just revoked, on the
+    // leaf nobody removed. The guarantee reports success and is gone.
+    let founder = identity(1);
+    let doubled = identity(2);
+    let (mut founder_node, _) = node(1).await;
+    let (mut doubled_node, doubled_addr) = node(2).await;
+
+    let parent = founder_node.append_entry(genesis(&founder)).unwrap();
+    founder_node.create_epoch_group(&founder).unwrap();
+    founder_node
+        .append_entry(admit(&founder, &doubled, parent, 10))
+        .unwrap();
+
+    founder_node.dial_candidates([doubled_addr]).unwrap();
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut doubled_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
+        "the joiner should receive the governance log before asking for a key"
+    );
+
+    // Asked once, answered. Then asked again, as a client retrying would.
+    key_in(&mut founder_node, &founder, &mut doubled_node, &doubled, 20).await;
+    key_in(&mut founder_node, &founder, &mut doubled_node, &doubled, 21).await;
+
+    // Now revoke them, exactly as the ordinary path does: remove first, then
+    // rotate, because a rotation minted while they are still a member produces a
+    // key they remain entitled to (§3.3).
+    founder_node
+        .append_entry(remove(&founder, &doubled, tip(&founder_node), 30))
+        .unwrap();
+    founder_node
+        .revoke_epoch_member(&doubled.id(), &founder, Timestamp::from_millis(31))
+        .expect("the rotation should be authorized")
+        .expect("a keyed-in member has a leaf to remove");
+
+    // The assertion the whole test exists for. With one leaf per member this
+    // holds trivially; with two it fails, and it fails *quietly* — the removal
+    // succeeds, the epoch advances, and the revoked member follows it.
+    resync(&mut doubled_node, &mut founder_node, &founder).await;
+    doubled_node.apply_pending_rotations();
+    assert_ne!(
+        fingerprint(&doubled_node),
+        fingerprint(&founder_node),
+        "a member who asked for a key twice must still be excluded by revocation \
+         — a second leaf would leave them holding the epoch that removed them"
+    );
+
+    // Stated concretely rather than by fingerprint alone: content wrapped after
+    // the removal does not open for them.
+    let pointer = intranet_governance::PointerId::from_bytes([9u8; 32]);
+    let after_key = founder_node.epoch_keyring().current().unwrap().1.clone();
+    let dek = Dek::generate().unwrap();
+    let wrapped_after = after_key.wrap(&pointer, &dek);
+    let theirs = doubled_node.epoch_keyring().current().unwrap().1.clone();
+    assert!(
+        theirs.unwrap_dek(&pointer, &wrapped_after).is_err(),
+        "nothing wrapped after removal may open for the removed member"
+    );
+}

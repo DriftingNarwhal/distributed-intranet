@@ -5,7 +5,7 @@ use intranet_governance::{
     Capability, EntryBody, GovernanceLog, GroupId, HistoryAccess, LogEntry, MembershipAction,
     NetworkPolicy, RotationReason,
 };
-use intranet_epoch::{EpochKeyring, GroupSession, RotationStatus};
+use intranet_epoch::{EpochKeyring, GroupSession, RotationStatus, identity_label};
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_storage::{ChunkSpec, Dek, DekWrapping, EpochKey, MutablePointer, encode};
 
@@ -655,4 +655,111 @@ fn an_owner_offline_during_rotation_blocks_nothing() {
         "a bystander's re-wrap must be accepted with the owner absent"
     );
     assert_ne!(first_key.fingerprint(), rotated.key.fingerprint());
+}
+
+// ---------------------------------------------------------------------------
+// Replacing a leaf whose Welcome was lost (§3.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_replaced_leaf_welcomes_the_member_again_without_minting_a_second_one() {
+    // The situation this exists for: the add succeeded here and the Welcome it
+    // produced never arrived there. The member holds a leaf in this group and
+    // nothing at all in their own process, so asking again is their only move.
+    let founder_id = identity(1);
+    let joiner_id = identity(2);
+    let mut founder = GroupSession::create(&identity_label(&founder_id.id())).unwrap();
+    let joiner = GroupSession::prepare_join(&identity_label(&joiner_id.id())).unwrap();
+
+    let package = joiner.key_package().unwrap();
+    let admitted = founder.add_member(&package).unwrap();
+    assert!(admitted.welcome.is_some(), "an add produces a welcome");
+    assert_eq!(founder.member_count(), 2);
+
+    // That welcome is dropped on the floor, which is the whole scenario.
+    let index = founder
+        .leaf_index_for(&joiner_id.id())
+        .expect("the add put them in the group");
+
+    // The same key package, deliberately: a node that never completed a join
+    // still holds its pending one and re-sends exactly this.
+    let replaced = founder.replace_member(index, &package).unwrap();
+
+    assert_eq!(
+        founder.member_count(),
+        2,
+        "replacing a leaf must not mint a second one for the same member"
+    );
+    let welcome = replaced.welcome.as_ref().expect("a replacement welcomes");
+    let joined = joiner.join(welcome).unwrap();
+    assert_eq!(
+        joined.epoch_key().unwrap().fingerprint(),
+        replaced.key.fingerprint(),
+        "the recovered member must derive the group's current key"
+    );
+}
+
+#[test]
+fn a_replaced_member_can_follow_a_later_rotation() {
+    // The property that decides this design. Delivering epoch keys alone would
+    // satisfy "they can read what exists now" and leave them unable to follow
+    // any subsequent rotation, because following one needs the group state only
+    // a Welcome carries — so they would go dark at the next membership change,
+    // silently, having looked recovered.
+    let founder_id = identity(1);
+    let joiner_id = identity(2);
+    let mut founder = GroupSession::create(&identity_label(&founder_id.id())).unwrap();
+    let joiner = GroupSession::prepare_join(&identity_label(&joiner_id.id())).unwrap();
+
+    let package = joiner.key_package().unwrap();
+    founder.add_member(&package).unwrap();
+    let index = founder.leaf_index_for(&joiner_id.id()).unwrap();
+    let replaced = founder.replace_member(index, &package).unwrap();
+    let mut recovered = joiner.join(replaced.welcome.as_ref().unwrap()).unwrap();
+
+    let later = founder.rotate().unwrap();
+    let derived = recovered
+        .apply_commit(&later.commit)
+        .expect("a replaced member must be able to apply a later commit");
+
+    assert_eq!(
+        derived.fingerprint(),
+        later.key.fingerprint(),
+        "a recovered member must converge on the same key as everybody else"
+    );
+}
+
+#[test]
+fn a_failed_replacement_removes_nobody() {
+    // Both proposals are staged before either is committed, so a failure
+    // between them could leave a remove queued — and a queued proposal is swept
+    // into whatever commit happens next. That would remove a member nobody
+    // decided to remove, at a moment unrelated to the failure, which is the
+    // worst shape a bug can have.
+    let founder_id = identity(1);
+    let joiner_id = identity(2);
+    let mut founder = GroupSession::create(&identity_label(&founder_id.id())).unwrap();
+    let joiner = GroupSession::prepare_join(&identity_label(&joiner_id.id())).unwrap();
+    founder.add_member(&joiner.key_package().unwrap()).unwrap();
+    let index = founder.leaf_index_for(&joiner_id.id()).unwrap();
+
+    // `Rotation` carries key material and so implements no `Debug`, which is
+    // why this is not `expect_err`.
+    assert!(
+        founder.replace_member(index, b"not a key package").is_err(),
+        "a malformed key package must not be accepted"
+    );
+
+    // The next ordinary rotation must carry no leftover removal.
+    let after = founder.rotate().unwrap();
+    assert_eq!(
+        founder.member_count(),
+        2,
+        "a failed replacement must leave the roster untouched"
+    );
+    assert!(
+        founder.leaf_index_for(&joiner_id.id()).is_some(),
+        "the member a failed replacement targeted must still hold their leaf"
+    );
+    let _ = after;
 }

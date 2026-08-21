@@ -1156,6 +1156,24 @@ impl MemberNode {
     /// The rotation is appended **before** the Welcome is sent. A member keyed
     /// into a group whose commit no peer can order is a member nobody else will
     /// agree with, so if the append fails the admission does not happen.
+    ///
+    /// **Answering is idempotent in the sense that matters** (§3.5): a repeat
+    /// request from an identity already holding a leaf replaces that leaf rather
+    /// than adding a second one, so asking twice cannot fork the log against the
+    /// entry that admitted them. This is what makes a requester's retry safe,
+    /// and the retry is the point — a request that goes unanswered otherwise
+    /// strands a member permanently, holding an identity honest nodes will serve
+    /// and no key with which to open any of it.
+    ///
+    /// It is idempotent, not free: a replacement is a real rotation and writes a
+    /// governance entry. A caller decides *whether* to answer — the request is
+    /// surfaced for a decision rather than answered automatically — so a peer
+    /// asking in a loop is a caller's judgement to make, not this method's.
+    ///
+    /// The rotation records `MemberAdmitted` either way. The capability the
+    /// action needs is `approve-node` on both paths, and a fourth reason
+    /// distinguishing a replacement would be a wire break in the governance
+    /// entry encoding for a distinction that changes no authorization.
     pub fn answer_epoch_key(
         &mut self,
         request: EpochRequestId,
@@ -1171,7 +1189,19 @@ impl MemberNode {
             .group
             .as_mut()
             .ok_or_else(|| EpochError::Mls("this node holds no group".into()))?;
-        let rotation = group.add_member(&request.key_package)?;
+
+        // A requester already holding a leaf is one whose Welcome never arrived
+        // — they cannot be asking otherwise, since a member that opened one
+        // holds a key and has nothing to ask for. Adding them again would mint a
+        // second leaf for one member and rotate a group whose membership did not
+        // change, which is a lie told in a log every member replays; it is also
+        // what forked the log the first time this was tried. Their leaf is
+        // replaced instead, in one commit, which produces a Welcome they can
+        // open and states what actually happened (§3.5).
+        let rotation = match group.leaf_index_for(&request.requester) {
+            Some(index) => group.replace_member(index, &request.key_package)?,
+            None => group.add_member(&request.key_package)?,
+        };
         let welcome = rotation
             .welcome
             .ok_or_else(|| EpochError::Mls("an add produced no welcome".into()))?;

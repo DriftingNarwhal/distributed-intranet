@@ -304,19 +304,27 @@ impl GroupSession {
         self.group.members().count()
     }
 
-    /// Adds a member, producing a commit and a Welcome.
-    pub fn add_member(&mut self, key_package: &[u8]) -> Result<Rotation, EpochError> {
+    /// Decodes and validates a key package arriving from an untrusted peer.
+    ///
+    /// Shared by [`Self::add_member`] and [`Self::replace_member`] so the two
+    /// cannot come to disagree about what a usable key package is: a validation
+    /// that applied on one path and not the other would be a hole shaped
+    /// exactly like the path nobody looked at.
+    fn validated_key_package(&self, key_package: &[u8]) -> Result<KeyPackage, EpochError> {
         let incoming = MlsMessageIn::tls_deserialize(&mut &key_package[..])
             .map_err(|e| EpochError::Mls(format!("key package decode: {e:?}")))?;
         let MlsMessageBodyIn::KeyPackage(key_package) = incoming.extract() else {
             return Err(EpochError::Mls("expected a key package".into()));
         };
 
-        // A key package arrives from an untrusted peer, so it is validated
-        // before use rather than trusted as decoded.
-        let key_package = key_package
+        key_package
             .validate(self.provider.crypto(), ProtocolVersion::Mls10)
-            .map_err(|e| EpochError::Mls(format!("key package validation: {e:?}")))?;
+            .map_err(|e| EpochError::Mls(format!("key package validation: {e:?}")))
+    }
+
+    /// Adds a member, producing a commit and a Welcome.
+    pub fn add_member(&mut self, key_package: &[u8]) -> Result<Rotation, EpochError> {
+        let key_package = self.validated_key_package(key_package)?;
 
         let (commit, welcome, _) = self
             .group
@@ -375,6 +383,87 @@ impl GroupSession {
             key: self.epoch_key()?,
             epoch: self.epoch(),
         })
+    }
+
+    /// Replaces the leaf an identity occupies, producing a commit and a Welcome
+    /// — §3.5.
+    ///
+    /// This exists for one situation and it is worth naming precisely: a member
+    /// was added to the group, and the Welcome that add produced never reached
+    /// them. They hold a leaf here and nothing at all there. Asking again is the
+    /// only move available to them, and neither obvious answer works — adding
+    /// them a second time mints a second leaf for one member and rotates a group
+    /// whose membership did not change, while delivering the epoch key alone
+    /// leaves them able to read today and unable to follow any later rotation,
+    /// because following one needs the group state a Welcome carries.
+    ///
+    /// So the stale leaf is removed and the new key package added **in a single
+    /// commit**. One rotation, one governance entry, and a Welcome the requester
+    /// can actually open. It is also the honest description of what happened:
+    /// that member's leaf was replaced, which is exactly what a log every member
+    /// replays should say.
+    ///
+    /// **Cost, stated because a caller has to bound it:** each call is a real
+    /// rotation. A peer that asks repeatedly therefore writes a governance entry
+    /// each time, so a caller must decide *whether* to answer rather than
+    /// answering reflexively — the same decision [`Self::add_member`]'s caller
+    /// already makes.
+    pub fn replace_member(
+        &mut self,
+        index: u32,
+        key_package: &[u8],
+    ) -> Result<Rotation, EpochError> {
+        let key_package = self.validated_key_package(key_package)?;
+
+        // Both proposals are staged before either is committed, and a failure
+        // between them must not leave the first one queued: a dangling remove
+        // proposal would be swept into whatever commit happened next, silently
+        // removing a member nobody decided to remove. Clearing on the way out is
+        // what keeps a failed replacement a no-op rather than a delayed
+        // surprise.
+        let staged = self.stage_replacement(index, &key_package);
+        if staged.is_err() {
+            let _ = self.group.clear_pending_proposals(self.provider.storage());
+        }
+        staged?;
+
+        let (commit, welcome, _) = self
+            .group
+            .commit_to_pending_proposals(&self.provider, &self.signer)
+            .map_err(|e| {
+                let _ = self.group.clear_pending_proposals(self.provider.storage());
+                EpochError::Mls(format!("replace member: commit: {e:?}"))
+            })?;
+        self.group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| EpochError::Mls(format!("merge: {e:?}")))?;
+
+        // An add is among the committed proposals, so a Welcome is not optional
+        // here the way it is for a bare removal.
+        let welcome = welcome
+            .ok_or_else(|| EpochError::Mls("a replacement produced no welcome".into()))?;
+
+        Ok(Rotation {
+            commit: Self::encode(&commit)?,
+            welcome: Some(Self::encode(&welcome)?),
+            key: self.epoch_key()?,
+            epoch: self.epoch(),
+        })
+    }
+
+    /// Stages the remove and the add that [`Self::replace_member`] commits.
+    fn stage_replacement(
+        &mut self,
+        index: u32,
+        key_package: &KeyPackage,
+    ) -> Result<(), EpochError> {
+        self.group
+            .propose_remove_member(&self.provider, &self.signer, LeafNodeIndex::new(index))
+            .map_err(|e| EpochError::Mls(format!("replace member: remove proposal: {e:?}")))?;
+        self.group
+            .propose_add_member(&self.provider, &self.signer, key_package)
+            .map_err(|e| EpochError::Mls(format!("replace member: add proposal: {e:?}")))?;
+        Ok(())
     }
 
     /// Rotates the epoch without changing membership.
