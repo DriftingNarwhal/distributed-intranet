@@ -28,8 +28,11 @@ explicitly and names the section.
 
 Out of scope: client architecture, user interface, and packaging — the reference client
 keeps those in its own design set. Also out of scope, permanently: anything cross-network.
-A chat application inherits Core §1.2's unlinkability whole, so there is no global
-identity, no cross-network conversation, and no directory of networks.
+A chat application inherits Core §1.2's unlinkability whole — including its limit. There is no
+global identity, no cross-network conversation and no directory of networks; and the property
+being inherited is that two of a person's per-network *keys* cannot be tied together, not that
+their participation is unobservable. An observer seeing both connections can correlate by
+address, which §1.2 places out of scope, and no part of this document narrows that.
 
 ---
 
@@ -126,7 +129,7 @@ not a private channel inside a shared one. Three consequences, each of which is 
 - **Shared state.** No definitions, rosters or rotations enter a log every member of some
   larger network replays forever. A 500-member network has over 120,000 possible pairs;
   each writing structural entries into a shared log would dominate its growth.
-- **Metadata.** Members of a shared network cannot see that a conversation exists.
+- **Metadata.** Members of a shared network cannot see that a conversation exists — nothing about it enters their log or their storage. Bounded, and worth bounding precisely: where a conversation cannot establish a direct connection and falls back to the shared network's bootstrap relay (§7, E13), that relay's operator sees one address acting both as a member and as a party to a conversation and can infer that two of its members are talking. That is the address-layer correlation Core §1.2 places out of scope surfacing concretely, not a weaker claim about content or membership.
 
 Starting one requires delivering an invite to somebody reachable only inside a shared
 network. That uses the direct protocol in §6.2 and a **voluntary identity link** (Core
@@ -771,7 +774,8 @@ tiering itself stays in the client and is not requested here.
 - **Private channels use scoped MLS subgroups** (§5.3) — the mechanism Real-Time §3.5 says a
   restricted-audience feature would need and declines to specify.
 - **Direct messages are their own networks** (§1.5), so nothing about them burdens a shared
-  log or a third party's disk.
+  log or a third party's disk. What that isolates is content, membership and storage — not the
+  fact of a connection, which an observer of both addresses can still infer (Core §1.2's limit).
 - **The live path is an optimization and never a dependency** (§6.1).
 - **A display name is unique per network, permanently bound, and not sufficient on its own**
   (§3.9). Uniqueness is decided on a normalized key that deliberately does not fold
