@@ -268,17 +268,52 @@ the same floor Core §3.1 states for revocation and Real-Time §4.2 for VOD opt-
 
 ### 2.8 Retention and history are two orthogonal settings
 
-- **Retention** (app-layer network policy): `Unbounded`, or a window. A window is enforced
-  by ceasing to re-wrap old segments' DEKs on rotation — Storage §5.2 already specifies
-  that unwrapped content goes dark, so retention needs no new mechanism.
+- **Retention** (app-layer network policy): `Forever`, or a window of days. A window is
+  enforced by ceasing to re-wrap old segments' DEKs on rotation — Storage §5.2 already
+  specifies that unwrapped content goes dark, so retention needs no new mechanism.
 - **Joiner access** (Core §3.4): `CurrentEpochForward` or `Full`.
 
-Every history model a network might want is a combination of the two: unbounded plus full
-history; unbounded plus join-forward; or a rolling window whose remaining history is fully
+Every history model a network might want is a combination of the two: `Forever` plus full
+history; `Forever` plus join-forward; or a rolling window whose remaining history is fully
 visible to joiners.
 
+**Two windows, not one:** `chat:retain-messages-days` and `chat:retain-attachments-days`,
+both defaulting to `Forever`. Text and attachments differ in cost by orders of magnitude —
+a message is bounded at 8 KiB by `chat:message-max-bytes` and its flow is capped by §4.3's
+rate limits, while one attachment may be 25 MiB with ten to a message — so a single shared
+window is necessarily wrong for one of them, and a network bounding what it spends on other
+members' disks nearly always means the attachments.
+
+**A window is judged on a segment's newest record, not its oldest.** A segment somebody is
+still appending to is live however far back it reaches, and retiring it because its first
+message is old would drop an active conversation.
+
+**Encoding, and the sentinel rule, which is normative because disagreement about it forks
+history.** Both keys are ordinary app-layer policy values (Core §2.6.2) carrying a signed
+day count. A key that is **absent, zero, negative, or too large to represent a day count
+MUST read as `Forever`.** Two clients disagreeing about whether `0` means "expire
+immediately" or "keep everything" would render different history from the same records,
+which is the divergence §4.3 exists to prevent — and the fail-safe direction is forced
+rather than chosen: retention can be switched on whenever a network decides it wants it,
+and content already allowed to go dark cannot be brought back. A value that arrived
+corrupted, or from a client with a different idea of the key, must not quietly start
+discarding a network's history.
+
+**`Forever` is the shipped default for both**, for that same asymmetry: a network that
+never thinks about the setting keeps its history rather than silently losing what it
+assumed it had.
+
+**Retiring a superseded epoch key follows from retention rather than being its own
+setting.** A key becomes droppable once nothing still inside the window is wrapped under
+it, which the re-wrap-on-read path arranges. A separate key-lifetime knob could contradict
+the window — keep content a year, drop its key at six months — and make retained content
+silently unreadable.
+
 **Honest limit:** retention is not deletion. A member who already fetched an old segment
-and its DEK keeps both, permanently.
+and its DEK keeps both, permanently. And a reader reaching a segment it can no longer
+unwrap MUST NOT report it as deleted: a retired segment, a wrapping under an epoch this
+node has not caught up to, and history that simply has not arrived yet are
+indistinguishable, and a client claiming otherwise asserts what it cannot know.
 
 ### 2.9 Concurrent versions of one log
 
@@ -581,7 +616,13 @@ Every limit below is a network policy value with a shipped default, changeable b
 `chat:message-rate-per-minute` (30), `chat:reaction-rate-per-minute` (60),
 `chat:message-max-bytes` (8 KiB), `chat:attachment-max-bytes` (25 MiB),
 `chat:attachment-max-count` (10), `chat:segment-max-bytes` (8 MiB),
-`chat:max-future-skew-millis` (300 000), `chat:slowmode-max-seconds` (21 600).
+`chat:max-future-skew-millis` (300 000), `chat:slowmode-max-seconds` (21 600),
+`chat:retain-messages-days` (`Forever`), `chat:retain-attachments-days` (`Forever`).
+
+The last two are §2.8's retention windows, listed here because they are network policy for
+the same reasons and read by the same accessor — but note they are not ceilings on a
+record, so nothing is *refused* for exceeding them. What they govern is what a network
+keeps maintaining, and §2.8 carries their sentinel rule.
 
 Two independent reasons, either sufficient. **They are validity rules** — a record past the
 ceiling is refused by readers, so a local limit would mean two members rendering different
