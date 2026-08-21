@@ -277,3 +277,33 @@ questions nobody needs yet (concurrent-edit merge semantics), tuning that wants
 real deployment data (tokenisation rules, ranking formula), and enforcement
 surfaces for capabilities no app has requested. Anything that blocked
 implementation has been closed.
+
+---
+
+## Licence
+
+**[Mozilla Public License 2.0](LICENSE)** — © DriftingNarwhal.
+
+File-level copyleft, chosen so this platform can be built on. Anyone may write their own
+client, node or application over these crates and licence that work however they like,
+including proprietarily — which is the point, since these specs are written to be
+implemented by other people (Core §0, and spec 07 as the first consuming spec). What MPL
+requires is narrower: **if you modify these files, those files stay open under this
+licence.** Improvements to the protocol come back; what you build on top is yours.
+
+**These files are deliberately not marked "Incompatible With Secondary Licenses."** That
+matters rather than being boilerplate: it is what lets this code be combined into a GPL or
+AGPL work under MPL §3.3, and the reference client
+[ko-ls](https://github.com/DriftingNarwhal/ko-ls) is AGPL-3.0 and relies on exactly that.
+Adding Exhibit B to a file here would break it.
+
+**The specifications are licensed separately, under
+[Creative Commons Attribution 4.0](specs/LICENSE)** — `specs/LICENSE` covers everything in
+that directory. A software licence is the wrong instrument for prose: MPL is written about
+Source Code Form and executables, and an implementer quoting a section into their own
+documentation should not have to reason about whether that makes their document Covered
+Software. CC BY asks for attribution and nothing else, which is the correct ask for a
+document whose entire purpose is to be implemented by other people.
+
+So: **quote the specs, translate them, implement them in any language, and licence your
+implementation however you like.** The code in `crates/` is MPL-2.0; the specs are CC BY 4.0.
