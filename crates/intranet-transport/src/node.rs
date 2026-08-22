@@ -787,6 +787,41 @@ pub struct MemberNode {
     media_relay: MediaRelayGuard,
 }
 
+
+/// Says why a listen failed, which libp2p's own `Display` does not.
+///
+/// `libp2p::TransportError::Other` writes **nothing** — its payload is reachable
+/// only through `source()`. So the obvious `e.to_string()` produces the empty
+/// string, and a node that cannot bind reports `could not listen: ` with the
+/// reason missing.
+///
+/// That is not a cosmetic loss. The commonest cause by far is a port already in
+/// use, and with the reason dropped a node whose port was taken says exactly
+/// what a node with a malformed address says. It cost a long investigation in
+/// the reference client, where an interrupted test run left daemons holding the
+/// suite's ports and every later run failed in a way that read as a
+/// distributed-systems fault.
+fn why_listen_failed<E: std::error::Error>(error: &E) -> String {
+    // Repeats are dropped rather than joined. A wrapped `io::Error` commonly
+    // appears at three levels of the chain with identical text, and
+    // "Address already in use: Address already in use: Address already in use"
+    // is worse than saying it once.
+    let mut said: Vec<String> = Vec::new();
+    let mut step: Option<&dyn std::error::Error> = Some(error);
+    while let Some(inner) = step {
+        let text = inner.to_string();
+        if !text.is_empty() && !said.contains(&text) {
+            said.push(text);
+        }
+        step = inner.source();
+    }
+    if said.is_empty() {
+        "no reason given".to_owned()
+    } else {
+        said.join(": ")
+    }
+}
+
 impl MemberNode {
     /// Builds a node whose transport identity is derived from `identity`.
     ///
@@ -2570,7 +2605,7 @@ impl MemberNode {
         self.swarm
             .listen_on(address)
             .map(|_| ())
-            .map_err(|e| TransportError::Listen(e.to_string()))
+            .map_err(|e| TransportError::Listen(why_listen_failed(&e)))
     }
 
     /// Starts listening on the dual-stack defaults.
@@ -4073,7 +4108,7 @@ impl RelayNode {
         self.swarm
             .listen_on(address)
             .map(|_| ())
-            .map_err(|e| TransportError::Listen(e.to_string()))
+            .map_err(|e| TransportError::Listen(why_listen_failed(&e)))
     }
 
     /// Starts listening on the dual-stack defaults.
