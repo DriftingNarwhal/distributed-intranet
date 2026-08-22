@@ -79,6 +79,12 @@ impl ListenArgs {
                     // A scenario greps this line for the circuit address to dial.
                     println!("listening: {address}/p2p/{me}");
                 }
+                NodeEvent::ListenAddrGone(address) => {
+                    // Logged as loudly as gaining one: a lost circuit is a node
+                    // that is still running and no longer reachable through a
+                    // relay, which looks like nothing at all from here.
+                    println!("listen-addr-gone: {address}");
+                }
                 NodeEvent::Connected { peer, tier, .. } => {
                     println!("connected: peer={peer} tier={}", tier.label());
                 }

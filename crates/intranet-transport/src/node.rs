@@ -101,6 +101,15 @@ pub struct EpochRequestId(u64);
 pub enum NodeEvent {
     /// The node began listening on an address.
     Listening(Multiaddr),
+    /// An address this node was listening on is gone.
+    ///
+    /// For a circuit address this means the **reservation has ended** — a relay
+    /// holds reservation state in memory and is deliberately stateless across
+    /// restarts (§5.5), so redeploying one drops every reservation it held.
+    /// Surfaced rather than swallowed because the node is otherwise unchanged:
+    /// it keeps running, keeps its direct listeners, and is simply no longer
+    /// reachable by anybody who needs the relay to reach it.
+    ListenAddrGone(Multiaddr),
     /// Ballots arrived from a peer — §2.6.1.
     BallotsReceived {
         /// The peer that sent them.
@@ -2730,6 +2739,15 @@ impl MemberNode {
         self.listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
     }
 
+    /// Whether this node currently holds a usable relay circuit.
+    ///
+    /// The question a caller needs before assuming it is reachable from behind
+    /// somebody else's NAT — and one that could not be asked until listeners
+    /// going away were tracked, because the answer was always yes.
+    pub fn has_circuit(&self) -> bool {
+        !self.circuit_listeners.is_empty()
+    }
+
     /// Waits until a relay has actually *granted* a reservation.
     ///
     /// Returns whether one was granted before [`RESERVATION_TIMEOUT`] elapsed.
@@ -2798,6 +2816,34 @@ impl MemberNode {
                         self.direct_listeners.insert(address.clone());
                     }
                     return NodeEvent::Listening(address);
+                }
+
+                // A listener going away, which for a circuit means the
+                // reservation is gone.
+                //
+                // # Why this has to be tracked rather than ignored
+                //
+                // `circuit_listeners` only ever grew, so once a reservation was
+                // recorded this node believed it held one forever. A relay is
+                // deliberately stateless across restarts — every redeploy drops
+                // every reservation it was holding — and the client had no way
+                // to notice, or to say so, or to ask again. The node then
+                // advertises a circuit address nothing answers on, which is the
+                // failure that looks most like the network being fine.
+                SwarmEvent::ExpiredListenAddr { address, .. } => {
+                    self.circuit_listeners.remove(&address);
+                    self.direct_listeners.remove(&address);
+                    return NodeEvent::ListenAddrGone(address);
+                }
+                SwarmEvent::ListenerClosed { addresses, .. } => {
+                    for address in &addresses {
+                        self.circuit_listeners.remove(address);
+                        self.direct_listeners.remove(address);
+                    }
+                    if let Some(address) = addresses.into_iter().next() {
+                        return NodeEvent::ListenAddrGone(address);
+                    }
+                    continue;
                 }
 
                 SwarmEvent::ConnectionEstablished {
