@@ -2902,7 +2902,22 @@ impl MemberNode {
                     };
                 }
 
-                SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                SwarmEvent::ConnectionClosed {
+                    peer_id,
+                    num_established,
+                    ..
+                } => {
+                    // **One connection closing is not a disconnect.** A peer
+                    // that has been hole-punched has two connections to this
+                    // node — the relayed one it arrived on and the direct one
+                    // that upgraded it — and the whole point of §5.2 is that
+                    // losing the first costs nothing. Reporting a disconnect
+                    // there tells a caller to stop talking to a peer it can
+                    // still reach directly, which is how taking a relay away
+                    // silenced two nodes that no longer needed it.
+                    if num_established > 0 {
+                        continue;
+                    }
                     self.tiers.remove(&peer_id);
                     return NodeEvent::Disconnected { peer: peer_id };
                 }
