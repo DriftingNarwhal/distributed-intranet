@@ -154,12 +154,21 @@ impl Default for RelayLimits {
             // held only by clients choosing to obey it, and one did not.
             //
             // A DCUtR exchange is two small messages and up to three dial
-            // attempts. 30 seconds covers that with room for a slow path, and
-            // 256KB is orders of magnitude above what it costs while being
-            // orders of magnitude below a conversation. A conformant pair never
-            // approaches either; a non-conformant one is cut off rather than
-            // quietly subsidised.
-            max_circuit_duration_millis: 30_000,
+            // attempts, on top of Noise and identify. On a good link that is a
+            // couple of seconds; on a lossy mobile one with a 2s round trip it
+            // can plausibly run ten to fifteen.
+            //
+            // **60 rather than 30 because a failed negotiation is now fatal.**
+            // A circuit cut short used to fall back to relayed traffic — wrongly,
+            // but it worked. §5.2 now says such a pair does not connect, so the
+            // cost of being a few seconds too tight is two people who cannot
+            // talk, and the cost of being generous is a relay slot held twice as
+            // long. That trade is not close.
+            //
+            // 256KB is orders of magnitude above what a negotiation costs and
+            // orders of magnitude below a conversation, which is where the
+            // anti-abuse work actually happens.
+            max_circuit_duration_millis: 60_000,
             max_circuit_bytes: 256 * 1024,
         }
     }
@@ -485,8 +494,11 @@ mod ceiling_tests {
             limits.max_circuit_bytes
         );
 
+        // Wide enough that the chosen value is not sitting on a boundary, and
+        // narrow enough to still mean something: a negotiation needs seconds,
+        // and anything approaching the old 120s is a session.
         assert!(
-            (5_000..=60_000).contains(&limits.max_circuit_duration_millis),
+            (5_000..=90_000).contains(&limits.max_circuit_duration_millis),
             "a circuit lives for a negotiation, not a session: {}ms",
             limits.max_circuit_duration_millis
         );

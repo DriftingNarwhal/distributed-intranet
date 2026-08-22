@@ -300,7 +300,7 @@ fn default_limits_match_the_spec_baselines() {
     // that a client relaying a whole conversation never met a ceiling — so the
     // rule held only by clients choosing to obey it. A circuit now lives for a
     // negotiation.
-    assert_eq!(limits.max_circuit_duration_millis, 30_000);
+    assert_eq!(limits.max_circuit_duration_millis, 60_000);
     assert_eq!(limits.max_circuit_bytes, 256 * 1024);
 }
 
