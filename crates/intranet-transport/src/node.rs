@@ -824,6 +824,15 @@ impl MemberNode {
             )
             .map_err(|e| TransportError::Build(e.to_string()))?
             .with_quic()
+            // Without this, a `/dns4/…` address cannot be dialled at all: the
+            // transport reports it unsupported, the swarm surfaces nothing a
+            // caller returns, and the relay never sees a connection attempt.
+            // Every address in this project was an `/ip4/` literal until a
+            // deployed relay was addressed by name, which is why it took a real
+            // deployment to find (§5.1 says nothing about *how* an address is
+            // written, so a name has always been legitimate).
+            .with_dns()
+            .map_err(|e| TransportError::Build(e.to_string()))?
             .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
             .map_err(|e| TransportError::Build(e.to_string()))?
             .with_behaviour(|key, relay_client| {
@@ -3900,6 +3909,10 @@ impl RelayNode {
             )
             .map_err(|e| TransportError::Build(e.to_string()))?
             .with_quic()
+            // A relay dials too — a bootstrap peer, a health probe — and there
+            // is no reason for it to be the one node that cannot use a name.
+            .with_dns()
+            .map_err(|e| TransportError::Build(e.to_string()))?
             .with_behaviour(|key| {
                 let peer = key.public().to_peer_id();
                 RelayBehaviour {

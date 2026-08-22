@@ -43,7 +43,7 @@ openmls_rust_crypto = "0.5"
 openmls_traits = "0.5"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
-libp2p = { version = "0.56", features = ["tcp", "quic", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "request-response", "gossipsub", "tokio", "macros", "ed25519"] }
+libp2p = { version = "0.56", features = ["tcp", "quic", "dns", "noise", "yamux", "kad", "mdns", "relay", "dcutr", "identify", "ping", "request-response", "gossipsub", "tokio", "macros", "ed25519"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
