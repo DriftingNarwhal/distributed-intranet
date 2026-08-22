@@ -2643,6 +2643,32 @@ impl MemberNode {
         }
     }
 
+    /// Walks the DHT to fill this node's routing table beyond its own peers.
+    ///
+    /// # Why a routing table has to be *built* and not merely filled in
+    ///
+    /// [`add_address`](Self::add_address) records peers this node is already
+    /// connected to, and nothing else did — so without this the routing table
+    /// is exactly one hop deep, and a provider query can only ask the handful of
+    /// peers already on the other end of a socket. Content held by a member two
+    /// hops away is unfindable, and the symptom is indistinguishable from that
+    /// content genuinely having no providers.
+    ///
+    /// That is what makes a network appear to need every member connected to
+    /// every other member. It does not: §5.1's Kademlia is the routing layer,
+    /// and `fetch_chunks` already pulls from whichever holder answers rather
+    /// than from an author. What was missing is the walk that gives the routing
+    /// layer reach — a query for this node's own key, which returns the peers
+    /// closest to it and populates the table on the way.
+    ///
+    /// Returns `false` on a node built without discovery (Core §5.1.1), where
+    /// there is no table, and when the table is still empty — bootstrapping
+    /// from nothing has nowhere to walk, so this is worth repeating rather than
+    /// doing once.
+    pub fn bootstrap_dht(&mut self) -> bool {
+        self.kad().is_some_and(|kad| kad.bootstrap().is_ok())
+    }
+
     /// The Kademlia behaviour, absent on a node built without discovery.
     fn kad(&mut self) -> Option<&mut kad::Behaviour<kad::store::MemoryStore>> {
         self.swarm.behaviour_mut().kad.as_mut()
