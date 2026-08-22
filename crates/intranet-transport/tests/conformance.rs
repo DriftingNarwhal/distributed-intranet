@@ -295,8 +295,13 @@ fn default_limits_match_the_spec_baselines() {
     assert_eq!(limits.max_reservations, 128);
     assert_eq!(limits.max_reservations_per_identity, 4);
     assert_eq!(limits.max_circuits, 32);
-    assert_eq!(limits.max_circuit_duration_millis, 120_000);
-    assert_eq!(limits.max_circuit_bytes, 8 * 1024 * 1024);
+    // Lowered from 120s/8MB on 2026-08-22 along with §5.3 itself. Those came
+    // from an implementation predating §5.2's prohibition and were loose enough
+    // that a client relaying a whole conversation never met a ceiling — so the
+    // rule held only by clients choosing to obey it. A circuit now lives for a
+    // negotiation.
+    assert_eq!(limits.max_circuit_duration_millis, 30_000);
+    assert_eq!(limits.max_circuit_bytes, 256 * 1024);
 }
 
 // ---------------------------------------------------------------------------

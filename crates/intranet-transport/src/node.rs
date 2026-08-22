@@ -2885,16 +2885,25 @@ impl MemberNode {
                         _ => tier,
                     };
                     self.tiers.insert(peer_id, tier);
-                    // A heal is a reconnect, and a reconnect is a sync. Doing
-                    // this unconditionally is what means there is no separate
-                    // partition-recovery path to get wrong: a peer that has been
+                    // A heal is a reconnect, and a reconnect is a sync — but
+                    // **not over a relayed connection.**
+                    //
+                    // §5.2 permits a circuit to carry the DCUtR negotiation and
+                    // nothing else, and syncing here was the first thing to
+                    // break that: a connection arrives relayed, and this asked
+                    // for the governance log, the ledger and every pointer over
+                    // it before any upgrade had been attempted. The sync happens
+                    // when the peer becomes usable instead — on a direct
+                    // connection now, or on `HolePunchSucceeded` below.
+                    //
+                    // There is still no separate partition-recovery path: a peer
                     // unreachable for an hour and a peer seen for the first time
-                    // take exactly the same code path. Peers that do not speak
-                    // the protocol — a relay, say — answer with an unsupported
-                    // protocol failure, which is ignored below.
-                    self.sync_with(peer_id);
-                    self.sync_ledger_with(peer_id);
-                    self.sync_pointers_with(peer_id);
+                    // take the same route, it just starts one tier later.
+                    if !tier.relay_in_data_path() {
+                        self.sync_with(peer_id);
+                        self.sync_ledger_with(peer_id);
+                        self.sync_pointers_with(peer_id);
+                    }
                     return NodeEvent::Connected {
                         peer: peer_id,
                         tier,
@@ -2929,13 +2938,31 @@ impl MemberNode {
                     return match result {
                         Ok(_) => {
                             self.tiers.insert(remote_peer_id, ConnectionTier::HolePunched);
+                            // Now, rather than when the connection arrived: this
+                            // is the moment the peer became something §5.2
+                            // permits carrying anything.
+                            self.sync_with(remote_peer_id);
+                            self.sync_ledger_with(remote_peer_id);
+                            self.sync_pointers_with(remote_peer_id);
                             NodeEvent::HolePunchSucceeded {
                                 peer: remote_peer_id,
                             }
                         }
-                        Err(_) => NodeEvent::HolePunchFailed {
-                            peer: remote_peer_id,
-                        },
+                        Err(_) => {
+                            // **§5.2: these two peers do not connect.** The
+                            // circuit existed to carry this negotiation, the
+                            // negotiation is over, and leaving it open is how a
+                            // relay quietly becomes the path — the failure this
+                            // rule exists to prevent, which looks exactly like
+                            // success. dcutr gives up only after
+                            // `MAX_NUMBER_OF_UPGRADE_ATTEMPTS`, so this is not
+                            // closing on a first stumble.
+                            let _ = self.swarm.disconnect_peer_id(remote_peer_id);
+                            self.tiers.remove(&remote_peer_id);
+                            NodeEvent::HolePunchFailed {
+                                peer: remote_peer_id,
+                            }
+                        }
                     };
                 }
 

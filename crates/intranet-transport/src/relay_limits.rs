@@ -124,13 +124,18 @@ pub struct RelayLimits {
     pub max_circuits: u32,
     /// Maximum lifetime of a single circuit.
     ///
-    /// Forces periodic renegotiation rather than indefinitely-held circuits.
+    /// Long enough for a DCUtR negotiation and its retries, and no longer.
+    /// §5.2 permits a circuit to carry that negotiation and nothing else, so a
+    /// circuit that outlives one is being used for something the protocol does
+    /// not allow.
     pub max_circuit_duration_millis: i64,
     /// Maximum bytes carried by a single circuit.
     ///
-    /// Consistent with a relay's job being connection-establishment assistance,
-    /// not sustained data transport — that is the separate media-relay role
-    /// (§4.4), which this ceiling deliberately makes unattractive to abuse.
+    /// §5.2 forbids a circuit carrying protocol or application payload at all,
+    /// and §5.3 makes this ceiling the enforcement rather than the rule: a
+    /// relay cannot inspect what crosses it, but it can refuse to carry more
+    /// than a negotiation's worth. That is what turns "clients must not" into
+    /// "a relay will not".
     pub max_circuit_bytes: u64,
 }
 
@@ -141,8 +146,21 @@ impl Default for RelayLimits {
             max_reservations_per_identity: 4,
             max_reservations_per_invite: 8,
             max_circuits: 32,
-            max_circuit_duration_millis: 120_000,
-            max_circuit_bytes: 8 * 1024 * 1024,
+            // **Sized for a hole-punch negotiation, not for a session.**
+            //
+            // These were 120 seconds and 8MB, which predate §5.2's prohibition
+            // and were generous enough that a client relaying an entire
+            // conversation would never have noticed a ceiling — the spec's rule
+            // held only by clients choosing to obey it, and one did not.
+            //
+            // A DCUtR exchange is two small messages and up to three dial
+            // attempts. 30 seconds covers that with room for a slow path, and
+            // 256KB is orders of magnitude above what it costs while being
+            // orders of magnitude below a conversation. A conformant pair never
+            // approaches either; a non-conformant one is cut off rather than
+            // quietly subsidised.
+            max_circuit_duration_millis: 30_000,
+            max_circuit_bytes: 256 * 1024,
         }
     }
 }
@@ -426,5 +444,51 @@ impl RelayGuard {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+}
+
+#[cfg(test)]
+mod ceiling_tests {
+    use super::RelayLimits;
+
+    /// The ceilings are sized for a negotiation, and this is what stops them
+    /// drifting back.
+    ///
+    /// Core §5.3 says these are "not a throttle to be raised when users
+    /// complain", and that is precisely the pressure they will come under: the
+    /// symptom of a client violating §5.2 is a circuit hitting a ceiling, and
+    /// the tempting fix is the wrong one. They were 120s and 8MB, which was
+    /// loose enough that a client relaying an entire conversation never met a
+    /// limit — so the rule held only by clients choosing to obey it, and one
+    /// did not.
+    ///
+    /// The numbers are a judgement rather than a constant from the spec, so this
+    /// asserts the *property*: too small to carry a conversation, comfortably
+    /// larger than a hole-punch exchange.
+    #[test]
+    fn a_circuit_cannot_carry_a_conversation() {
+        let limits = RelayLimits::default();
+
+        // A DCUtR exchange is two small messages plus up to three dial
+        // attempts. Anything in this range is generous for that.
+        assert!(
+            limits.max_circuit_bytes >= 64 * 1024,
+            "too tight to complete a negotiation on a slow path: {}",
+            limits.max_circuit_bytes
+        );
+        // A megabyte is already a conversation's worth of records. A relay that
+        // will carry one is infrastructure.
+        assert!(
+            limits.max_circuit_bytes <= 1024 * 1024,
+            "a relay that carries {} bytes per circuit is being used as transport, \
+             which §5.2 forbids and §5.3 says this ceiling exists to prevent",
+            limits.max_circuit_bytes
+        );
+
+        assert!(
+            (5_000..=60_000).contains(&limits.max_circuit_duration_millis),
+            "a circuit lives for a negotiation, not a session: {}ms",
+            limits.max_circuit_duration_millis
+        );
     }
 }
