@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.2 — draft. §1.6 fixes channel order and §1.7 a network's name, with `SetPosition` allocated as channel-update `0x07` (§3.8); neither is implemented yet. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.3 — draft. §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). None of it is implemented yet. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -142,7 +142,7 @@ message reaches its recipient at the next overlap of the two nodes being online 
 necessarily at the next time the recipient opens their client. Sending does not require the
 recipient present; *delivery* requires the sender reachable when the recipient returns.
 
-### 1.6 Channel order is a network default, and a member may override it locally
+### 1.6 Sidebar order is a network default, and a member may override it locally
 
 **Decided: a network carries a default channel order; a member may present a different one
 locally, and doing so writes nothing.** A founder can curate what a newcomer arrives to, and
@@ -153,13 +153,27 @@ The default is governance state. A channel's position is a `u32` set by a
 governance entry. That cost is the reason this is a *default* rather than the only order: the
 log's growth budget is for structure, not for somebody tidying their own sidebar.
 
-**The computed default order is total and identical on every node.** Channels sort ascending by
-position. **A channel that has never been given one sorts after every channel that has**, and
-ties — equal positions, or two channels that both lack one — break by `channel_id` ascending in
-byte order. Ties are not an error and MUST NOT be refused: two managers may set the same
-position concurrently and the log has no way to prevent it, so the tie-break is what keeps every
-reader's answer the same. This mirrors §2.9's treatment of concurrent pointer versions, where a
+**The computed default order is total, two-level, and identical on every node.** Categories are
+ordered too (§1.8), so a position is a comparison among siblings rather than a flat one:
+
+1. **Uncategorised channels sort before every category**, as an implicit top-level group.
+2. **Categories sort among themselves** ascending by position, ties by `category_id`.
+3. **Channels sort within their own category** ascending by position, ties by `channel_id`.
+
+At each level, **a sibling never given a position sorts after every sibling that has one**, and
+ties break by id ascending in byte order. Positions compare only among siblings: a channel's
+position says nothing about where its category sits, and two channels in different categories
+are never compared at all.
+
+Ties are not an error and MUST NOT be refused. Two managers may set the same position
+concurrently and the log has no way to prevent it, so the tie-break is what keeps every reader's
+answer the same — the way §2.9 already handles concurrent pointer versions, where a
 deterministic rule beats an error nobody can act on.
+
+**Uncategorised sorts first, not last.** It matches the clients members will have used, but what
+makes it normative is that a channel whose category is removed then has somewhere obvious to
+appear. Sorting that group last would make `Recategorise` to no category indistinguishable from
+deletion on any network with more than a screenful of channels.
 
 **Position is presentation, and readers MUST keep it that way.** It MUST NOT affect record
 validity, permission resolution, capability scope, merge order, or anything else in this
@@ -197,6 +211,46 @@ replayed state.
 
 This key is for `server` profiles. A `conversation` network is identified by its participants
 (§1.5), so a name on one names nothing a member did not already know.
+
+### 1.8 Categories are named and ordered, and are not channels
+
+**Decided: a category carries a definition entry holding a name and a position, and nothing
+else.** No membership, no content, no keying, no privacy. A category is structure, and the entry
+describing it must not be able to grow into a channel.
+
+**The definition is metadata over a scope that already exists**, and everything else here rests
+on that. Permission resolution binds against the category named by the *channel's* own field
+(§4.2). It does not consult a category definition, and a reader **MUST NOT** begin to: the scope
+is the id, carried by the channels themselves, and a definition supplies only a label and a sort
+key.
+
+Three consequences, stated because a reader will otherwise assume the opposite:
+
+- **Deleting a category cannot widen or narrow anybody's access.** It removes a name and a
+  position, not a scope. A channel whose category definition is gone remains in that category and
+  resolves exactly the same capabilities; it merely has no label to render. Were it otherwise,
+  tidying the sidebar would be an access-control act in cosmetic disguise — the same thing §1.6
+  forbids reordering from becoming.
+- **A category needs no definition in order to function.** Every network already has categories
+  in this sense, so this is additive and changes no existing network's permissions.
+- **A channel MAY name a category that has no definition**, and that is not an error. It sorts as
+  a category with no position, and how a client labels an unnamed group is a client's decision
+  rather than replayed state.
+
+**Category entries require `chat:manage-channel`** — governance-tier, not `create-channel`,
+though a definition widens nothing and §3.8 tiers from what an action can widen. Categories are
+deliberately few, and channel *structural* mutation is already tiered this way: rename, topic,
+slowmode, archive and delete all require it, and none of those widens access either.
+
+**A category definition MUST be scoped `*`**, and a reader MUST refuse one whose declared
+capability names any other scope. Nothing encloses a category, so there is no narrower grant that
+could authorize creating one. An update MAY be scoped `*` or to the category's own id, which
+becomes grantable once the category exists.
+
+**Deleting a category is not a compound operation.** A client meaning "delete this folder and
+move its channels out" writes a `Recategorise` per channel beside the delete. The log has no
+transactions, and an entry that moved channels atomically would be claiming an atomicity nothing
+here provides.
 
 ---
 
@@ -487,7 +541,8 @@ catch it.
 ### 3.6 Derived identifiers
 
 Each is `H(domain ‖ inputs)`, domain-separated so none can be confused for another: channel
-id (network id, nonce), conversation channel id (network id), thread channel id (parent,
+id (network id, nonce), category id (network id, nonce), conversation channel id (network id),
+thread channel id (parent,
 root message), author log pointer (channel, author), moderation log pointer (channel,
 moderator), gossip topic (channel). Collection ids use Storage §2.5's existing helper.
 
@@ -512,7 +567,7 @@ accepts.
 §1.3 puts channel structure in the governance log as application entries (Core §2.7.2), which carry `namespace`, `kind`, a declared `required` capability, and an opaque payload. This section fixes those bytes. It is normative for the same reason §3.3 is: replay must produce identical channel state on every node, and the entry's hash covers the payload.
 
 ```
-domain ‖ channel_id(32) ‖ kind(1) ‖ body
+domain ‖ subject_id(32) ‖ kind(1) ‖ body
 ```
 
 The header mirrors §3.3's deliberately. `network_id` is absent for the same reason: a channel id is derived from it (§3.6), so an entry cannot be replayed into another network. The `channel_id` is inside the signed payload rather than only in the entry's envelope so that it is covered by the entry hash and cannot be edited by anything that relays the entry.
@@ -523,14 +578,18 @@ The header mirrors §3.3's deliberately. `network_id` is absent for the same rea
 | `0x02` | `channel-update` | `change(1) ‖ change_body` | `chat:manage-channel:<scope>` |
 | `0x03` | `channel-membership` | `action(1) ‖ identity(32)` | `chat:manage-channel:<scope>` |
 | `0x04` | `channel-rotation` | `commit_ref(32) ‖ reason` | `chat:manage-channel:<scope>` |
+| `0x05` | `category-definition` | `name ‖ position(4)` | `chat:manage-channel:*` |
+| `0x06` | `category-update` | `change(1) ‖ change_body` | `chat:manage-channel:<scope>` |
 
-`channel_kind` is `0x01` Text, `0x02` Voice, `0x03` Stage. `privacy` is `0x01` Public, `0x02` Private. `action` is `0x01` Add, `0x02` Remove. `change` is `0x01` Rename (`name`), `0x02` Recategorise (`category(1|33)`), `0x03` SetTopic (`topic`), `0x04` SetSlowmode (`slowmode(4)`), `0x05` Archive, `0x06` Delete, `0x07` SetPosition (`position(4)`, §1.6). `SetPosition` is a change rather than a field on the definition deliberately: adding it to the `0x01` body would re-encode every channel definition already written, and a position a channel has never been given is meaningful — §1.6 sorts it last rather than at zero. Unallocated discriminants in any of these positions are **refused**, not ignored: unlike a record kind (§3.7), a channel entry carries structure a reader either applies correctly or must not apply at all, and silently skipping one would leave two nodes with different channel state.
+`channel_kind` is `0x01` Text, `0x02` Voice, `0x03` Stage. `privacy` is `0x01` Public, `0x02` Private. `action` is `0x01` Add, `0x02` Remove. `change` is `0x01` Rename (`name`), `0x02` Recategorise (`category(1|33)`), `0x03` SetTopic (`topic`), `0x04` SetSlowmode (`slowmode(4)`), `0x05` Archive, `0x06` Delete, `0x07` SetPosition (`position(4)`, §1.6). `SetPosition` is a change rather than a field on the definition deliberately: adding it to the `0x01` body would re-encode every channel definition already written, and a position a channel has never been given is meaningful — §1.6 sorts it last rather than at zero. For `0x06` `category-update`, `change` is its own space: `0x01` Rename (`name`), `0x02` SetPosition (`position(4)`), `0x03` Delete.
+
+`subject_id` is the entry's subject — a channel id for `0x01`–`0x04`, a **category id** for `0x05`–`0x06` — and §3.6 derives both, so neither kind can be replayed into another network. Unallocated discriminants in any of these positions are **refused**, not ignored: unlike a record kind (§3.7), a channel entry carries structure a reader either applies correctly or must not apply at all, and silently skipping one would leave two nodes with different channel state.
 
 **Creating is ordinary, changing is governance, and the split is deliberate.** `chat:create-channel` is Ordinary (§4.1) because a definition grants nobody access to anything — a new private channel has an empty roster until a separate `channel-membership` entry adds someone, and that entry requires the governance-tier capability. The tiering follows what an action can actually widen, not how consequential it sounds.
 
 **A reader MUST check the declared capability matches this table**, refusing the entry otherwise. The protocol verified the author held what the entry *declared*; only a reader that understands `chat` knows what it *should* have declared. Without this check an author holding any registered `chat` capability — `chat:post:*`, the most ordinary grant a network issues — could mint channel structure by declaring that instead.
 
-**A reader MUST also check the scope** the declared capability names: it must be the channel's own scope or the category the definition places it in. A capability for one channel must not authorize an entry against another, which exact-name matching gives directly (Core §2.2, and see §7 E11 on why the names are exact today).
+**A reader MUST also check the scope** the declared capability names: for a channel entry it must be the channel's own scope or the category the definition places it in; for a category entry it is §1.8's rule — `*` for a definition, `*` or the category's own id for an update. A capability for one channel must not authorize an entry against another, which exact-name matching gives directly (Core §2.2, and see §7 E11 on why the names are exact today).
 
 **Every check in this section is application-layer.** The protocol carries these payloads without decoding them, so a client that skipped these checks would accept structure every conformant client refuses — the same honest limit §1.2 states for the profile rule, and for the same reason.
 
