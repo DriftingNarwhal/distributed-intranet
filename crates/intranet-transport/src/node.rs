@@ -263,7 +263,11 @@ pub enum NodeEvent {
         /// The remote peer.
         peer: PeerId,
     },
-    /// A hole-punch attempt failed; the connection stays relayed.
+    /// A hole-punch attempt failed, so the peer has been disconnected and its
+    /// circuit closed — §5.2 permits a circuit to carry the negotiation and
+    /// nothing else, and these two peers therefore do not connect. They are not
+    /// partitioned from the network: everything here is pull-based and
+    /// content-addressed, so they still converge through any member both reach.
     HolePunchFailed {
         /// The remote peer.
         peer: PeerId,
