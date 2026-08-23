@@ -563,6 +563,28 @@ pub enum NodeEvent {
 /// past the relay's own ceiling.
 const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a relayed connection may remain un-upgraded before it is closed.
+///
+/// §5.2 permits a circuit to carry the DCUtR negotiation and nothing else, and
+/// requires it be closed when the upgrade fails. Acting on `HolePunchFailed`
+/// alone satisfies that only when dcutr *says* the punch failed — and a failed
+/// negotiation does not reliably announce itself. When the direct dial fails at
+/// the transport level, dcutr abandons the attempt and emits nothing at all, so
+/// a node waiting for a failure event waits forever while the circuit stays open
+/// and carries traffic.
+///
+/// **That is the case that actually occurs under CGNAT**, which is the case §5.2
+/// was corrected for, and it was found by the harness's scenarios 4 and 6 rather
+/// than by review: both observed a relayed connection surviving indefinitely with
+/// `HolePunchFailed` never emitted once across an entire matrix run.
+///
+/// The value is generous against §5.3's own reasoning. A negotiation can
+/// plausibly run ten to fifteen seconds on a lossy mobile link — exactly the pair
+/// that needs one — and a relay's own circuit ceiling is sixty seconds. Sitting
+/// between them means a conformant client closes its circuit before the relay has
+/// to, without cutting off a punch that is slow but working.
+const CIRCUIT_UPGRADE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+
 /// How long to wait for listen addresses to register before reserving.
 const LISTENER_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -599,6 +621,12 @@ fn provider_key(cid: &Cid) -> kad::RecordKey {
 pub struct MemberNode {
     swarm: Swarm<MemberBehaviour>,
     tiers: BTreeMap<PeerId, ConnectionTier>,
+    /// When each still-relayed peer's connection was established, so that a
+    /// circuit which never upgrades can be closed on a deadline rather than on
+    /// an event that may never arrive ([`CIRCUIT_UPGRADE_DEADLINE`]).
+    relayed_since: BTreeMap<PeerId, tokio::time::Instant>,
+    /// The bound [`CIRCUIT_UPGRADE_DEADLINE`] documents, overridable per node.
+    circuit_upgrade_deadline: std::time::Duration,
     discovered: BTreeMap<PeerId, Vec<Multiaddr>>,
     /// Events consumed while waiting internally, replayed to the caller.
     ///
@@ -924,6 +952,8 @@ impl MemberNode {
         Ok(Self {
             swarm,
             tiers: BTreeMap::new(),
+            relayed_since: BTreeMap::new(),
+            circuit_upgrade_deadline: CIRCUIT_UPGRADE_DEADLINE,
             discovered: BTreeMap::new(),
             pending: std::collections::VecDeque::new(),
             direct_listeners: std::collections::BTreeSet::new(),
@@ -1666,6 +1696,19 @@ impl MemberNode {
     /// on the node that made it rather than merely readable by everyone else.
     pub fn set_media_relay_limits(&mut self, limits: MediaRelayLimits) {
         self.media_relay.set_limits(limits);
+    }
+
+    /// Overrides how long a relayed connection may remain un-upgraded before
+    /// this node closes it, defaulting to [`CIRCUIT_UPGRADE_DEADLINE`].
+    ///
+    /// §5.2 requires the bound to exist and places it between a negotiation's
+    /// realistic duration and the relay's own circuit ceiling (§5.3); it does not
+    /// fix a value, because the right one depends on the links a deployment
+    /// actually sees. Lowering it below a real negotiation's duration converts
+    /// slow-but-working hole punches into failures, which is the one way to get
+    /// this wrong in the permissive direction while appearing stricter.
+    pub fn set_circuit_upgrade_deadline(&mut self, deadline: std::time::Duration) {
+        self.circuit_upgrade_deadline = deadline;
     }
 
     /// Refills the media relay's byte allowance — call this on a regular tick.
@@ -2868,9 +2911,75 @@ impl MemberNode {
     }
 
     /// Drives the swarm, bypassing the replay buffer.
+    /// Closes one relayed connection that has outlived
+    /// [`CIRCUIT_UPGRADE_DEADLINE`] without upgrading, and reports which.
+    ///
+    /// One per call rather than all at once, because each is an event the caller
+    /// is owed: returning a single `HolePunchFailed` and leaving the rest for the
+    /// next turn of the loop keeps one peer's outcome from being swallowed by
+    /// another's. Peers that have since upgraded or gone away are swept silently,
+    /// since there is nothing left to close and nothing to report.
+    fn close_stale_circuit(&mut self) -> Option<PeerId> {
+        let now = tokio::time::Instant::now();
+        let expired: Vec<PeerId> = self
+            .relayed_since
+            .iter()
+            .filter(|(_, since)| now.duration_since(**since) >= self.circuit_upgrade_deadline)
+            .map(|(peer, _)| *peer)
+            .collect();
+
+        let mut closed = None;
+        for peer in expired {
+            self.relayed_since.remove(&peer);
+            // Still relayed is the only case there is anything to do about. A
+            // peer that upgraded between the deadline being set and this sweep
+            // has already had its entry removed above; one that raced it is
+            // caught here rather than being disconnected after succeeding.
+            if self.tiers.get(&peer) != Some(&ConnectionTier::Relayed) {
+                continue;
+            }
+            let _ = self.swarm.disconnect_peer_id(peer);
+            self.tiers.remove(&peer);
+            if closed.is_none() {
+                closed = Some(peer);
+            }
+        }
+        closed
+    }
+
     async fn next_swarm_event(&mut self) -> NodeEvent {
         loop {
-            let event = futures::StreamExt::select_next_some(&mut self.swarm).await;
+            // A circuit that never upgrades must be closed, and nothing will
+            // wake this loop to say so — see [`CIRCUIT_UPGRADE_DEADLINE`]. So
+            // the wait is bounded by the earliest such deadline rather than
+            // being open-ended, and the expiry is handled as an event in its own
+            // right. With no relayed peers there is no deadline and this is the
+            // plain await it has always been.
+            let deadline = self
+                .relayed_since
+                .values()
+                .min()
+                .map(|since| *since + self.circuit_upgrade_deadline);
+
+            let event = match deadline {
+                Some(deadline) => {
+                    match tokio::time::timeout_at(
+                        deadline,
+                        futures::StreamExt::select_next_some(&mut self.swarm),
+                    )
+                    .await
+                    {
+                        Ok(event) => event,
+                        Err(_) => {
+                            if let Some(peer) = self.close_stale_circuit() {
+                                return NodeEvent::HolePunchFailed { peer };
+                            }
+                            continue;
+                        }
+                    }
+                }
+                None => futures::StreamExt::select_next_some(&mut self.swarm).await,
+            };
             match event {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     // Circuit addresses are not local sockets, so they are not
@@ -2950,6 +3059,17 @@ impl MemberNode {
                         _ => tier,
                     };
                     self.tiers.insert(peer_id, tier);
+                    // Start the clock on a circuit that has not upgraded, and
+                    // stop it the moment one has. §5.2's requirement is about
+                    // the circuit not *persisting*, so what is tracked is the
+                    // first moment it appeared rather than the latest.
+                    if tier.relay_in_data_path() {
+                        self.relayed_since
+                            .entry(peer_id)
+                            .or_insert_with(tokio::time::Instant::now);
+                    } else {
+                        self.relayed_since.remove(&peer_id);
+                    }
                     // A heal is a reconnect, and a reconnect is a sync — but
                     // **not over a relayed connection.**
                     //
@@ -2993,6 +3113,7 @@ impl MemberNode {
                         continue;
                     }
                     self.tiers.remove(&peer_id);
+                    self.relayed_since.remove(&peer_id);
                     return NodeEvent::Disconnected { peer: peer_id };
                 }
 
@@ -3003,6 +3124,7 @@ impl MemberNode {
                     return match result {
                         Ok(_) => {
                             self.tiers.insert(remote_peer_id, ConnectionTier::HolePunched);
+                            self.relayed_since.remove(&remote_peer_id);
                             // Now, rather than when the connection arrived: this
                             // is the moment the peer became something §5.2
                             // permits carrying anything.
@@ -3024,6 +3146,7 @@ impl MemberNode {
                             // closing on a first stumble.
                             let _ = self.swarm.disconnect_peer_id(remote_peer_id);
                             self.tiers.remove(&remote_peer_id);
+                            self.relayed_since.remove(&remote_peer_id);
                             NodeEvent::HolePunchFailed {
                                 peer: remote_peer_id,
                             }
