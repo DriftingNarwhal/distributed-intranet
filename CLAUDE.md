@@ -31,14 +31,19 @@ what an older summary or comment might imply.
 Rust workspace, one crate per layer, in `crates/`. See README.md for the map and for what
 is and is not verified. Every layer is implemented.
 
-**The Docker NAT matrix is behind its own spec — do not cite it as evidence.** §5.2 was
-corrected to say there is no third tier, and harness spec §2.3 was rewritten to match:
-scenario 4 expects the circuit *closed* rather than used, scenario 5 expects IPv6 at tier 1,
-and a sixth expects an IPv4-only CGNAT pair not to connect. `run-scenario.sh` still has five
-scenarios, still asserts `relayed` as the pass for 4 and 5, and has no IPv6 in its topology,
-while `intranet-transport` already disconnects on a failed upgrade. Its recorded passes
-describe the protocol as it stood before the correction. Bringing it up to §2.3 is
-outstanding; the correction itself is covered by the workspace suite.
+**The Docker NAT matrix matches §2.3 and all six scenarios pass**, including the
+dual-stack one that succeeds at tier 1 over IPv6 and the two that assert a pair
+which cannot hole-punch does *not* connect. Bringing it up to the corrected §5.2
+found a real gap: acting on `HolePunchFailed` enforces the rule only when dcutr
+reports a failure, and under CGNAT it never does — the direct dial fails at the
+transport level, the attempt is abandoned silently, and the circuit stays open.
+The transport now closes an un-upgraded circuit on `CIRCUIT_UPGRADE_DEADLINE`
+rather than waiting to be told, and §5.2 requires that in as many words.
+
+One ordering constraint came out of it and is easy to reintroduce: the harness's
+own `--upgrade-secs` window must outlast the transport's circuit deadline, or the
+harness settles on `relayed` for a circuit about to be closed and reports on
+itself rather than on the node.
 
 Two findings from running it are still worth carrying. The scenarios validate connectivity
 and tier selection, never end-to-end behaviour, and three of the four fixes it took were
@@ -201,9 +206,9 @@ discards any that disagrees. A browser must merge its **own** locally-held colle
 entries before enumerating: enumeration finds other providers, so skipping local ones
 both hides what this node published and lets a hostile local entry escape validation.
 
-Every layer is reachable over the network, and the specs are v1.0. Two things diverge from
-the specs and both are named above: call media delivery uses the reliable fallback §1.5
-permits only as one, and the NAT runner is behind harness spec §2.3. Everything else matches.
+Every layer is reachable over the network, and the specs are v1.0. One thing diverges from
+the specs and it is named above: call media delivery uses the reliable fallback §1.5 permits
+only as one. Everything else matches.
 
 ## Invariants and the gate
 

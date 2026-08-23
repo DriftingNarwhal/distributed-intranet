@@ -17,8 +17,23 @@ pub enum ExpectedTier {
     DirectIpv4,
     /// Relayed connection upgraded to direct via DCUtR.
     HolePunched,
-    /// Sustained relay circuit — the fallback.
+    /// Sustained relay circuit.
+    ///
+    /// **No conformant scenario should expect this.** §5.2 was corrected to say
+    /// there is no third tier: a circuit carries the DCUtR negotiation and is
+    /// closed when the upgrade fails. The variant is kept so a scenario can
+    /// detect a relayed connection that wrongly persists, which is the defect
+    /// the correction exists to prevent and which looks exactly like success.
     Relayed,
+    /// No surviving connection to the target — the §5.2 outcome when a pair
+    /// cannot hole-punch and has no other path.
+    ///
+    /// Satisfied two ways, because both are the same fact from different
+    /// vantage points: nothing ever connected within the timeout, or a relayed
+    /// connection was established for the negotiation and then closed without
+    /// upgrading. A scenario asserting this is asserting an *absence*, so it
+    /// necessarily costs the full timeout.
+    None,
 }
 
 impl ExpectedTier {
@@ -29,8 +44,24 @@ impl ExpectedTier {
             Self::DirectIpv4 => actual == ConnectionTier::Direct(AddressFamily::Ipv4),
             Self::HolePunched => actual == ConnectionTier::HolePunched,
             Self::Relayed => actual == ConnectionTier::Relayed,
+            // Handled before this is reached: `None` is a statement about
+            // there being no connection, so there is no tier to compare.
+            Self::None => false,
         }
     }
+}
+
+/// What the dial settled on, which is not always a connection.
+///
+/// Distinguishing "closed" from "never connected" matters for diagnosis rather
+/// than for the assertion: both satisfy [`ExpectedTier::None`], but only the
+/// first tells you the negotiation actually happened and the circuit was torn
+/// down as §5.2 requires, rather than nothing having reached the peer at all.
+enum Settled {
+    Connected(libp2p::PeerId, ConnectionTier),
+    /// A relayed connection to the target existed and was closed without ever
+    /// upgrading — the circuit carried its negotiation and nothing more.
+    CircuitClosed(libp2p::PeerId),
 }
 
 #[derive(Args)]
@@ -73,7 +104,17 @@ pub struct DialArgs {
     /// transport level the attempt is simply abandoned, so waiting for one hangs
     /// until the overall timeout and reports no connection at all — even though
     /// a working tier-3 circuit is open the whole time.
-    #[arg(long, default_value_t = 15)]
+    ///
+    /// **This must outlast the transport's own circuit deadline, and the default
+    /// is chosen to.** The transport now closes a circuit that has not upgraded
+    /// (Core §5.2), which is what makes a §5.2 conformance assertion possible at
+    /// all — but only the *later* of the two timers decides what this command
+    /// reports. At fifteen seconds against the transport's twenty-five, this
+    /// window expired first and reported `relayed` for a circuit that was about
+    /// to be closed, so scenarios 4 and 6 failed while the node under test was
+    /// behaving correctly. A harness that pre-empts the behaviour it is
+    /// measuring reports on itself.
+    #[arg(long, default_value_t = 35)]
     upgrade_secs: u64,
     /// Keep running after connecting, so the other side can complete its own test.
     #[arg(long, default_value_t = 0)]
@@ -167,7 +208,7 @@ impl DialArgs {
                             Ok(event) => event,
                             Err(_) => {
                                 println!("relayed: no upgrade within {}s", self.upgrade_secs);
-                                return (peer, ConnectionTier::Relayed);
+                                return Settled::Connected(peer, ConnectionTier::Relayed);
                             }
                         }
                     }
@@ -182,7 +223,7 @@ impl DialArgs {
                         // successful tier-2 connection as tier 3.
                         if is_target(peer) {
                             if !tier.relay_in_data_path() {
-                                return (peer, tier);
+                                return Settled::Connected(peer, tier);
                             }
                             // Start the upgrade window on the first relayed
                             // connection to the target, and do not restart it on
@@ -194,7 +235,7 @@ impl DialArgs {
                     }
                     NodeEvent::HolePunchSucceeded { peer } if is_target(peer) => {
                         println!("hole-punch: succeeded peer={peer}");
-                        return (peer, ConnectionTier::HolePunched);
+                        return Settled::Connected(peer, ConnectionTier::HolePunched);
                     }
                     NodeEvent::HolePunchFailed { peer } if is_target(peer) => {
                         // Reported, but deliberately *not* returned on.
@@ -238,6 +279,16 @@ impl DialArgs {
                     }
                     NodeEvent::Disconnected { peer } => {
                         println!("disconnected: peer={peer}");
+                        // §5.2's outcome, and it must not be read as "still
+                        // relayed". The transport closes a circuit whose
+                        // hole-punch failed, so the settle window would
+                        // otherwise expire and report `relayed` for a peer this
+                        // node is no longer connected to — asserting the tier
+                        // the correction exists to abolish.
+                        if is_target(peer) && settle.is_some() {
+                            println!("circuit: closed without upgrading");
+                            return Settled::CircuitClosed(peer);
+                        }
                     }
                     // Hole-punch results for a peer other than the target — the
                     // relay's own connection, typically.
@@ -247,14 +298,60 @@ impl DialArgs {
         })
         .await;
 
-        let Ok((peer, tier)) = outcome else {
-            return Err(format!(
-                "no connection established within {}s",
-                self.timeout_secs
-            ));
+        // Three outcomes, not two: connected, connected-then-closed, and never
+        // connected. The last is a timeout rather than an error whenever the
+        // scenario asked for it, since §5.2 makes "these two peers do not
+        // connect" a conformant result that a matrix must be able to assert.
+        let expects_none = self.expect_tier == Some(ExpectedTier::None);
+
+        let settled = match outcome {
+            Ok(settled) => settled,
+            Err(_) => {
+                println!("result: no connection within {}s", self.timeout_secs);
+                if expects_none {
+                    println!("expected: none \u{2014} nothing reached the target, as required");
+                    return self.hold(node).await;
+                }
+                return Err(format!(
+                    "no connection established within {}s",
+                    self.timeout_secs
+                ));
+            }
         };
 
+        let connected = match settled {
+            Settled::CircuitClosed(peer) => {
+                println!("result: peer={peer} circuit closed without upgrading");
+                if expects_none {
+                    println!(
+                        "expected: none \u{2014} the circuit carried its negotiation and was \
+                         closed, which is what \u{a7}5.2 requires"
+                    );
+                    return self.hold(node).await;
+                }
+                return Err(format!(
+                    "expected tier {:?}, got no surviving connection \u{2014} the relayed \
+                     circuit was closed after the hole punch failed",
+                    self.expect_tier
+                ));
+            }
+            Settled::Connected(peer, tier) => (peer, tier),
+        };
+        let (peer, tier) = connected;
+
         println!("result: peer={peer} tier={}", tier.label());
+
+        if expects_none {
+            // The inverse assertion, and the one that catches a regression of
+            // the rule rather than of the code: a pair that must not connect
+            // has connected, which under \u{a7}5.2 is a conformance failure however
+            // healthy it looks.
+            return Err(format!(
+                "expected no connection, got {} \u{2014} \u{a7}5.2 says a pair that cannot \
+                 hole-punch reaches each other over IPv6 or not at all",
+                tier.label()
+            ));
+        }
 
         if let Some(expected) = self.expect_tier
             && !expected.matches(tier)
@@ -270,13 +367,21 @@ impl DialArgs {
             ));
         }
 
+        self.hold(node).await
+    }
+
+    /// Keeps the node running so the other side can finish its own test.
+    ///
+    /// Reached from every passing path, including the two that pass by *not*
+    /// connecting — a peer that exits the moment it decides nothing arrived
+    /// would tear its listener down under whichever side is still dialling.
+    async fn hold(&self, mut node: MemberNode) -> CliResult {
         if self.hold_secs > 0 {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(self.hold_secs);
             while tokio::time::Instant::now() < deadline {
                 let _ = tokio::time::timeout(Duration::from_millis(200), node.next_event()).await;
             }
         }
-
         Ok(())
     }
 }

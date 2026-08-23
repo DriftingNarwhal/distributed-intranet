@@ -6,6 +6,8 @@
 #   UPSTREAM_GW      next hop toward public-net; needed only on the home
 #                    gateways of a CGNAT chain (see below)
 #   NAT_MODE         "restricted" (default) or "symmetric"
+#   V6_UPSTREAM_GW   next hop for the default IPv6 route, where there is one
+#   V6_ROUTES        static IPv6 routes as "prefix,via" pairs, space separated
 #
 # Interfaces are DERIVED at runtime by matching addresses against
 # UPSTREAM_SUBNET rather than passed in as fixed names. Docker does not attach
@@ -114,6 +116,33 @@ iptables -A FORWARD -i "${PRIVATE_IF}" -o "${UPSTREAM_IF}" -j ACCEPT
 iptables -A INPUT -i "${UPSTREAM_IF}" -p tcp -m conntrack --ctstate NEW -j DROP
 iptables -A INPUT -i "${UPSTREAM_IF}" -p udp -m conntrack --ctstate NEW -j DROP
 
+# IPv6 is forwarded and never translated (§5.2). This is not an omission that
+# happens to be convenient: the reason the spec sends a CGNAT pair to IPv6 is
+# that v6 has no address-translation layer, so a gateway that masqueraded it
+# would defeat the tier-1 path scenario 5 exists to prove, while still passing
+# anything that only checked "did they connect".
+#
+# public-net carries no router, so each carrier gateway is told the other side's
+# prefixes explicitly. Routes are set only where a v6 address exists at all,
+# which is how the IPv4-only gateways (gw-a, gw-b) stay untouched by this.
+if [ -n "$(ip -o -6 addr show scope global 2>/dev/null)" ]; then
+  ip6tables -P FORWARD ACCEPT
+  ip6tables -F FORWARD
+
+  if [ -n "${V6_UPSTREAM_GW:-}" ]; then
+    echo "nat-gateway: routing default (v6) via ${V6_UPSTREAM_GW}"
+    ip -6 route del default 2>/dev/null || true
+    ip -6 route add default via "${V6_UPSTREAM_GW}"
+  fi
+
+  for _route in ${V6_ROUTES:-}; do
+    _prefix="${_route%%,*}"
+    _via="${_route##*,}"
+    echo "nat-gateway: route (v6) ${_prefix} via ${_via}"
+    ip -6 route replace "${_prefix}" via "${_via}"
+  done
+fi
+
 case "${NAT_MODE}" in
   restricted)
     # MASQUERADE keeps the source port stable where it can, giving
@@ -135,4 +164,5 @@ echo "nat-gateway: ready"
 iptables -t nat -L POSTROUTING -n
 iptables -L INPUT -n
 ip route
+ip -6 route 2>/dev/null || true
 exec sleep infinity

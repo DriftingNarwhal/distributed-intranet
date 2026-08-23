@@ -53,10 +53,29 @@ x-nat: &nat
     # so it has not been run; if the daemon refuses the key as unnamespaced it
     # must be set on the host instead.
     net.netfilter.nf_conntrack_tcp_be_liberal: 1
+    # IPv6 is forwarded and never translated, which is the whole point of
+    # scenario 5: §5.2 makes IPv6 the answer for a pair that cannot traverse
+    # IPv4, precisely because it has no address-translation layer to defeat
+    # hole-punching. A gateway that masqueraded v6 would simulate a network
+    # nobody runs and would hide the tier-1 path the scenario exists to prove.
+    net.ipv6.conf.all.forwarding: 1
 
+# IPv6 is added only to the CGNAT path (public-net and the c/d chains), and that
+# asymmetry is deliberate rather than partial work. Scenario 4 requires an
+# IPv4-only pair, which peer-a provides by having no v6 address at all; scenarios
+# 5 and 6 need the same two peers with and without a v6 path, which the runner
+# arranges by removing peer-c and peer-d's default v6 route for 6.
+#
+# ULA prefixes rather than documentation-range globals: nothing here leaves the
+# host, and what the scenario turns on is that the path is *untranslated*, not
+# that the addresses are globally unique.
 networks:
   public-net:
-    ipam: {config: [{subnet: 172.30.0.0/24}]}
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 172.30.0.0/24}
+        - {subnet: fd00:30::/64}
   # NOTE: `internal: true` cannot be used here. Docker implements it with a host
   # rule dropping anything on the bridge whose destination is outside the bridge
   # subnet, which is every packet the NAT gateway is meant to translate — peers
@@ -68,13 +87,29 @@ networks:
   lan-b:
     ipam: {config: [{subnet: 172.31.2.0/24}]}
   lan-c:
-    ipam: {config: [{subnet: 172.31.3.0/24}]}
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 172.31.3.0/24}
+        - {subnet: fd00:31:3::/64}
   cgnat-c:
-    ipam: {config: [{subnet: 172.31.4.0/24}]}
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 172.31.4.0/24}
+        - {subnet: fd00:31:4::/64}
   lan-d:
-    ipam: {config: [{subnet: 172.31.5.0/24}]}
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 172.31.5.0/24}
+        - {subnet: fd00:31:5::/64}
   cgnat-d:
-    ipam: {config: [{subnet: 172.31.6.0/24}]}
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 172.31.6.0/24}
+        - {subnet: fd00:31:6::/64}
 
 services:
   # ---------------------------------------------------------------------------
@@ -130,38 +165,46 @@ services:
     environment:
       UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: symmetric
+      # No default v6 route: this gateway sits on public-net already. What it
+      # needs is reachability in both directions — down to lan-c behind the home
+      # gateway, and across to d's prefixes via d's carrier gateway. public-net
+      # has no router on it, so each carrier gateway carries the other's routes.
+      V6_ROUTES: "fd00:31:3::/64,fd00:31:4::3 fd00:31:5::/64,fd00:30::24 fd00:31:6::/64,fd00:30::24"
     networks:
-      public-net: {ipv4_address: 172.30.0.23}
-      cgnat-c: {ipv4_address: 172.31.4.2}
+      public-net: {ipv4_address: 172.30.0.23, ipv6_address: "fd00:30::23"}
+      cgnat-c: {ipv4_address: 172.31.4.2, ipv6_address: "fd00:31:4::2"}
 
   gw-c-home:
     <<: *nat
     environment:
       UPSTREAM_SUBNET: "172.31.4."
       UPSTREAM_GW: 172.31.4.2
+      V6_UPSTREAM_GW: "fd00:31:4::2"
       NAT_MODE: symmetric
     networks:
-      cgnat-c: {ipv4_address: 172.31.4.3}
-      lan-c: {ipv4_address: 172.31.3.2}
+      cgnat-c: {ipv4_address: 172.31.4.3, ipv6_address: "fd00:31:4::3"}
+      lan-c: {ipv4_address: 172.31.3.2, ipv6_address: "fd00:31:3::2"}
 
   gw-d-cgnat:
     <<: *nat
     environment:
       UPSTREAM_SUBNET: "172.30.0."
       NAT_MODE: symmetric
+      V6_ROUTES: "fd00:31:5::/64,fd00:31:6::3 fd00:31:3::/64,fd00:30::23 fd00:31:4::/64,fd00:30::23"
     networks:
-      public-net: {ipv4_address: 172.30.0.24}
-      cgnat-d: {ipv4_address: 172.31.6.2}
+      public-net: {ipv4_address: 172.30.0.24, ipv6_address: "fd00:30::24"}
+      cgnat-d: {ipv4_address: 172.31.6.2, ipv6_address: "fd00:31:6::2"}
 
   gw-d-home:
     <<: *nat
     environment:
       UPSTREAM_SUBNET: "172.31.6."
       UPSTREAM_GW: 172.31.6.2
+      V6_UPSTREAM_GW: "fd00:31:6::2"
       NAT_MODE: symmetric
     networks:
-      cgnat-d: {ipv4_address: 172.31.6.3}
-      lan-d: {ipv4_address: 172.31.5.2}
+      cgnat-d: {ipv4_address: 172.31.6.3, ipv6_address: "fd00:31:6::3"}
+      lan-d: {ipv4_address: 172.31.5.2, ipv6_address: "fd00:31:5::2"}
 
   # ---------------------------------------------------------------------------
   # Peers. Each waits to be driven by run-scenario.sh rather than dialling on
@@ -190,12 +233,14 @@ services:
 
   peer-c:
     <<: *peer
-    environment: {GATEWAY_IP: 172.31.3.2}
+    environment: {GATEWAY_IP: 172.31.3.2, V6_GATEWAY_IP: "fd00:31:3::2"}
     command: ["idle"]
-    networks: {lan-c: {ipv4_address: 172.31.3.10}}
+    networks:
+      lan-c: {ipv4_address: 172.31.3.10, ipv6_address: "fd00:31:3::10"}
 
   peer-d:
     <<: *peer
-    environment: {GATEWAY_IP: 172.31.5.2}
+    environment: {GATEWAY_IP: 172.31.5.2, V6_GATEWAY_IP: "fd00:31:5::2"}
     command: ["idle"]
-    networks: {lan-d: {ipv4_address: 172.31.5.10}}
+    networks:
+      lan-d: {ipv4_address: 172.31.5.10, ipv6_address: "fd00:31:5::10"}

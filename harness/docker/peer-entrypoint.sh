@@ -8,7 +8,8 @@
 # setup detail — it is what puts the NAT in the path.
 #
 # Environment:
-#   GATEWAY_IP  the NAT gateway's address on this peer's private network
+#   GATEWAY_IP     the NAT gateway's address on this peer's private network
+#   V6_GATEWAY_IP  the same gateway's IPv6 address, where this peer has one
 #   Remaining arguments are passed to the harness CLI, except for the single
 #   argument `idle`, which sets up routing and then holds the container open.
 #
@@ -35,8 +36,19 @@ if [[ -n "${GATEWAY_IP:-}" ]]; then
   fi
 fi
 
+# The v6 default route is what makes scenario 5's tier-1 path exist, and
+# removing it at runtime is what makes scenario 6's absence of one testable —
+# see run-scenario.sh, which takes it away and puts it back rather than needing a
+# second pair of containers with a second pair of gateways behind them.
+if [[ -n "${V6_GATEWAY_IP:-}" ]]; then
+  echo "peer: routing default (v6) via ${V6_GATEWAY_IP}"
+  ip -6 route del default 2>/dev/null || true
+  ip -6 route add default via "${V6_GATEWAY_IP}"
+fi
+
 echo "peer: routes"
 ip route
+ip -6 route 2>/dev/null || true
 
 if [[ "${1:-}" == "idle" ]]; then
   echo "peer: idle, awaiting exec"

@@ -6,23 +6,25 @@ invites, connections, tiers — and deliberately contains no application concept
 
 ## Verification status — read this first
 
-**This runner is behind the specification it implements, and everything below
-should be read with that in mind.** Core §5.2 was corrected on 2026-08-22 to say
-there is **no third tier**: a relayed circuit carries the DCUtR negotiation, is
-closed when the upgrade fails, and never carries payload. Harness spec §2.3 was
-rewritten the same day — scenario 4 now expects the circuit to be *closed* rather
-than used, scenario 5 expects success over IPv6 at tier 1 rather than a relayed
-connection, and a new scenario 6 expects an IPv4-only CGNAT pair not to connect
-at all.
+**This runner now matches harness spec §2.3, and the correction it caught is worth
+knowing before reading anything below.** Core §5.2 was corrected on 2026-08-22 to
+say there is **no third tier**: a relayed circuit carries the DCUtR negotiation, is
+closed when the upgrade fails, and never carries payload. §2.3 was rewritten the
+same day and this runner was not, so scenarios 4 and 5 went on asserting `relayed`
+as a pass — the outcome the correction had just abolished.
 
-`run-scenario.sh` still has five scenarios, still asserts `relayed` as the
-passing outcome for 4 and 5, and carries no IPv6 in its topology.
-`intranet-transport` already implements the new rule, so those two scenarios
-assert an outcome the code no longer produces. Anything below describing tier 3
-as "a correctness guarantee and not a path to live on" is the superseded reading
-— that tier no longer exists. The pass results recorded here are evidence about
-the protocol as it stood before the correction, and bringing the runner up to
-§2.3 is outstanding work.
+Bringing them up to the spec found a real gap rather than merely turning them
+green. Acting on `HolePunchFailed` satisfies §5.2 only when dcutr *says* the punch
+failed, and under CGNAT it never does: the direct dial fails at the transport
+level, the attempt is abandoned, and nothing is emitted. `HolePunchFailed` appeared
+**zero times across an entire matrix run** while relayed connections survived
+indefinitely. The transport now closes a circuit that has not upgraded within
+`CIRCUIT_UPGRADE_DEADLINE`, on a timer rather than an event, and Core §5.2 says so
+in as many words.
+
+**Anything below describing tier 3 as "a correctness guarantee and not a path to
+live on" is the superseded reading** — that tier no longer exists. Passages written
+against it are kept as the record of what was believed at the time.
 
 The NAT environment has now been executed. It previously had not been, and
 getting it to run took seven fixes; see *What the first execution found* below,
@@ -39,11 +41,13 @@ harness.
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2 | **Passing.** |
-| Scenarios 4, 5 | **Passing, against the superseded rule.** Both assert `relayed` as the pass, which §5.2 no longer permits and §2.3 no longer asks for — see the note above. |
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
+| Scenario 4 | **Passing.** Asserts no surviving connection: the punch fails, and the circuit that carried the negotiation is closed rather than used. |
+| Scenario 5 | **Passing.** The dual-stack case §2.3 calls the most important one to automate — two CGNAT chains, succeeding at **tier 1 over IPv6**, no relay in the path. |
+| Scenario 6 | **Passing.** Scenario 5's control: the same pair with the v6 route removed must not connect at all. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 591 tests and `cargo clippy --workspace --all-targets` reports no
+passes 656 tests and `cargo clippy --workspace --all-targets` reports no
 warnings, including over the fixes described below. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
@@ -103,8 +107,12 @@ assertion report the wrong answer:
 - It had no path to report a settled `relayed` connection, waiting instead for a
   `HolePunchFailed` event that a transport-level failure never emits. A working
   tier-3 circuit would sit open until the overall timeout and be reported as no
-  connection at all. There is now an `--upgrade-secs` window (default 15s) after
-  which a relayed connection is accepted as the settled tier.
+  connection at all. There is now an `--upgrade-secs` window after which a relayed connection is
+  accepted as the settled tier. Its default was raised to 35s once the transport
+  gained a circuit deadline of its own: at 15s it expired first and reported
+  `relayed` for a circuit about to be closed, so scenarios 4 and 6 failed while
+  the node under test was behaving correctly. The later of the two timers is the
+  one that decides, and the harness must not be it.
 
 Building also requires a `.dockerignore` at the repo root excluding `target/`;
 without it the build context is roughly 14 GB.
@@ -335,7 +343,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 591 tests
+cargo test --workspace                      # 656 tests
 cargo run -p intranet-harness -- --help
 ```
 
