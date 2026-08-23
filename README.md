@@ -104,7 +104,7 @@ Three shapes, in rough order of how most consumers would use it:
 ## Status
 
 **Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **644 tests, clippy clean.**
+and every layer is reachable over the network. **655 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -113,8 +113,8 @@ and every layer is reachable over the network. **644 tests, clippy clean.**
 | 03 App hosting — name registry, manifests, publishing policy | Implemented; execution sandbox is an embedder concern, see below |
 | 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
-| 06 Reference test harness | CLI implemented; NAT scenarios executed, **all 5 passing** |
-| 07 Chat application (draft) | Specified; implementation in progress out of tree. Asks five amendments of the platform — see its §7 |
+| 06 Reference test harness | CLI implemented. **The NAT matrix is behind its spec** — §2.3 defines six scenarios and the runner has five, two of which assert the outcome the corrected §5.2 now calls a failure. See below |
+| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks nine amendments of the platform, six of them landed — see its §7 |
 
 ### Two things to know before you build on it
 
@@ -161,6 +161,25 @@ it had not actually made to the target.
 Passing scenarios validate connectivity and tier selection, not end-to-end
 behaviour. [`harness/README.md`](harness/README.md) separates what is verified
 from what is not, and records the evidence behind each fix.
+
+**And the matrix is now behind the specification it implements, which is the more
+important caveat.** §5.2 was corrected on 2026-08-22 to say there is no third
+tier: a relayed circuit carries the DCUtR negotiation, is closed when the upgrade
+fails, and never carries payload. Harness spec §2.3 was rewritten to match —
+scenario 4 now expects the circuit to be *closed* rather than used, scenario 5
+expects success over IPv6 at tier 1 rather than a relayed connection, and a sixth
+scenario expects an IPv4-only CGNAT pair not to connect at all.
+
+`run-scenario.sh` predates all of that. It has five scenarios, asserts `relayed`
+as the passing outcome for 4 and 5, carries no IPv6 in its topology, and its own
+header states the premise the correction reversed — "a connection is always
+eventually possible, even via the least efficient path". `intranet-transport`
+already implements the new rule (`disconnect_peer_id` on a failed upgrade), so
+those two scenarios are asserting an outcome the code no longer produces.
+
+Until the runner is brought up to §2.3, a green matrix is evidence about the
+protocol as it stood before the correction. Nothing here depends on it: the
+correction itself is covered by the workspace suite.
 
 ## Layout
 
@@ -210,9 +229,11 @@ build context is roughly 14 GB.
 ./harness/run-scenario.sh all     # or: ./harness/run-scenario.sh 5
 ```
 
-All five pass. Roughly two minutes for the in-process suite versus minutes more
-for the Docker matrix, which is why the harness spec (§8) puts the first on every
-commit and the second on a slower cadence.
+All five passed when last executed, and that is a weaker statement than it used
+to be — see the note above about the matrix being behind its spec. Roughly two
+minutes for the in-process suite versus minutes more for the Docker matrix, which
+is why the harness spec (§8) puts the first on every commit and the second on a
+slower cadence.
 
 ## Running a relay
 

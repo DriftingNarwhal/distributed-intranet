@@ -6,6 +6,24 @@ invites, connections, tiers — and deliberately contains no application concept
 
 ## Verification status — read this first
 
+**This runner is behind the specification it implements, and everything below
+should be read with that in mind.** Core §5.2 was corrected on 2026-08-22 to say
+there is **no third tier**: a relayed circuit carries the DCUtR negotiation, is
+closed when the upgrade fails, and never carries payload. Harness spec §2.3 was
+rewritten the same day — scenario 4 now expects the circuit to be *closed* rather
+than used, scenario 5 expects success over IPv6 at tier 1 rather than a relayed
+connection, and a new scenario 6 expects an IPv4-only CGNAT pair not to connect
+at all.
+
+`run-scenario.sh` still has five scenarios, still asserts `relayed` as the
+passing outcome for 4 and 5, and carries no IPv6 in its topology.
+`intranet-transport` already implements the new rule, so those two scenarios
+assert an outcome the code no longer produces. Anything below describing tier 3
+as "a correctness guarantee and not a path to live on" is the superseded reading
+— that tier no longer exists. The pass results recorded here are evidence about
+the protocol as it stood before the correction, and bringing the runner up to
+§2.3 is outstanding work.
+
 The NAT environment has now been executed. It previously had not been, and
 getting it to run took seven fixes; see *What the first execution found* below,
 because several of them were defects in the implementation rather than in the
@@ -20,7 +38,8 @@ harness.
 | Relay resource limits | **Enforced by a live relay.** `RelayLimits` now configures the relay behaviour, and `relay_enforcement.rs` drives a real `RelayNode` and asserts a reservation past the ceiling is refused. Global ceilings only — see *Deliberate limits*. |
 | Everything above transport | **Verified.** Governance, storage, epoch keying, search, app registry and real-time are covered by the workspace suite; none of it needs Docker. |
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
-| Scenarios 1, 2, 4, 5 | **Passing.** |
+| Scenarios 1, 2 | **Passing.** |
+| Scenarios 4, 5 | **Passing, against the superseded rule.** Both assert `relayed` as the pass, which §5.2 no longer permits and §2.3 no longer asks for — see the note above. |
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
 
 Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`

@@ -5,11 +5,22 @@ cross-reference each other extensively.
 
 specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
 consuming the platform rather than defining it. Read it only when working on something it
-touches — but do read its §7, which lists the amendments it asks of the platform, two of
-which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). Six are implemented — E2, E4, E9, E11, E12 and E14 — and E10, E13 and E15 are not. E13 is load-bearing rather than convenient: every direct message is its own network and a relay is never shared between two of them (§7, and the client's D29), so without cross-network bootstrap two NATed people cannot converse at all.
+touches — but do read its §7, which lists the nine amendments it asks of the platform, two
+of which change types the core specs own (governance entry variants, and an app-layer policy
+map in NetworkPolicy). Six are implemented — E2, E4, E9, E11, E12 and E14 — and E10, E13 and
+E15 are not. E13 is load-bearing rather than convenient: every direct message is its own
+network and a relay is never shared between two of them (§7, and the client's D29), so
+without cross-network bootstrap two NATed people cannot converse at all.
 Treat them as authoritative; if an implementation choice isn't covered by them, flag it
 rather than guessing.
+
+## The client
+
+The consuming implementation of spec 07 is [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls),
+normally checked out as a sibling directory — it depends on these crates by path while the
+amendments still move, so a change here can break it and `cargo test` in this workspace will
+not say so. It has its own `CLAUDE.md`. `DI-Relay` is the deployed bootstrap relay of §5.5,
+also a sibling.
 
 Several spec sections exist specifically to correct an earlier, subtly wrong version of
 themselves — those corrections are usually load-bearing, so prefer the current text over
@@ -18,19 +29,32 @@ what an older summary or comment might imply.
 ## Implementation
 
 Rust workspace, one crate per layer, in `crates/`. See README.md for the map and for what
-is and is not verified. Every layer is implemented. The Docker NAT scenarios have now been
-executed and all 5 pass, so tier 2 is verified in the container. Note what that does and
-does not establish: the scenarios validate connectivity and tier selection, not end-to-end
-behaviour. Three of the four fixes it took were protocol bugs rather than harness ones, so
-do not read a passing matrix as evidence the transport is exercised. One finding is worth
-carrying: a NAT gateway must `DROP` unsolicited inbound packets, never reject them — a
+is and is not verified. Every layer is implemented.
+
+**The Docker NAT matrix is behind its own spec — do not cite it as evidence.** §5.2 was
+corrected to say there is no third tier, and harness spec §2.3 was rewritten to match:
+scenario 4 expects the circuit *closed* rather than used, scenario 5 expects IPv6 at tier 1,
+and a sixth expects an IPv4-only CGNAT pair not to connect. `run-scenario.sh` still has five
+scenarios, still asserts `relayed` as the pass for 4 and 5, and has no IPv6 in its topology,
+while `intranet-transport` already disconnects on a failed upgrade. Its recorded passes
+describe the protocol as it stood before the correction. Bringing it up to §2.3 is
+outstanding; the correction itself is covered by the workspace suite.
+
+Two findings from running it are still worth carrying. The scenarios validate connectivity
+and tier selection, never end-to-end behaviour, and three of the four fixes it took were
+protocol bugs rather than harness ones — so a passing matrix is not evidence the transport is
+exercised. And a NAT gateway must `DROP` unsolicited inbound packets, never reject them: a
 hole-punch SYN is addressed to the gateway's own address and so hits `INPUT`, and an RST
-removes the retransmit that hole-punching depends on. A gateway that rejects is broken,
-not stricter.
+removes the retransmit that hole-punching depends on. A gateway that rejects is broken, not
+stricter.
+### The sandbox boundary
+
 The app execution sandbox is deliberately outside the protocol, not missing: App Hosting
 §3.2.1 states the boundary — the protocol decides which bytes are the app and whether it
 is servable, a client decides whether to execute them and under what isolation. Do not
 add a sandbox here.
+
+## Governance, keying and the ledger
 
 Governance log propagation is wired: a pull-based request/response sync protocol over
 libp2p (`intranet-transport::sync`, `intranet-governance::wire`), chosen because §2.7
@@ -66,6 +90,8 @@ Note what placement determinism actually claims: `placement::rank` is determinis
 given a candidate set, but the candidate set is each node's own gossiped cache filtered
 by local staleness. Two nodes agree once their ledgers agree, not before — Storage §3.4's
 repair loop is what corrects the gap. Don't strengthen the docs beyond that.
+
+## Storage, discovery and fetch
 
 Content moves over `/intranet/chunk/1.0.0` (`intranet-storage::wire`, `ChunkStore`).
 Requests are signed over the CID *and* bound to the connection: a signature proves the
@@ -110,10 +136,14 @@ announced under every matched term** (§3.1's efficiency note), not one object p
 Delisting is enforced by the *reader*: the announcing node has every reason not to, so
 `LocalIndex::insert` re-checks against replayed governance state.
 
+## The event loop
+
 Note an event-loop invariant: `next_swarm_event` drains `pending` only on entry, so any
 event pushed there from inside its loop is delivered on the *next* call — which never
 comes if the arm falls through and nothing else happens. Push to `pending` only in an arm
 that returns immediately afterwards; otherwise return the event directly.
+
+## Real-time: calls, relays and media
 
 Calls run over two protocols, and their separation is load-bearing:
 `/intranet/call-signal/1.0.0` (signed, carries key envelopes and topology proposals) and
@@ -161,6 +191,8 @@ datagram API, so this needs a libp2p change rather than a local one.
 Signalling (§1.4) and live-stream chunks (§3.2) are both correctly reliable; do not
 collapse the three into one delivery model.
 
+## App hosting
+
 The app name registry needed no transport of its own: ownership is a governance entry
 (App Hosting §4.3) and the directory is an append-set collection, and both already
 propagate. The split is the design — the log is authoritative, the index is a
@@ -169,8 +201,11 @@ discards any that disagrees. A browser must merge its **own** locally-held colle
 entries before enumerating: enumeration finds other providers, so skipping local ones
 both hides what this node published and lets a hostile local entry escape validation.
 
-Every layer is reachable over the network, and the specs are v1.0. The one implementation
-divergence from the specs is call media delivery (above); everything else matches.
+Every layer is reachable over the network, and the specs are v1.0. Two things diverge from
+the specs and both are named above: call media delivery uses the reliable fallback §1.5
+permits only as one, and the NAT runner is behind harness spec §2.3. Everything else matches.
+
+## Invariants and the gate
 
 - `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
   Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
