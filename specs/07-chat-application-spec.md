@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.1 — draft. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.2 — draft. §1.6 fixes channel order and §1.7 a network's name, with `SetPosition` allocated as channel-update `0x07` (§3.8); neither is implemented yet. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -141,6 +141,62 @@ and rests in no inbox, because an inbox would put the request back on other peop
 message reaches its recipient at the next overlap of the two nodes being online — not
 necessarily at the next time the recipient opens their client. Sending does not require the
 recipient present; *delivery* requires the sender reachable when the recipient returns.
+
+### 1.6 Channel order is a network default, and a member may override it locally
+
+**Decided: a network carries a default channel order; a member may present a different one
+locally, and doing so writes nothing.** A founder can curate what a newcomer arrives to, and
+nobody is stuck with that curation.
+
+The default is governance state. A channel's position is a `u32` set by a
+`channel-update` carrying the `SetPosition` change (§3.8), so reordering one channel costs one
+governance entry. That cost is the reason this is a *default* rather than the only order: the
+log's growth budget is for structure, not for somebody tidying their own sidebar.
+
+**The computed default order is total and identical on every node.** Channels sort ascending by
+position. **A channel that has never been given one sorts after every channel that has**, and
+ties — equal positions, or two channels that both lack one — break by `channel_id` ascending in
+byte order. Ties are not an error and MUST NOT be refused: two managers may set the same
+position concurrently and the log has no way to prevent it, so the tie-break is what keeps every
+reader's answer the same. This mirrors §2.9's treatment of concurrent pointer versions, where a
+deterministic rule beats an error nobody can act on.
+
+**Position is presentation, and readers MUST keep it that way.** It MUST NOT affect record
+validity, permission resolution, capability scope, merge order, or anything else in this
+document. Nothing may become harder or easier to do by moving a channel, because otherwise
+reordering becomes a governance act disguised as a cosmetic one.
+
+**The local override is out of this document's scope on purpose.** A client MAY present channels
+in whatever order its member chooses. That order is local state: it is carried by no entry,
+reaches no other member, and is not part of replayed state, so it is not something conformance
+can or should describe. What this section fixes is the *default* every node computes — not what
+any client displays.
+
+### 1.7 A network's name is display, not identity
+
+**Decided: a network may carry a name, as `chat:network-name` in the app-layer policy map**
+(§7, E9), set by `define-policy` holders like any other policy and therefore part of replayed
+state. Every member sees one name, and it travels with the network rather than being retyped on
+each installation.
+
+The value is UTF-8, **bounded at 128 bytes**, and a reader MUST refuse a longer one — it is
+replayed by every node and rendered in chrome, so an unbounded name is both replayed bloat and a
+denial-of-display. Like every other default in §4.3 the figure is concrete so implementations
+have something to enforce, and revisable from real use.
+
+**A name is not an identifier, and a client MUST NOT treat it as one.** Names are not unique and
+nothing makes them so: any founder may name their network anything, including exactly what
+somebody else named theirs. The network id is the identity — it is what an invite carries, what
+a channel id derives from, and what a member is actually joining. A client that let a member
+select, match or trust a network by name would have built a phishing surface, since the
+attacker's half of that trick is just typing.
+
+**A network with no name declared has no name.** Clients MUST NOT invent one. What to show
+instead — the id, or something the member wrote down locally — is a client's decision and is not
+replayed state.
+
+This key is for `server` profiles. A `conversation` network is identified by its participants
+(§1.5), so a name on one names nothing a member did not already know.
 
 ---
 
@@ -468,7 +524,7 @@ The header mirrors §3.3's deliberately. `network_id` is absent for the same rea
 | `0x03` | `channel-membership` | `action(1) ‖ identity(32)` | `chat:manage-channel:<scope>` |
 | `0x04` | `channel-rotation` | `commit_ref(32) ‖ reason` | `chat:manage-channel:<scope>` |
 
-`channel_kind` is `0x01` Text, `0x02` Voice, `0x03` Stage. `privacy` is `0x01` Public, `0x02` Private. `action` is `0x01` Add, `0x02` Remove. `change` is `0x01` Rename (`name`), `0x02` Recategorise (`category(1|33)`), `0x03` SetTopic (`topic`), `0x04` SetSlowmode (`slowmode(4)`), `0x05` Archive, `0x06` Delete. Unallocated discriminants in any of these positions are **refused**, not ignored: unlike a record kind (§3.7), a channel entry carries structure a reader either applies correctly or must not apply at all, and silently skipping one would leave two nodes with different channel state.
+`channel_kind` is `0x01` Text, `0x02` Voice, `0x03` Stage. `privacy` is `0x01` Public, `0x02` Private. `action` is `0x01` Add, `0x02` Remove. `change` is `0x01` Rename (`name`), `0x02` Recategorise (`category(1|33)`), `0x03` SetTopic (`topic`), `0x04` SetSlowmode (`slowmode(4)`), `0x05` Archive, `0x06` Delete, `0x07` SetPosition (`position(4)`, §1.6). `SetPosition` is a change rather than a field on the definition deliberately: adding it to the `0x01` body would re-encode every channel definition already written, and a position a channel has never been given is meaningful — §1.6 sorts it last rather than at zero. Unallocated discriminants in any of these positions are **refused**, not ignored: unlike a record kind (§3.7), a channel entry carries structure a reader either applies correctly or must not apply at all, and silently skipping one would leave two nodes with different channel state.
 
 **Creating is ordinary, changing is governance, and the split is deliberate.** `chat:create-channel` is Ordinary (§4.1) because a definition grants nobody access to anything — a new private channel has an empty roster until a separate `channel-membership` entry adds someone, and that entry requires the governance-tier capability. The tiering follows what an action can actually widen, not how consequential it sounds.
 
