@@ -464,7 +464,7 @@ collections, no clock read during encoding.
 
 `intranet.chat-record.v1`, `intranet.chat-segment.v1`, `intranet.chat-channel-entry.v1`,
 `intranet.chat-name-claim.v1`,
-`intranet.chat-channel-id.v1`,
+`intranet.chat-channel-id.v1`, `intranet.chat-category-id.v1`,
 `intranet.chat-conversation-id.v1`, `intranet.chat-thread-id.v1`,
 `intranet.chat-log-pointer.v1`, `intranet.chat-moderation-pointer.v1`,
 `intranet.chat-channel-key.v1`, `intranet.chat-topic.v1`,
