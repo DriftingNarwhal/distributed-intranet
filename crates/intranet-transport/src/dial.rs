@@ -92,6 +92,74 @@ pub fn is_circuit(address: &Multiaddr) -> bool {
         .any(|protocol| matches!(protocol, Protocol::P2pCircuit))
 }
 
+/// Whether the address a dial actually *starts* with is one a stranger could
+/// reach.
+///
+/// A dial begins at the first hop and no further. For a direct address that is
+/// the whole address; for a circuit address it is the relay half, because a
+/// circuit names two peers — the relay to go through, and the target beyond it
+/// — and the target's address family says nothing about whether the relay
+/// answers. So this reads up to `/p2p-circuit` and stops, which gives the right
+/// answer for both shapes without the caller having to know which it holds.
+///
+/// # Why the hop is what matters, and why this changes an ordering
+///
+/// If the first hop names an address only reachable from inside some other
+/// network, the dial cannot succeed for anyone the address was handed to.
+///
+/// That would be merely wasteful if it were independent, and it is not. Every
+/// circuit address in an invite typically names the *same* relay peer, so the
+/// attempts share a connection: once the relay-client behaviour has given up on
+/// that peer, every later circuit request through it is cancelled without being
+/// tried. A relay announcing its private container address alongside its public
+/// one therefore does not merely add a dead address — it **poisons the live
+/// one**, and the failure reads as `Response from behaviour was canceled`
+/// against the address that would have worked.
+///
+/// Observed exactly that way: a relay announced `fd12::…` and `10.140.…`
+/// beside its `/dns4/` proxy name, the two private hops were dialled first
+/// because IPv6 sorts before IPv4, and the working address was tried last
+/// against a relay the behaviour had already abandoned.
+///
+/// A name is treated as routable: `/dns4/` and `/dns6/` are how a hosted relay
+/// is normally addressed, and resolution is the transport's business rather than
+/// something to guess at from the text.
+pub fn first_hop_is_routable(address: &Multiaddr) -> bool {
+    for protocol in address.iter() {
+        match protocol {
+            // Everything before this names the relay; everything after names
+            // the peer beyond it, whose address family says nothing about
+            // whether the relay can be reached.
+            Protocol::P2pCircuit => break,
+            Protocol::Ip4(ip) => {
+                // `is_global` is unstable, so the unroutable cases are named.
+                // 100.64/10 is carrier-grade NAT, which Tailscale also uses —
+                // reachable only inside that overlay.
+                let cgnat = ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]);
+                return !(ip.is_private()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_unspecified()
+                    || cgnat);
+            }
+            Protocol::Ip6(ip) => {
+                // `fc00::/7` is a unique local address and `fe80::/10` is link
+                // local; neither has a stable predicate in `std`.
+                let segments = ip.segments();
+                let unique_local = segments[0] & 0xfe00 == 0xfc00;
+                let link_local = segments[0] & 0xffc0 == 0xfe80;
+                return !(unique_local
+                    || link_local
+                    || ip.is_loopback()
+                    || ip.is_unspecified());
+            }
+            _ => {}
+        }
+    }
+    // A name, or no IP at all: treated as routable rather than guessed at.
+    true
+}
+
 /// Orders candidate addresses into the sequence §5.2 requires.
 ///
 /// Direct IPv6 first, then direct IPv4, then circuit addresses last — so the
@@ -101,6 +169,12 @@ pub fn order_candidates(addresses: impl IntoIterator<Item = Multiaddr>) -> Vec<M
     let mut candidates: Vec<Multiaddr> = addresses.into_iter().collect();
     candidates.sort_by_key(|address| {
         let circuit = u8::from(is_circuit(address));
+        // Among circuits, a relay hop nobody outside its own network can reach
+        // goes last. Not merely to save a failed dial: circuit attempts through
+        // one relay peer share a connection, so a dead hop tried first cancels
+        // the live one behind it (`first_hop_is_routable`). Zero for direct
+        // addresses, which have no relay hop and are ordered by family alone.
+        let unroutable = u8::from(circuit == 1 && !first_hop_is_routable(address));
         let family = match family_of(address) {
             Some(AddressFamily::Ipv6) => 0u8,
             Some(AddressFamily::Ipv4) => 1,
@@ -108,7 +182,7 @@ pub fn order_candidates(addresses: impl IntoIterator<Item = Multiaddr>) -> Vec<M
         };
         // Circuit dominates: a circuit address is always attempted after every
         // direct one, whatever family it reaches the relay over.
-        (circuit, family)
+        (circuit, unroutable, family)
     });
     candidates
 }
@@ -119,6 +193,58 @@ mod tests {
 
     fn addr(s: &str) -> Multiaddr {
         s.parse().expect("valid multiaddr")
+    }
+
+    #[test]
+    fn a_relay_that_cannot_be_reached_is_tried_after_one_that_can() {
+        // Taken from a real invite, in the order it carried them. A relay
+        // deployed behind a proxy announced its private container addresses
+        // beside its public name; those sort first by family, and because every
+        // circuit here names the *same* relay peer, the dead hops cancelled the
+        // live one behind them — the failure arrived as `Response from behaviour
+        // was canceled` against the address that would have worked.
+        let ordered = order_candidates([
+            addr("/ip6/fd12:a6a1:7ec6:1::9867/udp/4001/quic-v1/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
+            addr("/ip4/10.140.152.103/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
+            addr("/dns4/switchback.proxy.rlwy.net/tcp/55503/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
+        ]);
+
+        assert!(
+            ordered[0].to_string().contains("switchback"),
+            "the reachable relay must be dialled first, got {ordered:?}"
+        );
+    }
+
+    #[test]
+    fn a_relay_hop_is_judged_on_the_relay_and_not_on_the_peer_beyond_it() {
+        // The half after `/p2p-circuit` is the target, whose address family says
+        // nothing about whether the relay can be reached. Judging the whole
+        // string would classify by whichever IP appeared first.
+        assert!(first_hop_is_routable(&addr(
+            "/dns4/relay.example/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"
+        )));
+        assert!(!first_hop_is_routable(&addr(
+            "/ip4/10.140.152.103/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"
+        )));
+        // Tailscale's overlay, which is reachable only inside it.
+        assert!(!first_hop_is_routable(&addr(
+            "/ip4/100.101.152.117/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"
+        )));
+        assert!(!first_hop_is_routable(&addr(
+            "/ip6/fd7a:115c:a1e0::4b36/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"
+        )));
+        assert!(first_hop_is_routable(&addr(
+            "/ip6/2600:1700:a825:4800::3f/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"
+        )));
+    }
+
+    #[test]
+    fn a_lan_relay_is_still_dialled_when_it_is_the_only_one() {
+        // Ordering demotes an unreachable hop; it never drops one. A network
+        // whose only relay is a member on the same LAN still reaches it, which
+        // is the case this must not break.
+        let only = addr("/ip4/192.168.1.5/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit");
+        assert_eq!(order_candidates([only.clone()]), vec![only]);
     }
 
     #[test]
