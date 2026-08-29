@@ -40,7 +40,15 @@ const REQUEST_DOMAIN: &str = "intranet.wire.join-request.v1";
 /// Domain tag for a response on the wire.
 const RESPONSE_DOMAIN: &str = "intranet.wire.join-response.v1";
 /// Domain tag for an invite carried on its own — §5.6.
-const INVITE_DOMAIN: &str = "intranet.invite.v1";
+///
+/// `v2` because the addresses are now framed with their shared ending factored
+/// out (`put_addresses`), and `wire.` because this names the *framing*: the
+/// identically-spelled tag it used to carry belongs to the signing payload in
+/// [`crate::Invite`], and two different things answering to one tag is exactly
+/// what domain separation exists to prevent. An older invite now fails to
+/// decode with a domain mismatch, which says what happened, rather than as
+/// malformed bytes, which does not.
+const INVITE_DOMAIN: &str = "intranet.wire.invite.v2";
 
 /// The most bootstrap addresses an invite on the wire may carry.
 ///
@@ -318,9 +326,7 @@ pub fn decode_invite(bytes: &[u8]) -> Result<Invite, WireError> {
 
 fn put_invite(e: &mut Enc, invite: &Invite) {
     invite.network.encode(e);
-    e.seq(invite.bootstrap_addresses.iter(), |e, address| {
-        e.str(address);
-    });
+    put_addresses(e, &invite.bootstrap_addresses);
     invite.issuer.encode(e);
     match invite.subject {
         InviteSubject::Bearer => {
@@ -339,24 +345,7 @@ fn put_invite(e: &mut Enc, invite: &Invite) {
 
 fn get_invite(d: &mut Dec<'_>) -> Result<Invite, WireError> {
     let network = NetworkId::from_bytes(d.fixed::<32>()?);
-    let bootstrap_addresses = d.seq::<_, WireError>(|d| {
-        let address = d.str()?;
-        if address.len() > MAX_ADDRESS_BYTES {
-            return Err(WireError::TooLarge {
-                what: "bootstrap address",
-                got: address.len(),
-                limit: MAX_ADDRESS_BYTES,
-            });
-        }
-        Ok(address.to_owned())
-    })?;
-    if bootstrap_addresses.len() > MAX_BOOTSTRAP_ADDRESSES {
-        return Err(WireError::TooLarge {
-            what: "bootstrap addresses",
-            got: bootstrap_addresses.len(),
-            limit: MAX_BOOTSTRAP_ADDRESSES,
-        });
-    }
+    let bootstrap_addresses = get_addresses(d)?;
     let issuer = get_identity(d)?;
     let subject = match d.variant()? {
         0 => InviteSubject::Bearer,
@@ -378,6 +367,103 @@ fn get_invite(d: &mut Dec<'_>) -> Result<Invite, WireError> {
         max_uses: d.u32()?,
         signature: Signature::from_bytes(d.fixed::<64>()?),
     })
+}
+
+/// Writes the bootstrap addresses, with the ending they share written once.
+///
+/// # Why an encoding bothers about size at all
+///
+/// Because §5.6 makes this credential *out of band*: pasted into a message, put
+/// behind a link, read off a screen. An invite too long to paste has failed the
+/// job the section gives it, and every framing byte here is multiplied by 8/5
+/// on its way through base32 into a URI.
+///
+/// The addresses in one invite all name the same node, so they all end in the
+/// same `/p2p/<peer id>` — fifty-odd characters repeated once per address, and
+/// on a real machine more than half of everything this field carried. This
+/// encoder does not know that, and deliberately does not: it takes the longest
+/// string every address ends with and writes it once. That is a fact about
+/// these strings rather than about multiaddrs, which is what keeps this crate
+/// free of any notion of what an address *means* (see `Invite`).
+///
+/// Two shapes were measured against this one. A shared table of `/`-separated
+/// components dedupes more in principle and comes out **larger** in practice,
+/// because `Enc` frames every length with a fixed eight-byte `u64`: the table's
+/// prefixes and the per-address index lists cost more than the repetition they
+/// remove. Compressing the whole encoding would need a dependency, a bound
+/// against a decompression bomb, and a size that varies with the data. This
+/// costs one string and one subtraction, and it is bounded by construction —
+/// nothing here can decode to more than what was encoded.
+///
+/// Not what is signed. [`Invite`]'s signature covers its own payload, in which
+/// the addresses appear whole, so this changes the URI and nothing about what a
+/// receiving node verifies.
+fn put_addresses(e: &mut Enc, addresses: &[String]) {
+    let suffix = common_suffix(addresses);
+    e.str(suffix);
+    e.seq(addresses.iter(), |e, address| {
+        e.str(&address[..address.len() - suffix.len()]);
+    });
+}
+
+/// Reads the bootstrap addresses back, re-joining each to the shared ending.
+///
+/// The bounds are checked against the address as *reconstructed*, because that
+/// is the string the rest of the system will hold — a limit applied to the
+/// encoded halves would let a long shared ending past a check it was meant to
+/// fail.
+fn get_addresses(d: &mut Dec<'_>) -> Result<Vec<String>, WireError> {
+    let suffix = d.str()?;
+    let addresses = d.seq::<_, WireError>(|d| {
+        let head = d.str()?;
+        let length = head.len() + suffix.len();
+        if length > MAX_ADDRESS_BYTES {
+            return Err(WireError::TooLarge {
+                what: "bootstrap address",
+                got: length,
+                limit: MAX_ADDRESS_BYTES,
+            });
+        }
+        Ok(format!("{head}{suffix}"))
+    })?;
+    if addresses.len() > MAX_BOOTSTRAP_ADDRESSES {
+        return Err(WireError::TooLarge {
+            what: "bootstrap addresses",
+            got: addresses.len(),
+            limit: MAX_BOOTSTRAP_ADDRESSES,
+        });
+    }
+    Ok(addresses)
+}
+
+/// The longest string every one of these ends with.
+///
+/// Measured in bytes and then backed off to a boundary every address agrees on,
+/// so that slicing here cannot split a character. Multiaddrs are ASCII and this
+/// would not arise from one, but the field is `Vec<String>` and the invariant
+/// belongs where the slicing happens rather than in an assumption about what
+/// callers put in it.
+fn common_suffix(addresses: &[String]) -> &str {
+    let Some(first) = addresses.first() else {
+        return "";
+    };
+    let mut length = addresses[1..].iter().fold(first.len(), |shortest, address| {
+        let shared = first
+            .bytes()
+            .rev()
+            .zip(address.bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        shortest.min(shared)
+    });
+    while length > 0
+        && !addresses
+            .iter()
+            .all(|address| address.is_char_boundary(address.len() - length))
+    {
+        length -= 1;
+    }
+    &first[first.len() - length..]
 }
 
 fn get_identity(d: &mut Dec<'_>) -> Result<PerNetworkIdentityId, WireError> {
@@ -508,5 +594,128 @@ mod tests {
             JoinRequest::decode(&request.encode()),
             Err(WireError::TooLarge { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod address_encoding_tests {
+    use super::*;
+
+    /// Round-trips a set of addresses through the invite encoding alone.
+    fn round_trip(addresses: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = addresses.iter().map(|a| (*a).to_owned()).collect();
+        let mut e = Enc::new();
+        put_addresses(&mut e, &owned);
+        let bytes = e.finish();
+        let mut d = Dec::new(&bytes);
+        let back = get_addresses(&mut d).expect("decodes");
+        d.finish().expect("nothing left over");
+        back
+    }
+
+    #[test]
+    fn addresses_come_back_exactly_as_they_went_in() {
+        // The ordinary case: one node's addresses, all ending in its peer id.
+        let addresses = [
+            "/ip6/2600:1700:a825:4800::3f/tcp/65343/p2p/12D3KooWMHZbUfFYuqe6Nx",
+            "/ip4/192.168.1.200/udp/65343/quic-v1/p2p/12D3KooWMHZbUfFYuqe6Nx",
+            "/dns4/relay.example/tcp/4001/p2p/12D3KooWAT1R2Jjc/p2p-circuit/p2p/12D3KooWMHZbUfFYuqe6Nx",
+        ];
+        assert_eq!(round_trip(&addresses), addresses);
+    }
+
+    #[test]
+    fn addresses_sharing_no_ending_still_round_trip() {
+        // Nothing in common, so the shared ending is empty and this degenerates
+        // to what it replaced. The saving is the point; the correctness is not
+        // allowed to depend on there being one.
+        let addresses = ["/ip4/203.0.113.7/tcp/1", "/ip4/203.0.113.8/tcp/2"];
+        assert_eq!(round_trip(&addresses), addresses);
+    }
+
+    #[test]
+    fn one_address_round_trips_even_though_it_is_entirely_its_own_ending() {
+        // The degenerate case: the shared ending is the whole string and the
+        // remainder is empty, which the decoder must rejoin to the same address
+        // rather than to nothing.
+        assert_eq!(round_trip(&["/ip4/203.0.113.7/tcp/1"]), ["/ip4/203.0.113.7/tcp/1"]);
+        assert!(round_trip(&[]).is_empty());
+    }
+
+    #[test]
+    fn one_address_being_the_ending_of_another_does_not_lose_it() {
+        // The shared ending is the whole of the shorter address, so its own
+        // remainder is empty while the longer one's is not. An encoder that
+        // treated an empty remainder as absent would drop an address here.
+        let addresses = ["/tcp/1/p2p/abc", "/ip4/203.0.113.7/tcp/1/p2p/abc"];
+        assert_eq!(round_trip(&addresses), addresses);
+        assert_eq!(round_trip(&["", "x"]), ["", "x"]);
+    }
+
+    #[test]
+    fn a_shared_ending_is_never_cut_through_a_character() {
+        // The field is `Vec<String>`, so nothing stops a caller putting
+        // multi-byte text in it. These two share the trailing bytes of `é`
+        // without sharing the character, and slicing on the byte count would
+        // panic rather than produce a wrong answer — which is why this is a
+        // test and not a comment.
+        let addresses = ["/dns4/café", "/dns4/caf\u{fa9}"];
+        assert_eq!(round_trip(&addresses), addresses);
+    }
+
+    #[test]
+    fn the_limit_is_checked_against_the_address_a_joiner_would_hold() {
+        // A short remainder and a long shared ending: the halves are each well
+        // inside the bound and the address they rejoin to is not. Checking the
+        // encoded halves would let this through.
+        let ending = "x".repeat(MAX_ADDRESS_BYTES);
+        let mut e = Enc::new();
+        put_addresses(&mut e, &[format!("/a{ending}"), format!("/b{ending}")]);
+        let bytes = e.finish();
+
+        let refusal = get_addresses(&mut Dec::new(&bytes)).expect_err("must be refused");
+        assert!(
+            matches!(refusal, WireError::TooLarge { what: "bootstrap address", .. }),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn factoring_the_peer_id_out_roughly_halves_what_the_addresses_cost() {
+        // The measurement that prompted this, on the nine addresses a real
+        // machine's invite carries after `kols-node` selects them.
+        const ME: &str = "12D3KooWMHZbUfFYuqe6NxXBFSg3aLzfTSa1B5QKGNKwMrWz5FaD";
+        let addresses: Vec<String> = [
+            "/ip6/2600:1700:a825:4800::3f/tcp/65343",
+            "/ip6/2600:1700:a825:4800::3f/udp/65343/quic-v1",
+            "/ip6/2600:1700:a825:4800:634c:8370:a381:9f64/tcp/65343",
+            "/ip6/2600:1700:a825:4800:634c:8370:a381:9f64/udp/65343/quic-v1",
+            "/ip6/2600:1700:a825:4800:d46f:a0b3:57f5:bbc7/tcp/65343",
+            "/ip6/2600:1700:a825:4800:d46f:a0b3:57f5:bbc7/udp/65343/quic-v1",
+            "/dns4/switchback.proxy.rlwy.net/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit",
+            "/ip4/192.168.1.200/tcp/65343",
+            "/ip4/192.168.1.200/udp/65343/quic-v1",
+        ]
+        .iter()
+        .map(|a| format!("{a}/p2p/{ME}"))
+        .collect();
+
+        let mut factored = Enc::new();
+        put_addresses(&mut factored, &addresses);
+        let mut whole = Enc::new();
+        whole.seq(addresses.iter(), |e, address| {
+            e.str(address);
+        });
+
+        // 1,082 bytes to 634 when this was written. Not half, and the reason
+        // is the floor under any scheme here: `Enc` spends a fixed eight-byte
+        // `u64` framing every length, so nine addresses cost 72 bytes before a
+        // single character of address is written. What is left after factoring
+        // is mostly addresses.
+        let (after, before) = (factored.finish().len(), whole.finish().len());
+        assert!(
+            after * 3 < before * 2,
+            "expected the addresses to cost at least a third less; {before} -> {after}"
+        );
     }
 }
