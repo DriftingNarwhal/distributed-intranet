@@ -704,7 +704,28 @@ impl LogEntry {
     }
 
     /// Whether this entry counts toward fork-choice branch length.
+    ///
+    /// Asked of the whole entry rather than of the body, because one case turns
+    /// on who signed it. **A `MembershipChange` removing its own author needs no
+    /// capability (§2.5.1), so it must not carry branch weight** — §2.7.1 point
+    /// 2 excludes device certificates *and any other entry type that similarly
+    /// requires no capability to produce*, and this is now such a type.
+    ///
+    /// Counting it would reopen the grinding hole that correction exists to
+    /// close, and by an unusually cheap route: under `admission: auto` (§2.4) a
+    /// multi-use invite lets an attacker mint identities freely, and each one
+    /// could then leave every group it was in, turning free entries into branch
+    /// weight. The body alone cannot see this — it holds the identity being
+    /// removed and not the signer — which is why the question is answered here.
     pub fn is_capability_gated(&self) -> bool {
+        if let EntryBody::MembershipChange {
+            identity,
+            action: MembershipAction::Remove { .. },
+            ..
+        } = &self.body
+        {
+            return identity != &self.author;
+        }
         self.body.is_capability_gated()
     }
 

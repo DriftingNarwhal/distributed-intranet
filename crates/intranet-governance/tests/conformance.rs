@@ -695,6 +695,154 @@ fn opt_in_cascade_removes_downstream_memberships_recursively() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Self-removal — leaving a network (§2.5.1)
+// ---------------------------------------------------------------------------
+
+/// A founder, plus two ordinary members of `everyone` holding no capability
+/// beyond what `everyone` itself grants.
+fn departure_fixture() -> (Vec<LogEntry>, PerNetworkIdentity, PerNetworkIdentity) {
+    let founder = identity(1);
+    let leaver = identity(2);
+    let other = identity(3);
+
+    let mut chain = vec![genesis(&founder)];
+    append(&mut chain, &founder, at(10), add_to("everyone", &leaver));
+    append(&mut chain, &founder, at(11), add_to("everyone", &other));
+
+    (chain, leaver, other)
+}
+
+#[test]
+fn a_member_holding_no_capability_may_remove_themselves() {
+    let (mut chain, leaver, _other) = departure_fixture();
+
+    // Nothing is held here beyond `everyone`'s own ceiling: no
+    // `manage-membership`, and certainly no `revoke-node`. Before §2.5.1 this
+    // was the whole problem — the one member who knows they are leaving was the
+    // one member who could not record it.
+    let before = GovernanceState::replay(&chain).unwrap();
+    assert!(!before.identity_holds(&leaver.id(), &Capability::RevokeNode));
+    assert!(!before.identity_holds(
+        &leaver.id(),
+        &Capability::manage_membership(GroupId::everyone().as_str())
+    ));
+
+    append(&mut chain, &leaver, at(20), remove_from("everyone", &leaver, None));
+
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(
+        !state.is_member(&leaver.id()),
+        "a member who removed themselves from every group they were in is no longer a member"
+    );
+}
+
+#[test]
+fn leaving_a_role_does_not_need_the_capability_to_manage_it() {
+    let founder = identity(1);
+    let leaver = identity(2);
+
+    let mut chain = vec![genesis(&founder)];
+    append(&mut chain, &founder, at(10), define_group("crew", [Capability::ReadContent]));
+    append(&mut chain, &founder, at(11), add_to("everyone", &leaver));
+    append(&mut chain, &founder, at(12), add_to("crew", &leaver));
+
+    // Stepping out of one role, while staying in the network. Membership of
+    // `everyone` is what gives standing to append at all, and it survives.
+    append(&mut chain, &leaver, at(20), remove_from("crew", &leaver, None));
+
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(!state.groups[&GroupId::new("crew")].contains(&leaver.id()));
+    assert!(state.is_member(&leaver.id()));
+}
+
+#[test]
+fn the_same_entry_removing_somebody_else_is_still_refused() {
+    let (chain, leaver, other) = departure_fixture();
+
+    // The rule is self-directedness and nothing else. An identical body naming
+    // a different identity is the capability-gated removal it always was, so
+    // §2.5.1 opens no route to ejecting anybody.
+    let parent = chain.last().map(LogEntry::hash);
+    let entry = LogEntry::create(&leaver, parent, at(20), remove_from("everyone", &other, None));
+
+    let state = GovernanceState::replay(&chain).unwrap();
+    let refusal = state.apply(&entry).unwrap_err();
+    assert!(
+        matches!(refusal, GovernanceError::Unauthorized { .. }),
+        "removing another member without `manage-membership` must still be refused, got {refusal:?}"
+    );
+}
+
+#[test]
+fn a_departure_carries_no_fork_choice_weight() {
+    let (chain, leaver, other) = departure_fixture();
+    let parent = chain.last().map(LogEntry::hash);
+    let founder = identity(1);
+
+    // §2.7.1 point 2 excludes entries that need no capability to produce, and a
+    // departure is now one. Counting it would be cheap weight to grind: under
+    // `admission: auto` an attacker mints identities freely, and each could then
+    // leave every group it was in.
+    let departure = LogEntry::create(&leaver, parent, at(20), remove_from("everyone", &leaver, None));
+    assert!(!departure.is_capability_gated());
+
+    // The same removal by somebody with the capability is an ordinary
+    // governance action and still counts, so the exclusion is as narrow as the
+    // rule that produced it.
+    let ejection = LogEntry::create(&founder, parent, at(20), remove_from("everyone", &other, None));
+    assert!(ejection.is_capability_gated());
+}
+
+#[test]
+fn a_departure_records_and_does_not_itself_rotate() {
+    let (mut chain, leaver, _other) = departure_fixture();
+    append(&mut chain, &leaver, at(20), remove_from("everyone", &leaver, None));
+
+    let state = GovernanceState::replay(&chain).unwrap();
+
+    // Leaving is not a licence to rotate. `MemberRevoked` stays `revoke-node`'s
+    // to trigger, or a multi-use invite under `admission: auto` would let one
+    // attacker force a real rotation and a replayed entry per join-and-leave.
+    // The next rotation excludes the departed member; a `revoke-node` holder may
+    // rotate on seeing this entry, and nothing here does it for them.
+    let rotation = LogEntry::create(
+        &leaver,
+        chain.last().map(LogEntry::hash),
+        at(21),
+        EntryBody::EpochRotation {
+            reason: RotationReason::MemberRevoked,
+            commit: Vec::new(),
+        },
+    );
+    assert!(matches!(
+        state.apply(&rotation).unwrap_err(),
+        GovernanceError::Unauthorized { .. }
+    ));
+}
+
+#[test]
+fn a_stranger_cannot_leave_a_network_they_were_never_in() {
+    let (chain, _leaver, _other) = departure_fixture();
+    let stranger = identity(9);
+
+    // Membership is the floor for appending anything, the same one
+    // `SelfInitiated` rotation and vote proposal stand on. Without it the rule
+    // would let any keypair in the world write entries into this log.
+    let entry = LogEntry::create(
+        &stranger,
+        chain.last().map(LogEntry::hash),
+        at(20),
+        remove_from("everyone", &stranger, None),
+    );
+
+    let state = GovernanceState::replay(&chain).unwrap();
+    assert!(matches!(
+        state.apply(&entry).unwrap_err(),
+        GovernanceError::NotAMember { .. }
+    ));
+}
+
 #[test]
 fn windowed_cascade_only_unwinds_recent_additions() {
     // The compromised-account case: undo what the attacker did in the last N

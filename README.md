@@ -104,17 +104,17 @@ Three shapes, in rough order of how most consumers would use it:
 ## Status
 
 **Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **666 tests, clippy clean.**
+and every layer is reachable over the network. **672 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
-| 01 Core protocol — identity, governance, epoch keying, transport | Implemented |
+| 01 Core protocol — identity, governance, epoch keying, transport | Implemented, including §2.5.1's self-removal — a membership removal naming its own author needs no capability, and carries no fork-choice weight |
 | 02 Storage & replication | Implemented |
 | 03 App hosting — name registry, manifests, publishing policy | Implemented; execution sandbox is an embedder concern, see below |
 | 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
-| 06 Reference test harness | CLI implemented; NAT matrix at §2.3's six scenarios, **all 6 passing**, including IPv6 at tier 1 and two that assert no connection |
-| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks ten amendments of the platform, six of them landed — see its §7. The four outstanding are E10 and E13 (direct messages), E15 (spec text) and **E16**, which blocks leaving a network at all |
+| 06 Reference test harness | CLI implemented; NAT matrix at §2.3's six scenarios, **all 6 passing**, including IPv6 at tier 1 and two that assert no connection. `governance grinding-check` pads a losing branch with either capability-free entry type and asserts it still loses |
+| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks ten amendments of the platform, seven of them landed — see its §7. The three outstanding are E10 and E13 (direct messages) and E15 (spec text) |
 
 ### Two things to know before you build on it
 

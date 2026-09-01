@@ -1,7 +1,7 @@
 //! Governance subcommands — Core Protocol Spec §2.7.
 
 use super::{CliResult, parse_network, resolve_identity};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use intranet_crypto::Timestamp;
 use intranet_governance::{
     Capability, EntryBody, GovernanceLog, GovernanceState, LogEntry, NetworkPolicy,
@@ -35,13 +35,32 @@ pub enum GovernanceCommand {
 
     /// Demonstrate that capability-free entries cannot grind a branch.
     ///
-    /// Builds a fork where the losing side is padded with device enrollments
-    /// and confirms the branch with more *capability-gated* actions still wins.
+    /// Builds a fork where the losing side is padded with entries that need no
+    /// capability, and confirms the branch with more *capability-gated* actions
+    /// still wins (§2.7.1, point 2).
     GrindingCheck {
         /// How many capability-free entries to pad the losing branch with.
         #[arg(long, default_value_t = 20)]
         padding: u32,
+        /// Which capability-free entry to pad with.
+        #[arg(long, value_enum, default_value_t = Padding::DeviceCertificates)]
+        with: Padding,
     },
+}
+
+/// The capability-free entry types §2.7.1 point 2 excludes from branch length.
+///
+/// Both are worth running. They fail differently if the exclusion is wrong:
+/// device certificates were the original hole and need only a master seed,
+/// while a departure needs the attacker to be a member first — which under
+/// §2.4's automatic admission costs an invite redemption and nothing else,
+/// making it the cheaper of the two to mint at scale.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Padding {
+    /// Device enrollments — §1.3, and the entry that produced the correction.
+    DeviceCertificates,
+    /// Self-removals — §2.5.1, one per group the attacker was put in.
+    Departures,
 }
 
 impl GovernanceCommand {
@@ -89,7 +108,7 @@ impl GovernanceCommand {
                 Ok(())
             }
 
-            Self::GrindingCheck { padding } => {
+            Self::GrindingCheck { padding, with } => {
                 let network = parse_network("1")?;
                 let founder = resolve_identity(None, Some(1), &network)?;
                 let attacker = resolve_identity(None, Some(2), &network)?;
@@ -117,7 +136,44 @@ impl GovernanceCommand {
                         action: intranet_governance::MembershipAction::Add { via_invite: None },
                     },
                 );
-                let fork_point = log.insert(setup).map_err(|e| e.to_string())?;
+                let mut fork_point = log.insert(setup).map_err(|e| e.to_string())?;
+
+                // Departure padding needs somewhere to depart *from*: a
+                // self-removal is only free once, per group. Putting the
+                // attacker in `padding` groups before the fork is the harness's
+                // stand-in for what `admission: auto` gives an attacker for
+                // free — a supply of memberships each of which can be dropped
+                // without holding anything. These are capability-gated and sit
+                // *before* the fork, so they are in the shared prefix and count
+                // for neither branch.
+                if with == Padding::Departures {
+                    for i in 0..padding {
+                        let group = intranet_governance::GroupId::new(format!("grind{i}"));
+                        for body in [
+                            EntryBody::DefineGroup {
+                                group: group.clone(),
+                                capabilities: intranet_governance::CapabilitySet::explicit([
+                                    Capability::ReadContent,
+                                ]),
+                            },
+                            EntryBody::MembershipChange {
+                                group: group.clone(),
+                                identity: attacker.id(),
+                                action: intranet_governance::MembershipAction::Add {
+                                    via_invite: None,
+                                },
+                            },
+                        ] {
+                            let entry = LogEntry::create(
+                                &founder,
+                                Some(fork_point),
+                                Timestamp::from_millis(6),
+                                body,
+                            );
+                            fork_point = log.insert(entry).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
 
                 // Honest branch: two genuine capability-gated actions.
                 let mut parent = fork_point;
@@ -141,27 +197,38 @@ impl GovernanceCommand {
                 // Attacker branch: capability-free padding.
                 let mut parent = fork_point;
                 for i in 0..padding {
-                    let device_seed = intranet_identity::DeviceSeed::from_entropy([
-                        (100 + i % 100) as u8;
-                        32
-                    ]);
-                    let key = device_seed
-                        .key_for(&network)
-                        .map_err(|e| e.to_string())?;
-                    let device = intranet_identity::DevicePublicKey::from_verifying_key(
-                        *key.id().verifying_key(),
-                    );
-                    let certificate = intranet_identity::DeviceCertificate::issue(
-                        &attacker,
-                        device,
-                        format!("grind{i}"),
-                        Timestamp::from_millis(100 + i64::from(i)),
-                    );
+                    let body = match with {
+                        Padding::DeviceCertificates => {
+                            let device_seed = intranet_identity::DeviceSeed::from_entropy([
+                                (100 + i % 100) as u8;
+                                32
+                            ]);
+                            let key = device_seed
+                                .key_for(&network)
+                                .map_err(|e| e.to_string())?;
+                            let device = intranet_identity::DevicePublicKey::from_verifying_key(
+                                *key.id().verifying_key(),
+                            );
+                            EntryBody::DeviceEnrollment(intranet_identity::DeviceCertificate::issue(
+                                &attacker,
+                                device,
+                                format!("grind{i}"),
+                                Timestamp::from_millis(100 + i64::from(i)),
+                            ))
+                        }
+                        // Leaving is signed by the leaver and names nobody else,
+                        // so the attacker mints these entirely on their own.
+                        Padding::Departures => EntryBody::MembershipChange {
+                            group: intranet_governance::GroupId::new(format!("grind{i}")),
+                            identity: attacker.id(),
+                            action: intranet_governance::MembershipAction::Remove { cascade: None },
+                        },
+                    };
                     let entry = LogEntry::create(
                         &attacker,
                         Some(parent),
                         Timestamp::from_millis(100 + i64::from(i)),
-                        EntryBody::DeviceEnrollment(certificate),
+                        body,
                     );
                     parent = log.insert(entry).map_err(|e| e.to_string())?;
                 }
@@ -170,7 +237,7 @@ impl GovernanceCommand {
                 let tip = canonical.last().copied();
 
                 println!("honest-branch:   2 capability-gated actions");
-                println!("attacker-branch: {padding} capability-free entries");
+                println!("attacker-branch: {padding} capability-free entries ({with:?})");
                 println!("canonical-tip:   {}", tip.map(|h| h.to_string()).unwrap_or_default());
 
                 if tip == Some(honest_tip) {

@@ -431,13 +431,49 @@ impl GovernanceState {
                     Capability::extension(REGISTER_APP_NAME)
                 }
             }
-            EntryBody::MembershipChange { group, action, .. } => {
+            EntryBody::MembershipChange {
+                group,
+                identity,
+                action,
+            } => {
                 // The target group must exist before its membership can be
                 // managed, and refusing an unknown group here is what stops a
                 // capability being demanded for a group whose tier cannot be
                 // resolved.
                 if !self.groups.contains_key(group) {
                     return Err(GovernanceError::UnknownGroup(group.clone()));
+                }
+
+                // §2.5.1: a removal naming its own author needs no capability.
+                //
+                // Every other membership change is something done *to* a
+                // member, so gating them on `manage-membership` is right. This
+                // one is not, and the gate made the one member who knows they
+                // are leaving the one member who could not say so —
+                // `manage-membership:<group>` is precisely what a departing
+                // ordinary member does not hold.
+                //
+                // Safe for a reason worth stating as a rule rather than as a
+                // special case: the entry is **monotone downward and
+                // self-directed**. It grants nothing, it names nobody but its
+                // signer, and the signature proving the entry is the same one
+                // proving the identity it removes. There is no version of it
+                // that escalates and no version of it that touches another
+                // member, which is what makes it a different object from the
+                // capability-gated `MembershipChange` beside it rather than a
+                // hole in that gate.
+                //
+                // Membership is still required, matching `SelfInitiated`
+                // rotation and vote proposal above: a non-member has no
+                // standing to append to this log at all. Whether the author is
+                // in the group they are leaving is `mutate`'s question, and it
+                // answers with `NotInGroup`.
+                if matches!(action, MembershipAction::Remove { .. }) && identity == author {
+                    return if self.is_member(author) {
+                        Ok(())
+                    } else {
+                        Err(GovernanceError::not_a_member(author))
+                    };
                 }
 
                 // Under member-vote policy, admission is decided by the
