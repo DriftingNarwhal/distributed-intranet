@@ -5,12 +5,16 @@ cross-reference each other extensively.
 
 specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
 consuming the platform rather than defining it. Read it only when working on something it
-touches — but do read its §7, which lists the nine amendments it asks of the platform, two
+touches — but do read its §7, which lists the ten amendments it asks of the platform, two
 of which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). Six are implemented — E2, E4, E9, E11, E12 and E14 — and E10, E13 and
-E15 are not. E13 is load-bearing rather than convenient: every direct message is its own
-network and a relay is never shared between two of them (§7, and the client's D29), so
-without cross-network bootstrap two NATed people cannot converse at all.
+map in NetworkPolicy). Six are implemented — E2, E4, E9, E11, E12 and E14 — and E10, E13, E15
+and E16 are not. **E16 is small and blocks a whole verb**: a member cannot record their own
+departure, because every membership change is gated on `revoke-node` and the one member who
+knows they are leaving is the one who cannot say so. The rule it asks for is that a
+`MembershipChange` removing the entry's own author needs no capability. E13 is load-bearing
+rather than convenient: every direct message is its own network and a relay is never shared
+between two of them (§7, and the client's D29), so without cross-network bootstrap two NATed
+people cannot converse at all.
 Treat them as authoritative; if an implementation choice isn't covered by them, flag it
 rather than guessing.
 

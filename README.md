@@ -104,7 +104,7 @@ Three shapes, in rough order of how most consumers would use it:
 ## Status
 
 **Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **656 tests, clippy clean.**
+and every layer is reachable over the network. **666 tests, clippy clean.**
 
 | Spec | Status |
 |---|---|
@@ -114,7 +114,7 @@ and every layer is reachable over the network. **656 tests, clippy clean.**
 | 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT matrix at §2.3's six scenarios, **all 6 passing**, including IPv6 at tier 1 and two that assert no connection |
-| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks nine amendments of the platform, six of them landed — see its §7 |
+| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks ten amendments of the platform, six of them landed — see its §7. The four outstanding are E10 and E13 (direct messages), E15 (spec text) and **E16**, which blocks leaving a network at all |
 
 ### Two things to know before you build on it
 
