@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -914,10 +914,21 @@ tiering itself stays in the client and is not requested here.
 
 ## 9. Explicitly Open Questions
 
-1. **Moderation authority must be evaluated as of a cited governance head** (§2.7), which
-   needs the log rather than one replayed state. An implementation answering from current
-   state retroactively invalidates a demoted moderator's past redactions — the reference
-   implementation currently does exactly that and flags it.
+1. ~~**Moderation authority must be evaluated as of a cited governance head.**~~ **Closed
+   2026-09-07: the reference implementation now does this.** §2.7 always required it; what
+   was open was that the implementation answered from current state and said so. It no
+   longer does — authority is resolved by replaying to the head each redaction cites, with
+   replayed states memoised per head so a busy moderated channel does not replay once per
+   record.
+
+   Two things are worth carrying into any other implementation of this section. **The
+   property has two halves and they must be asserted together**: a demotion has to stop new
+   redactions *and* leave past ones standing, because an implementation that simply stopped
+   re-checking would satisfy the second and fail the first, which is the same defect facing
+   the other way. And **a head the reader cannot replay fails closed toward the message
+   staying visible** — an unverifiable claim does not get to remove content — so a node that
+   has not yet synced the cited head renders a message another member has already had
+   hidden, converging when it catches up, exactly as Storage §5.4 describes for serving.
 2. **Governance log growth from channel structure** at very large channel counts. Nothing
    per message, per thread or per direct message enters the log, so structure is the only
    contributor; checkpointed replay (Core §2.7) is the mitigation if measurement ever
