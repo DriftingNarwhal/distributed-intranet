@@ -86,9 +86,25 @@ pub fn split(plaintext: &[u8], spec: ChunkSpec) -> Vec<&[u8]> {
     if plaintext.len() <= spec.target as usize {
         return vec![plaintext];
     }
+    cut(plaintext, spec)
+}
 
-    fastcdc::v2020::FastCDC::new(plaintext, spec.min as usize, spec.target as usize, spec.max as usize)
-        .map(|chunk| &plaintext[chunk.offset..chunk.offset + chunk.length])
+/// Splits a region that is known to be past the small-content exemption.
+///
+/// # Why this is separate from [`split`]
+///
+/// The exemption is a property of the **whole object**, not of a region within
+/// one: content at or below the target is one chunk because there is nothing to
+/// gain from chunking it. Applied to a region, it would answer a different
+/// question — "is what remains small" rather than "is the object small" — and
+/// produce boundaries the whole-object run would not.
+///
+/// This exists for [`crate::AppendOnlyObject`], which chunks the tail of an
+/// object whose earlier boundaries are already settled, and must reach exactly
+/// the boundaries a whole-object run reaches.
+pub(crate) fn cut(region: &[u8], spec: ChunkSpec) -> Vec<&[u8]> {
+    fastcdc::v2020::FastCDC::new(region, spec.min as usize, spec.target as usize, spec.max as usize)
+        .map(|chunk| &region[chunk.offset..chunk.offset + chunk.length])
         .collect()
 }
 

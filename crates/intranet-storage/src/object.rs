@@ -206,6 +206,156 @@ pub fn encode(plaintext: &[u8], dek: &Dek, spec: ChunkSpec) -> EncodedObject {
     }
 }
 
+/// An object that is only ever appended to, chunked without redoing the rest.
+///
+/// # Why this exists
+///
+/// [`encode`] chunks, encrypts and hashes the whole plaintext. For an object
+/// that grows by appending — a log, a chain of records, anything append-only —
+/// that makes each append cost the size of everything before it, so the
+/// hundred-thousandth append costs a hundred thousand times the first. The cost
+/// is not the chunking but the cryptography that follows it: every chunk of the
+/// object is re-sealed to discover that all but the last came out identical.
+///
+/// # Why it can be avoided at all
+///
+/// Content-defined chunking restarts its rolling hash at every boundary, so a
+/// cut after a settled boundary depends only on the bytes from that boundary
+/// onward. Everything before the last boundary is therefore already final: an
+/// append cannot move it, whatever it contains. §1.3's whole argument for
+/// content-defined chunking over fixed-size is this same property read the other
+/// way round — an edit disturbs only its neighbourhood — and an append is the
+/// case where the neighbourhood is the end.
+///
+/// So this keeps the last chunk's plaintext, and on each extension re-chunks
+/// only that plus what arrived. Work per append is the size of the tail, not the
+/// size of the object.
+///
+/// # What it guarantees
+///
+/// **Byte-identical output to [`encode`] over the same total plaintext** — the
+/// same boundaries, the same ciphertext, the same manifest, the same CIDs. It is
+/// an optimisation and never a second encoding: two nodes, one appending and one
+/// encoding whole, must produce the same object or content addressing stops
+/// meaning anything.
+///
+/// # Why the type owns the plaintext rather than taking it per call
+///
+/// A function taking "the previous encoding and the new whole plaintext" cannot
+/// check that the previous one really describes a prefix of it without hashing
+/// the prefix, which is the cost being avoided. Owning the tail makes the
+/// mistake unsayable instead: there is no previous object to pass, and no way to
+/// pass one that does not belong.
+#[derive(Debug, Clone)]
+pub struct AppendOnlyObject {
+    spec: ChunkSpec,
+    /// Plaintext of the last chunk — the only one an append can still move.
+    tail: Vec<u8>,
+    /// The object as it stands, every chunk in manifest order.
+    ///
+    /// Behind an `Arc` so a caller can be handed it without copying a segment's
+    /// worth of ciphertext — which for an append-per-record publisher would put
+    /// back exactly the cost this type removes.
+    object: std::sync::Arc<EncodedObject>,
+}
+
+impl AppendOnlyObject {
+    /// An empty object, chunked to `spec`.
+    pub fn new(spec: ChunkSpec) -> Self {
+        Self {
+            spec,
+            tail: Vec::new(),
+            object: std::sync::Arc::new(EncodedObject {
+                manifest: Manifest {
+                    chunks: Vec::new(),
+                    plaintext_len: 0,
+                },
+                chunks: Vec::new(),
+            }),
+        }
+    }
+
+    /// Appends `more` and returns the object it now describes.
+    ///
+    /// Re-chunks the tail and what arrived, and nothing else. The returned
+    /// object is complete — every chunk of the whole plaintext, in order —
+    /// because that is what a publisher needs; only the *work* is incremental.
+    pub fn extend(&mut self, more: &[u8], dek: &Dek) -> &EncodedObject {
+        if more.is_empty() {
+            return &self.object;
+        }
+        let object = std::sync::Arc::make_mut(&mut self.object);
+
+        // The tail's chunk is the one an append may move, so it comes off before
+        // the region is re-cut. Everything before it is settled by the property
+        // this type rests on and is left exactly as it was — same bytes, same
+        // CIDs, never re-sealed.
+        if !self.tail.is_empty() {
+            object.chunks.pop();
+            object.manifest.chunks.pop();
+        }
+
+        let settled: usize = object.manifest.plaintext_len as usize - self.tail.len();
+        let mut region = std::mem::take(&mut self.tail);
+        region.extend_from_slice(more);
+
+        // **The exemption is asked of the object and not of the region.** With
+        // nothing settled the region *is* the object, so a small one is a single
+        // chunk exactly as [`split`] would have it; once anything is settled the
+        // object is already past the target and never returns to it, so the
+        // question does not arise again.
+        let pieces: Vec<&[u8]> = if settled == 0 && region.len() <= self.spec.target as usize {
+            vec![&region[..]]
+        } else {
+            crate::chunk::cut(&region, self.spec)
+        };
+
+        let last = pieces.len() - 1;
+        for (index, piece) in pieces.iter().enumerate() {
+            let sealed = dek.seal_chunk(piece);
+            let cid = Cid::of(&sealed);
+            object.manifest.chunks.push(cid);
+            object.chunks.push((cid, sealed));
+            if index == last {
+                self.tail = piece.to_vec();
+            }
+        }
+        object.manifest.plaintext_len = (settled + region.len()) as u64;
+        &self.object
+    }
+
+    /// The object as it stands, without extending it.
+    pub fn object(&self) -> &EncodedObject {
+        &self.object
+    }
+
+    /// The object as it stands, shared rather than copied.
+    pub fn shared(&self) -> std::sync::Arc<EncodedObject> {
+        std::sync::Arc::clone(&self.object)
+    }
+
+    /// Total plaintext appended so far.
+    pub fn len(&self) -> u64 {
+        self.object.manifest.plaintext_len
+    }
+
+    /// Whether nothing has been appended yet.
+    pub fn is_empty(&self) -> bool {
+        self.object.manifest.plaintext_len == 0
+    }
+
+    /// Plaintext held in the last chunk — the only part an append can move.
+    ///
+    /// Exposed so a test can tell whether it exercised the case it means to.
+    /// The region an append re-cuts is this plus what arrives, and whether that
+    /// region lands above or below the target is what decides which branch runs
+    /// — a test that never landed below it would pass over the mistake that
+    /// branch exists to prevent.
+    pub fn tail_len(&self) -> usize {
+        self.tail.len()
+    }
+}
+
 /// Reassembles plaintext from a manifest and the stored blobs it names.
 ///
 /// Verifies every chunk against its CID before decrypting. A chunk that fails is
