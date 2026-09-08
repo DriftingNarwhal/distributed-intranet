@@ -165,3 +165,23 @@ async fn announcing_content_without_discovery_is_a_no_op_rather_than_an_error() 
     );
     lean.set_dht_server_mode(true);
 }
+
+#[tokio::test]
+async fn a_node_reports_the_behaviour_set_it_was_actually_built_with() {
+    // A client holds one node per network and decides this per network (§1.2),
+    // so having decided it needs to be able to ask the node what it is. The
+    // distinction that makes this worth exposing at all: the caller's variable
+    // says what was *requested*, and only the node knows what was *built* — so a
+    // caller reporting or asserting on its own argument is making a claim about
+    // itself. Read off the behaviour set for the same reason.
+    let (off, _) = node(70, Discovery::Off).await;
+    assert_eq!(off.discovery(), Discovery::Off);
+
+    let (full, _) = node(71, Discovery::Full).await;
+    assert_eq!(full.discovery(), Discovery::Full);
+
+    // And the default is the one a network whose members are not all known in
+    // advance needs, which is what `new` exists to give without asking.
+    let plain = MemberNode::new(&identity(72)).expect("builds");
+    assert_eq!(plain.discovery(), Discovery::Full);
+}

@@ -2751,6 +2751,29 @@ impl MemberNode {
         self.kad().is_some_and(|kad| kad.bootstrap().is_ok())
     }
 
+    /// Whether this node participates in peer and content discovery — §5.1.1.
+    ///
+    /// What the node **is**, fixed at construction and never changed
+    /// afterwards, as distinct from how live it is at this moment.
+    ///
+    /// Exposed because a client holds one node per network (§1.2) and therefore
+    /// decides this per network — and having decided, it needs to be able to ask
+    /// the node what it is rather than restate its own intent. Those are
+    /// different claims: one is about the node and the other is about the
+    /// caller, and only the first is worth reporting or asserting on.
+    ///
+    /// **Read off the behaviour set that was actually built**, rather than from
+    /// a copy of the argument. A stored field would agree with the request even
+    /// if construction had ignored it, which is precisely the failure this is
+    /// most useful for catching.
+    pub fn discovery(&self) -> Discovery {
+        if self.swarm.behaviour().kad.as_ref().is_some() {
+            Discovery::Full
+        } else {
+            Discovery::Off
+        }
+    }
+
     /// The Kademlia behaviour, absent on a node built without discovery.
     fn kad(&mut self) -> Option<&mut kad::Behaviour<kad::store::MemoryStore>> {
         self.swarm.behaviour_mut().kad.as_mut()
