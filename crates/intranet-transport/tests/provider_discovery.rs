@@ -538,3 +538,172 @@ async fn a_fetch_completes_even_when_some_chunks_have_no_holder() {
     assert_eq!(received, vec![held]);
     assert_eq!(unavailable, vec![missing]);
 }
+
+#[tokio::test]
+async fn a_fetcher_finds_a_holder_it_was_never_told_about() {
+    // **The property every other test here stops short of.** Each of them has
+    // the fetcher connected to whoever holds the chunk — so the answer is
+    // already in its routing table, and an implementation that merely asked
+    // everyone it had a socket to would pass exactly as well. That is not
+    // routing, and §4.4 step 1 is routing: the DHT exists so a node can find
+    // content held by a peer it has never heard of.
+    //
+    // Forced by the topology rather than hoped for. The fetcher dials the middle
+    // node and nothing else; the holder dials the middle node and nothing else;
+    // the middle node holds no content of its own. So the only way the fetcher
+    // can learn who has the chunk is by asking somebody who is not the holder.
+    //
+    // *Told about*, not *connected to*: the fetcher necessarily connects to the
+    // holder in order to take the bytes, and the claim is about how it came to
+    // know there was anybody to connect to. A name promising it never connected
+    // would be false by the last assertion.
+    //
+    // Note what mDNS could and could not do to this on a loopback run: it
+    // discovers *peers* and never auto-dials (§5.1), and it carries no provider
+    // records at all. Knowing an address is not knowing who holds a chunk, so a
+    // pass here cannot come from LAN discovery — which is why this needs a
+    // topology rather than a container.
+    let founder = identity(1);
+    let holder_id = identity(2);
+    let fetcher_id = identity(3);
+
+    let (mut middle, middle_addr) = node(1).await;
+    let (mut holder, _) = node(2).await;
+    let (mut fetcher, _) = node(3).await;
+
+    let root = middle.append_entry(genesis(&founder)).unwrap();
+    let next = middle
+        .append_entry(admit(&founder, root, &holder_id, 5))
+        .unwrap();
+    middle
+        .append_entry(admit(&founder, next, &fetcher_id, 6))
+        .unwrap();
+
+    // Both dial the middle and neither dials the other. This is the whole test:
+    // everything below is only meaningful because of these two lines.
+    holder.dial_candidates([middle_addr.clone()]).unwrap();
+    fetcher.dial_candidates([middle_addr]).unwrap();
+
+    // Driven once per node because the predicate only sees the first, which is
+    // what the existing three-node test does for the same reason.
+    assert!(
+        drive3(
+            &mut fetcher,
+            &mut middle,
+            &mut holder,
+            Duration::from_secs(25),
+            |f| f.governance_log().len() == 3
+        )
+        .await,
+        "the fetcher should learn the chain, through the middle node"
+    );
+    assert!(
+        drive3(
+            &mut holder,
+            &mut middle,
+            &mut fetcher,
+            Duration::from_secs(25),
+            |h| h.governance_log().len() == 3
+        )
+        .await,
+        "and so should the holder"
+    );
+    assert!(
+        drive3(
+            &mut middle,
+            &mut holder,
+            &mut fetcher,
+            Duration::from_secs(25),
+            |m| m.governance_log().len() == 3
+        )
+        .await
+    );
+
+    // The holder must advertise upload capacity or source selection drops it as
+    // not having volunteered (§4.3), and the fetcher has to have heard that.
+    holder.advertise(advertisement(&holder_id, 100)).unwrap();
+    let holder_peer = holder.peer_id();
+    let middle_peer = middle.peer_id();
+    middle.sync_ledger_with(holder_peer);
+    fetcher.sync_ledger_with(middle_peer);
+    assert!(
+        drive3(
+            &mut fetcher,
+            &mut middle,
+            &mut holder,
+            Duration::from_secs(25),
+            |f| f.capability_ledger().len() == 1
+        )
+        .await,
+        "the fetcher needs the holder's advertisement, which also reaches it second-hand"
+    );
+
+    let content = b"held by somebody the fetcher has never spoken to".to_vec();
+    let cid = holder.store_chunk(content.clone());
+    let _ = drive3(
+        &mut middle,
+        &mut holder,
+        &mut fetcher,
+        Duration::from_secs(4),
+        |_| false,
+    )
+    .await;
+
+    // The precondition, asserted rather than assumed: the middle node must not
+    // hold the chunk, or this would be the one-hop case again wearing three
+    // nodes.
+    assert!(
+        middle.chunk_store().get(&cid).is_none(),
+        "the middle node must not hold the content it is routing to"
+    );
+
+    fetcher.find_providers(cid);
+    let found = tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            tokio::select! {
+                event = fetcher.next_event() => {
+                    if let NodeEvent::ProvidersFound { cid: got, providers, .. } = event
+                        && got == cid
+                    {
+                        return providers;
+                    }
+                }
+                _ = middle.next_event() => {}
+                _ = holder.next_event() => {}
+            }
+        }
+    })
+    .await
+    .expect("the lookup should answer");
+
+    assert!(
+        found.contains(&holder_id.id()),
+        "the DHT should name a holder the fetcher was never given an address for, got {found:?}"
+    );
+
+    // And the answer has to be usable, not merely correct: finding a holder is
+    // worth nothing if the bytes cannot then be got from it.
+    fetcher.fetch_chunks(vec![cid], &fetcher_id, 1);
+    let arrived = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            tokio::select! {
+                event = fetcher.next_event() => {
+                    if let NodeEvent::FetchComplete { .. } = event {
+                        return true;
+                    }
+                }
+                _ = middle.next_event() => {}
+                _ = holder.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(arrived, "the fetch should complete");
+    assert_eq!(
+        fetcher.chunk_store().get(&cid),
+        Some(content.as_slice()),
+        "the content should arrive intact from a peer discovered through another"
+    );
+}
