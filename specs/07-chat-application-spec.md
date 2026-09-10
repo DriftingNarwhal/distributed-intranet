@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.8 — **E10 landed**, and generically: §6.2's direct message invitation rides Core §5.1's `/intranet/direct/1.0.0` as namespace `chat`, kind `dm-invite`, rather than a protocol of its own. Invisible to a conformant client of this document — the payload, the checks and the honest limits are unchanged and only the frame is shared — and §6.2 now states plainly which obligations are the carrier's and which are this document's, including the two a reader owes that no platform can owe for it: verifying that the identity link binds the *right pair*, and refusing a sender who is not a current member. §6.2 also takes the profile obligation E12 left for it. Previously v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -831,10 +831,52 @@ correct, and conformance MUST be testable with it disabled.
 
 ### 6.2 Direct message invitation
 
-`/chat/dm-invite/1.0.0` (§7, E10), member to member, carrying a network invite (Core §5.6)
-and a common-ownership proof (Core §1.2). **Nothing is stored by anyone but the two parties
-and nothing enters any log.** Rate limiting applies per sending identity, or the protocol
-becomes a spam channel.
+Member to member, carrying a network invite (Core §5.6) and a common-ownership proof (Core
+§1.2). **Nothing is stored by anyone but the two parties and nothing enters any log.** Rate
+limiting applies per sending identity, or the protocol becomes a spam channel.
+
+**This rides Core §5.1's generic direct-delivery carrier**, `/intranet/direct/1.0.0`, as
+namespace `chat` and kind `dm-invite`. It was requested as a protocol of its own,
+`/chat/dm-invite/1.0.0`, and landed generically for the reason E2 and E9 did — an
+application's name in the platform's transport stack is what Core §0 rules out. The change is
+invisible to a conformant client of this document: the payload, the checks and the honest
+limits are unchanged, and only the frame around them is now shared.
+
+Three of the four obligations are therefore the carrier's rather than this document's, and are
+met by any conformant platform: the payload is signed over sender, namespace, kind and content
+together; the claimed sender is checked against the connection it arrived on, which a signature
+alone cannot do because a signature travels; and delivery is metered per sending identity.
+
+**What remains this document's** is everything about what the payload *means*:
+
+```
+DmInvite {
+  invite:         the conversation network's invite (Core §5.6)
+  identity_link:  a common-ownership proof (Core §1.2) binding the sender's identity in
+                  *this* network to the identity that issued the invite
+}
+```
+
+- **A reader MUST verify the identity link before showing the request to anybody**, and MUST
+  check that the proof's two sides are the sender's identity in this network and the invite's
+  issuer. A proof that verifies but links the wrong pair is the interesting forgery: the
+  signatures are genuine and the statement is about somebody else.
+- **A reader MUST refuse a request whose sender is not a current member of this network**,
+  which the carrier cannot check for it — Core §5.1 says so explicitly, and this is the
+  section that owes the check.
+- **Acceptance is a person's act and is not the acknowledgement.** The carrier answers at the
+  delivery level; whether a member joins the conversation network is a later decision, and a
+  client MUST NOT treat a delivery acknowledgement as acceptance.
+- **Blocking is a client-side list**, since there is no shared state to record one in and no
+  reason to want one. A blocked sender's request is refused before display, and the refusal
+  MUST NOT distinguish itself from any other application-level *no* — a refusal that said
+  *blocked* would turn every rejection into a disclosure the blocker did not choose to make.
+- **A joiner cannot know a network's profile before it syncs**, so **this flow MUST supply it**
+  to the join path rather than letting it be inferred. An invite carries only connection
+  bootstrap (Core §5.7) and the profile lives in a log the joiner has not seen, so a store with
+  no log reads as `server` (§1.2) and would be built with discovery on — putting a conversation
+  node into a routing table, which is what `Discovery::Off` for conversations exists to prevent.
+  The flow that accepts a request knows exactly what it accepted.
 
 ### 6.3 What a reader must do in order
 
@@ -854,7 +896,7 @@ names can be requested.
 | **E2** | ✅ **Implemented, in generalised form.** Originally four chat-shaped entry variants; landed instead as **one generic application entry** (Core §2.7.2) carrying namespace, kind, required capability and an opaque payload. Chat's four records are payloads in the `chat` namespace, decoded by the client. Two consequences differ from the original proposal and are recorded in §1.3 and §1.2 | Core §2.7.2 |
 | **E4** | ✅ **Implemented.** A publish/subscribe behaviour for live delivery, with per-topic subscribe/unsubscribe | Core §5.1 |
 | **E9** | ✅ **Implemented.** An app-layer policy map in `NetworkPolicy`: namespaced keys the protocol **stores, orders and encodes but does not interpret**, exactly as it already does for `extension_capabilities`. Core §0 is explicit that the platform must not be shaped around one application, so `chat:`-named fields do not belong in the core policy record. Specified in Core §2.6.2 | Core §2.6.2 |
-| **E10** | `/chat/dm-invite/1.0.0`, member to member | — |
+| **E10** | ✅ **Implemented, in generalised form.** Originally `/chat/dm-invite/1.0.0`, a protocol of its own; landed instead as **one generic direct-delivery carrier** (Core §5.1) taking a namespace, a kind and an opaque payload, with chat's `dm-invite` as its first tenant. The third time a chat-shaped request became a platform-shaped mechanism — after E2's application entry and E9's policy map — and the reason is the same each time: Core §0 states the platform must not be shaped around one application. The carrier owes the signature, the connection binding and the per-identity metering; §6.2 keeps the payload, the identity-link check, the membership check and the profile obligation. Nothing a conformant client of this document does changes | Core §5.1 |
 | **E11** | ✅ **Implemented.** **Namespace registration for extension capabilities.** The tier registry matches names exactly, and every capability in §4.1 is parametrized by scope, so each scope would otherwise need a policy change. Resolution should take the **longest matching registered prefix**, so one entry per verb covers every scope of it. Note the platform did not encounter this itself because its own parametrized capabilities are built-in variants with computed tiers; `Extension(String)` plus exact match leaves a consuming spec nowhere to put them. Specified in Core §2.2.1 | Core §2.2.1 |
 | **E12** | ✅ **Implemented.** **Peer discovery is optional.** §1.5 makes a direct message its own network, and a node's identity is per-network, so a client runs one node per conversation — each with a Kademlia routing table and mDNS multicast serving a network of two members who already know each other. A node MAY now be built without either, keeping everything else, with discovery operations reporting their absence rather than returning a query that never resolves. Specified in Core §5.1.1 | Core §5.1.1 |
 | **E13** | Cross-network connection bootstrap. Two people starting a conversation must not have to provision a relay first, and §1.5 makes every conversation its own fresh network. The material already exists: §6.2 delivers the invite over a stream inside a shared network, carrying a common-ownership proof, so each party already knows the other's shared-network identity. Exchange the new network's addresses over that connection and coordinate a simultaneous open. **The gate is not optional**: addresses for network X may be disclosed only to a peer who is a member of X, verified by replaying X's log — ungated it is an oracle for enumerating a user's other identities, and Core §1.2's unlinkability is gone wholesale rather than weakened | — |

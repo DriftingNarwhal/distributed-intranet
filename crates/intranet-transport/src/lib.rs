@@ -25,6 +25,8 @@
 
 pub mod behaviour;
 pub mod dial;
+pub mod direct;
+pub mod direct_limits;
 pub mod media_limits;
 pub mod node;
 pub mod relay_limits;

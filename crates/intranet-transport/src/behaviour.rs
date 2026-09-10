@@ -9,10 +9,7 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{
-    BallotCodec, ChunkCodec, CollectionCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec,
-    PointerCodec, SignalCodec, SyncCodec,
-};
+use crate::sync::{BallotCodec, ChunkCodec, CollectionCodec, DirectCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, PointerCodec, SignalCodec, SyncCodec};
 use libp2p::{
     dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response,
     swarm::NetworkBehaviour,
@@ -127,6 +124,19 @@ pub struct MemberBehaviour {
     /// this" and no rule for which wins. Validation belongs to the consumer,
     /// which is the only layer that knows what the payload means.
     pub gossip: gossipsub::Behaviour,
+    /// Direct member-to-member delivery — Core Protocol Spec §5.1.
+    ///
+    /// The one protocol here that carries a message rather than state. Everything
+    /// else is pull-based because it moves something a partitioned node must be
+    /// able to obtain *late*; this moves a payload whose whole value is having
+    /// reached a particular person, so there is nothing to catch up on and
+    /// nothing is stored by either side.
+    ///
+    /// Generic by the same reasoning as Core §2.7.2's application entry: it
+    /// arrived as chat's `/chat/dm-invite/1.0.0` and carries `(namespace, kind,
+    /// payload)` instead, because an application's vocabulary in this struct is
+    /// what Core §0 rules out. See [`crate::direct`].
+    pub direct: request_response::Behaviour<DirectCodec>,
     /// Call signalling — Real-Time Spec §1.4.
     ///
     /// The session-scoped channel §1.4 says participants already need for the

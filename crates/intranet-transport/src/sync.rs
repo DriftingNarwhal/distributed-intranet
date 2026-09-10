@@ -101,6 +101,15 @@ pub const POINTER_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/poin
 pub const COLLECTION_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/intranet/append-set/1.0.0");
 
+/// The direct member-to-member delivery protocol's libp2p identifier — Core §5.1.
+///
+/// Named for what it does rather than for its first consumer. It arrived as the
+/// Chat Application Spec's `/chat/dm-invite/1.0.0` (spec 07 §7, E10) and is
+/// generic here for the reason Core §2.7.2 and §2.6.2 are: an application's
+/// vocabulary in the platform's behaviour set is what Core §0 rules out. See
+/// [`crate::direct`].
+pub const DIRECT_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/direct/1.0.0");
+
 /// The call signalling protocol's libp2p identifier — Real-Time Spec §1.4.
 pub const SIGNAL_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/call-signal/1.0.0");
 
@@ -170,6 +179,14 @@ pub const MAX_EPOCH_MESSAGE_BYTES: u64 =
 /// failure is a legal frame that cannot be read.
 pub const MAX_MEDIA_MESSAGE_BYTES: u64 = intranet_realtime::MAX_FRAME_BYTES as u64 + 1024;
 
+/// The largest direct message this build will read — Core §5.1.
+///
+/// The payload ceiling plus room for the envelope around it. Far below the
+/// default: this carrier moves a message rather than content, and a ceiling that
+/// allowed bulk would make it a second content path with none of Storage §4's
+/// swarm, backpressure or verification.
+pub const MAX_DIRECT_MESSAGE_BYTES: u64 = crate::direct::MAX_DIRECT_PAYLOAD_BYTES as u64 + 1024;
+
 /// A message that can travel over one of these protocols.
 ///
 /// Implemented here for types owned by other crates so that the encoding stays
@@ -227,6 +244,8 @@ wire_message!(PointerRequest);
 wire_message!(PointerResponse);
 wire_message!(CollectionRequest);
 wire_message!(CollectionResponse);
+wire_message!(crate::direct::DirectMessage, MAX_DIRECT_MESSAGE_BYTES);
+wire_message!(crate::direct::DirectAck);
 wire_message!(Signal);
 wire_message!(SignalAck);
 wire_message!(MediaEnvelope, MAX_MEDIA_MESSAGE_BYTES);
@@ -308,6 +327,8 @@ pub type ChunkCodec = WireCodec<ChunkRequest, ChunkResponse>;
 pub type PointerCodec = WireCodec<PointerRequest, PointerResponse>;
 /// Codec for append-set collection enumeration.
 pub type CollectionCodec = WireCodec<CollectionRequest, CollectionResponse>;
+/// Codec for direct member-to-member delivery.
+pub type DirectCodec = WireCodec<crate::direct::DirectMessage, crate::direct::DirectAck>;
 /// Codec for call signalling.
 pub type SignalCodec = WireCodec<Signal, SignalAck>;
 /// Codec for call media.
@@ -441,4 +462,9 @@ pub fn signal_behaviour() -> request_response::Behaviour<SignalCodec> {
 /// Builds the call media behaviour.
 pub fn media_behaviour() -> request_response::Behaviour<MediaCodec> {
     build(MEDIA_PROTOCOL)
+}
+
+/// Builds the direct member-to-member delivery behaviour — Core §5.1.
+pub fn direct_behaviour() -> request_response::Behaviour<DirectCodec> {
+    build(DIRECT_PROTOCOL)
 }

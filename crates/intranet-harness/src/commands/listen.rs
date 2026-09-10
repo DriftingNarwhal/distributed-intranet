@@ -102,6 +102,36 @@ impl ListenArgs {
                 NodeEvent::Disconnected { peer } => {
                     println!("disconnected: peer={peer}");
                 }
+                // Reported by namespace and kind rather than by payload. The
+                // harness speaks only the platform's vocabulary (§1), and a
+                // direct message's payload belongs to whichever consuming spec
+                // sent it — printing it would put an application's shape in a
+                // tool that deliberately has none. The length stands in for it,
+                // which is enough to see that bytes arrived intact.
+                NodeEvent::DirectReceived { message } => {
+                    println!(
+                        "direct: from={} namespace={} kind={} bytes={}",
+                        message.sender.peer_id(),
+                        message.namespace,
+                        message.kind,
+                        message.payload.len()
+                    );
+                }
+                // Printed as loudly as an arrival, for the reason §2.5 asks a
+                // relay's refusals to be observable: a limit seen only as
+                // somebody else's timeout is indistinguishable from one that
+                // never ran.
+                NodeEvent::DirectRefused { sender, reason } => {
+                    println!(
+                        "direct-refused: from={} reason={}",
+                        sender.peer_id(),
+                        match reason {
+                            intranet_transport::direct::DirectRefusal::Unsupported => "unsupported",
+                            intranet_transport::direct::DirectRefusal::RateLimited => "rate-limited",
+                            intranet_transport::direct::DirectRefusal::Rejected => "rejected",
+                        }
+                    );
+                }
                 // Printed with the rejection count, not just the acceptance one.
                 // A sync that accepted nothing because every entry was refused
                 // and one that accepted nothing because there was nothing to

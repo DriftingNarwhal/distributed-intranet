@@ -7,11 +7,18 @@ specs/07-chat-application-spec.md is different in kind: the first application-la
 consuming the platform rather than defining it. Read it only when working on something it
 touches — but do read its §7, which lists the ten amendments it asks of the platform, two
 of which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). Seven are implemented — E2, E4, E9, E11, E12, E14 and E16 — and E10,
-E13 and E15 are not. E13 is load-bearing
-rather than convenient: every direct message is its own network and a relay is never shared
-between two of them (§7, and the client's D29), so without cross-network bootstrap two NATed
-people cannot converse at all.
+map in NetworkPolicy). Nine are implemented — E2, E4, E9, E10, E11, E12, E14, E15 and E16 —
+and **only E13 is left**. It is load-bearing rather than convenient: every direct message is
+its own network and a relay is never shared between two of them (§7, and the client's D29), so
+without cross-network bootstrap two NATed people cannot converse at all. E10 landing makes that
+the single remaining thing between the platform and direct messages.
+
+Note the shape three of those landed in, because a fourth request will meet it too: E2 asked
+for four chat-shaped governance entries and got one generic application entry, E9 asked for
+chat-named policy fields and got an app-layer map, and E10 asked for `/chat/dm-invite/1.0.0`
+and got `/intranet/direct/1.0.0` carrying a namespace and an opaque payload. §0 is why —
+the platform must not be shaped around one application — and the answer each time was a door
+rather than a room.
 Treat them as authoritative; if an implementation choice isn't covered by them, flag it
 rather than guessing.
 

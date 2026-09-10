@@ -445,6 +445,34 @@ pub enum NodeEvent {
         /// has to be able to tell a partial result from a complete one.
         truncated: bool,
     },
+    /// A direct message arrived from another member — Core §5.1.
+    ///
+    /// Its signature was verified during decoding **and** bound to the
+    /// connection it arrived on, so the named sender really sent it and really
+    /// is the peer on the other end. Everything after that is the consumer's:
+    /// this crate does not know what the payload means, whether the sender is
+    /// still a member, or whether the recipient wants to hear from them.
+    ///
+    /// The node has **already answered** at the delivery level by the time this
+    /// is returned, because a request/response cannot wait on a person. A
+    /// consumer that decides to refuse says so by acting on the payload, not by
+    /// answering this.
+    DirectReceived {
+        /// The verified message.
+        message: crate::direct::DirectMessage,
+    },
+    /// A direct message was refused before reaching a consumer — Core §5.1.
+    ///
+    /// Reported rather than dropped silently, for the reason a relay's refusals
+    /// are (Real-Time §2.2.2): a limit that surfaces only as somebody else's
+    /// degraded experience is indistinguishable from one that never ran. A run
+    /// of these is what being flooded looks like from inside the node.
+    DirectRefused {
+        /// Who sent it, as claimed and verified.
+        sender: PerNetworkIdentityId,
+        /// Why it was not taken.
+        reason: crate::direct::DirectRefusal,
+    },
     /// A call signalling message arrived — Real-Time Spec §1.4.
     ///
     /// Its signature was verified during decoding, so the sender named really
@@ -817,6 +845,12 @@ pub struct MemberNode {
     /// to learn who a frame goes to is to ask the guard, which charges for the
     /// answer — see [`crate::media_limits`].
     media_relay: MediaRelayGuard,
+    /// Per-sender metering for direct delivery — Core §5.1.
+    ///
+    /// Node state rather than a caller's, because a limit a consumer had to
+    /// remember to apply is one an inbound message reaches before anybody has
+    /// decided anything. See [`crate::direct_limits`].
+    direct_meter: crate::direct_limits::DirectMeter,
 }
 
 
@@ -939,6 +973,7 @@ impl MemberNode {
                     chunk: crate::sync::chunk_behaviour(),
                     pointer: crate::sync::pointer_behaviour(),
                     collection: crate::sync::collection_behaviour(),
+                    direct: crate::sync::direct_behaviour(),
                     signal: crate::sync::signal_behaviour(),
                     media: crate::sync::media_behaviour(),
                 }
@@ -988,6 +1023,7 @@ impl MemberNode {
             inbound_epoch_requests: BTreeMap::new(),
             next_epoch_request: 0,
             media_relay: MediaRelayGuard::new(MediaRelayLimits::default()),
+            direct_meter: crate::direct_limits::DirectMeter::new(),
         })
     }
 
@@ -1620,6 +1656,33 @@ impl MemberNode {
             .topics()
             .map(|topic| topic.to_string())
             .collect()
+    }
+
+    /// Hands a payload directly to another member — Core §5.1.
+    ///
+    /// `namespace` and `kind` say which consumer the payload is for; this crate
+    /// never decodes it. Fails rather than sending if the payload or the labels
+    /// are over their ceilings, since a carrier that truncated one would deliver
+    /// something its sender did not write.
+    ///
+    /// Delivery requires the recipient reachable. There is no queue here and
+    /// deliberately no store: a message that could not be handed over is the
+    /// caller's to retry, because a carrier that held one would be an inbox, and
+    /// an inbox puts one member's private request on somebody else's disk.
+    pub fn send_direct(
+        &mut self,
+        to: PerNetworkIdentityId,
+        sender: &PerNetworkIdentity,
+        namespace: &str,
+        kind: &str,
+        payload: Vec<u8>,
+    ) -> Result<request_response::OutboundRequestId, crate::direct::DirectError> {
+        let message = crate::direct::DirectMessage::create(sender, namespace, kind, payload)?;
+        Ok(self
+            .swarm
+            .behaviour_mut()
+            .direct
+            .send_request(&to.peer_id(), message))
     }
 
     /// Sends a signed signalling message to a participant — §1.4.
@@ -3359,6 +3422,65 @@ impl MemberNode {
                                 providers,
                             };
                         }
+                    }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Direct(
+                    request_response::Event::Message { peer, message, .. },
+                )) => {
+                    if let request_response::Message::Request {
+                        request, channel, ..
+                    } = message
+                    {
+                        // **Bound to the connection, like a signalling message
+                        // and a chunk request.** The signature proves the named
+                        // sender composed these bytes; it does not prove that
+                        // whoever handed them over is that sender, because a
+                        // signature travels and anybody who has seen one can
+                        // replay it. Without this check a peer could deliver
+                        // somebody else's message and a consumer would attribute
+                        // it to them.
+                        //
+                        // Dropped silently rather than refused, deliberately: an
+                        // answer would tell a peer probing with a stolen message
+                        // whether it was well formed.
+                        if request.sender.peer_id() != peer {
+                            continue;
+                        }
+
+                        // **Metered before it is answered**, so a flood costs its
+                        // sender an answer and this node nothing else. The clock
+                        // is read here rather than inside the meter for the reason
+                        // `media_limits` takes a refill time: state that reads a
+                        // clock is state a test cannot drive.
+                        let within = self
+                            .direct_meter
+                            .admit(&request.sender, std::time::Instant::now());
+
+                        let ack = if within {
+                            crate::direct::DirectAck::Received
+                        } else {
+                            crate::direct::DirectAck::Refused(
+                                crate::direct::DirectRefusal::RateLimited,
+                            )
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .direct
+                            .send_response(channel, ack);
+
+                        // The answer goes back either way — a sender learns it
+                        // was rate limited rather than being left to time out,
+                        // which is the difference between a limit and a black
+                        // hole.
+                        if within {
+                            return NodeEvent::DirectReceived { message: request };
+                        }
+                        return NodeEvent::DirectRefused {
+                            sender: request.sender,
+                            reason: crate::direct::DirectRefusal::RateLimited,
+                        };
                     }
                 }
 
