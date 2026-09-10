@@ -71,6 +71,27 @@ pub enum IdentityError {
         expected_network: String,
     },
 
+    /// A proof or certificate on the wire was malformed.
+    ///
+    /// Present because §1.2's proof is *shared* — a statement nobody can send is
+    /// a statement nobody can voluntarily make — so it has a serialized form and
+    /// therefore a way to be presented badly.
+    #[error("malformed {what}: {source}")]
+    Malformed {
+        /// What was being decoded.
+        what: &'static str,
+        /// Why it failed.
+        #[source]
+        source: intranet_crypto::DecodeError,
+    },
+
+    /// A public key on the wire was not a valid point.
+    #[error("invalid public key in {what}")]
+    InvalidKey {
+        /// What was being decoded.
+        what: &'static str,
+    },
+
     /// An underlying cryptographic operation failed.
     #[error(transparent)]
     Crypto(#[from] intranet_crypto::CryptoError),

@@ -10,10 +10,17 @@
 //! is no way to derive, guess, or compel this relationship from public data.
 
 use crate::{IdentityError, NetworkId, PerNetworkIdentity, PerNetworkIdentityId};
-use intranet_crypto::{Enc, Signature};
+use intranet_crypto::{Dec, Enc, Signature};
 
 /// Domain tag for common-ownership proof signatures.
 const LINK_DOMAIN: &str = "intranet.common-ownership.v1";
+
+/// Domain tag for a proof's serialized form.
+///
+/// Distinct from what the sides sign, so the bytes handed to somebody cannot be
+/// mistaken for the statement itself — the same separation an invite keeps
+/// between its wire form and its signed payload (Core §5.6).
+const LINK_WIRE_DOMAIN: &str = "intranet.wire.common-ownership.v1";
 
 /// One side of a common-ownership claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,6 +33,19 @@ impl Side {
     fn encode(&self, enc: &mut Enc) {
         self.network.encode(enc);
         self.identity.encode(enc);
+    }
+
+    fn decode(d: &mut Dec<'_>) -> Result<Self, IdentityError> {
+        let network = NetworkId::from_bytes(read_fixed(d)?);
+        let key = intranet_crypto::VerifyingKey::from_bytes(read_fixed(d)?).map_err(|_| {
+            IdentityError::InvalidKey {
+                what: "common ownership proof",
+            }
+        })?;
+        Ok(Self {
+            network,
+            identity: PerNetworkIdentityId::from_verifying_key(key),
+        })
     }
 }
 
@@ -120,6 +140,72 @@ impl CommonOwnershipProof {
         second.encode(&mut e);
         e
     }
+
+    /// Encodes the proof so it can be handed to somebody.
+    ///
+    /// # Why this exists at all
+    ///
+    /// §1.2 makes this proof the one deliberate escape hatch from
+    /// unlinkability, "only created and shared voluntarily" — and sharing needs
+    /// bytes. Without a serialized form the proof could be constructed and
+    /// verified in one process and never reach the person it was made for, which
+    /// is the same gap Core §5.6 records for invites: a credential whose bytes
+    /// existed only inside the message that presents it describes the far end of
+    /// the journey rather than the journey. Found the same way, by something
+    /// finally trying to send one.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::domain(LINK_WIRE_DOMAIN);
+        self.first.encode(&mut e);
+        self.second.encode(&mut e);
+        e.fixed(self.first_signature.as_bytes());
+        e.fixed(self.second_signature.as_bytes());
+        e.finish()
+    }
+
+    /// Decodes a proof and verifies both signatures.
+    ///
+    /// Verification is not optional here and is not left to the caller: a
+    /// decoded-but-unverified proof is a claim about two people that looks
+    /// exactly like a proven one, and the whole value of this type is that
+    /// holding one means the statement was actually made. A caller that wants
+    /// the bytes without the claim can keep the bytes.
+    ///
+    /// Note what this does **not** check: *which* identities are linked. A proof
+    /// that verifies may still link a pair the caller did not ask about, which is
+    /// the interesting forgery — genuine signatures over a statement about
+    /// somebody else. Compare [`linked`](Self::linked) against what you expected.
+    pub fn decode(bytes: &[u8]) -> Result<Self, IdentityError> {
+        let mut d = Dec::domain(bytes, LINK_WIRE_DOMAIN).map_err(|source| {
+            IdentityError::Malformed {
+                what: "common ownership proof",
+                source,
+            }
+        })?;
+        let first = Side::decode(&mut d)?;
+        let second = Side::decode(&mut d)?;
+        let first_signature = Signature::from_bytes(read_fixed(&mut d)?);
+        let second_signature = Signature::from_bytes(read_fixed(&mut d)?);
+        d.finish().map_err(|source| IdentityError::Malformed {
+            what: "common ownership proof",
+            source,
+        })?;
+
+        let proof = Self {
+            first,
+            second,
+            first_signature,
+            second_signature,
+        };
+        proof.verify()?;
+        Ok(proof)
+    }
+}
+
+fn read_fixed<const N: usize>(d: &mut Dec<'_>) -> Result<[u8; N], IdentityError> {
+    d.fixed::<N>().map_err(|source| IdentityError::Malformed {
+        what: "common ownership proof",
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -129,6 +215,73 @@ mod tests {
 
     fn net(seed: u8) -> NetworkId {
         NetworkId::from_bytes([seed; 32])
+    }
+
+    #[test]
+    fn a_proof_survives_the_round_trip_that_makes_it_shareable() {
+        let seed = MasterSeed::from_entropy([1u8; 32]);
+        let a = seed.identity_for(&net(1)).unwrap();
+        let b = seed.identity_for(&net(2)).unwrap();
+        let proof = CommonOwnershipProof::create(&a, &b);
+
+        let bytes = proof.encode();
+        let back = CommonOwnershipProof::decode(&bytes).expect("decodes");
+        assert_eq!(back, proof);
+        // Byte-identical on re-encode, so the same logical proof cannot be
+        // carried by two different byte strings.
+        assert_eq!(back.encode(), bytes);
+    }
+
+    #[test]
+    fn a_tampered_proof_is_refused_on_decode_rather_than_returned_unverified() {
+        let seed = MasterSeed::from_entropy([1u8; 32]);
+        let a = seed.identity_for(&net(1)).unwrap();
+        let b = seed.identity_for(&net(2)).unwrap();
+        let proof = CommonOwnershipProof::create(&a, &b);
+
+        let mut bytes = proof.encode();
+        // Flip a signature byte. A decode that handed this back unverified would
+        // produce something indistinguishable from a real proof at every later
+        // call site.
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        assert!(CommonOwnershipProof::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn a_proof_about_somebody_else_verifies_and_must_still_be_checked() {
+        // **The forgery that matters, and the one decoding cannot catch.** Both
+        // signatures are genuine and the statement is true — it is simply about a
+        // different pair than the caller asked about. A recipient that verified
+        // and did not compare `linked` against what it expected would accept
+        // Carol's proof as evidence about Alice.
+        let mallory = MasterSeed::from_entropy([9u8; 32]);
+        let theirs_here = mallory.identity_for(&net(1)).unwrap();
+        let theirs_there = mallory.identity_for(&net(2)).unwrap();
+        let proof = CommonOwnershipProof::create(&theirs_here, &theirs_there);
+
+        let back = CommonOwnershipProof::decode(&proof.encode()).expect("a real proof");
+        assert!(back.verify().is_ok());
+
+        let alice = MasterSeed::from_entropy([1u8; 32]).identity_for(&net(1)).unwrap();
+        let (first, second) = back.linked();
+        assert!(
+            first.1 != alice.id() && second.1 != alice.id(),
+            "this proof says nothing about Alice, and verifying it does not make it"
+        );
+    }
+
+    #[test]
+    fn a_proof_does_not_decode_from_the_bytes_its_sides_signed() {
+        // Domain separation between the wire form and the signed statement. Sharing
+        // the tag would let the thing that is signed be presented as the thing that
+        // carries it.
+        let seed = MasterSeed::from_entropy([1u8; 32]);
+        let a = seed.identity_for(&net(1)).unwrap();
+        let b = seed.identity_for(&net(2)).unwrap();
+        let proof = CommonOwnershipProof::create(&a, &b);
+        let signed = CommonOwnershipProof::payload(&proof.first, &proof.second).finish();
+        assert!(CommonOwnershipProof::decode(&signed).is_err());
     }
 
     #[test]
