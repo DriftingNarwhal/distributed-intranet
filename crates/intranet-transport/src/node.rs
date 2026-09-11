@@ -695,6 +695,26 @@ pub struct MemberNode {
     /// One appearing is the only observable signal that a relay actually
     /// *granted* a reservation, as opposed to one having been asked for.
     circuit_listeners: std::collections::BTreeSet<Multiaddr>,
+    /// The listener a reservation was last asked for on, and why it closed.
+    ///
+    /// # Why the reason has to be kept rather than read off a timeout
+    ///
+    /// A reservation that fails does not time out silently: libp2p closes the
+    /// circuit listener and attaches the reason — the relay refused
+    /// (`ResourceLimitExceeded`), it answered with no addresses
+    /// (`NoAddressesInReservation`), it violated the protocol, or the dial to
+    /// it never completed. Every one of those is a different thing for an
+    /// operator to go and do.
+    ///
+    /// That reason was being discarded. `ListenerClosed` was matched as
+    /// `{ addresses, .. }`, and a reservation that fails before producing an
+    /// address closes with an **empty** address list — so the arm reported
+    /// nothing at all, and the only thing left for a caller to say was that
+    /// some window had elapsed. A consuming client then guessed between three
+    /// causes in its error text, which is exactly the shape of message this
+    /// project has already paid an evening for.
+    reservation_listener: Option<libp2p::core::transport::ListenerId>,
+    last_reservation_error: Option<String>,
     /// This node's replica of the network's governance log — §2.7.
     ///
     /// Held by the node rather than beside it because sync has to answer a
@@ -1017,6 +1037,8 @@ impl MemberNode {
             pending: std::collections::VecDeque::new(),
             direct_listeners: std::collections::BTreeSet::new(),
             circuit_listeners: std::collections::BTreeSet::new(),
+            reservation_listener: None,
+            last_reservation_error: None,
             log: GovernanceLog::new(),
             ledger: CapabilityLedger::new(*identity.network()),
             chunks: ChunkStore::new(),
@@ -2954,7 +2976,26 @@ impl MemberNode {
             );
         }
 
-        self.listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
+        // The id is kept so that a close can be attributed to *this*
+        // reservation rather than to any listener going away, and the previous
+        // reason is cleared so a caller cannot read last time's failure as this
+        // time's.
+        self.last_reservation_error = None;
+        let listener = self
+            .swarm
+            .listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
+            .map_err(|e| TransportError::Listen(why_listen_failed(&e)))?;
+        self.reservation_listener = Some(listener);
+        Ok(())
+    }
+
+    /// Why the last reservation failed, when the relay or the dial said.
+    ///
+    /// `None` means nothing came back at all — the case the timeout is for, and
+    /// the only one where a caller has to describe possibilities rather than an
+    /// answer.
+    pub fn last_reservation_error(&self) -> Option<&str> {
+        self.last_reservation_error.as_deref()
     }
 
     /// Whether this node currently holds a usable relay circuit.
@@ -3119,10 +3160,31 @@ impl MemberNode {
                     self.direct_listeners.remove(&address);
                     return NodeEvent::ListenAddrGone(address);
                 }
-                SwarmEvent::ListenerClosed { addresses, .. } => {
+                SwarmEvent::ListenerClosed {
+                    listener_id,
+                    addresses,
+                    reason,
+                } => {
                     for address in &addresses {
                         self.circuit_listeners.remove(address);
                         self.direct_listeners.remove(address);
+                    }
+                    // **The reservation's own listener, and the reason it
+                    // closed.** This is where a refused reservation actually
+                    // reports itself, and it arrives with no addresses at all —
+                    // so the old arm dropped both the reason and the event.
+                    if self.reservation_listener == Some(listener_id) {
+                        self.reservation_listener = None;
+                        if let Err(err) = &reason {
+                            // Through the chain, not off the top of it: libp2p
+                            // words the outermost layer "Failed to get
+                            // Reservation." and puts *which* failure it was —
+                            // refused for capacity, no addresses, a dial that
+                            // never landed — in `source()`. Taking only the top
+                            // keeps the shape of the old guess while looking
+                            // like an answer, which is worse than the guess.
+                            self.last_reservation_error = Some(why_listen_failed(err));
+                        }
                     }
                     if let Some(address) = addresses.into_iter().next() {
                         return NodeEvent::ListenAddrGone(address);

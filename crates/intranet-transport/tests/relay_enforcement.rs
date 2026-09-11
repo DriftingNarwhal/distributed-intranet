@@ -336,8 +336,20 @@ async fn a_live_relay_cuts_a_circuit_off_at_its_byte_ceiling() {
 /// loopback-only relay has an empty external address set — which is the
 /// condition being isolated.
 async fn reserves_against_loopback_only_relay(announce: Option<Multiaddr>) -> bool {
+    reserve_reporting(announce, RelayLimits::default()).await.0
+}
+
+/// As above, returning **why** it failed as well as whether it did.
+///
+/// The reason is the point: a reservation fails for several reasons that an
+/// operator would act on differently, and they are indistinguishable from a
+/// timeout alone.
+async fn reserve_reporting(
+    announce: Option<Multiaddr>,
+    limits: RelayLimits,
+) -> (bool, Option<String>) {
     let relay_identity = identity(1);
-    let mut relay = RelayNode::new(&relay_identity).unwrap();
+    let mut relay = RelayNode::with_limits(&relay_identity, limits).unwrap();
     if let Some(address) = announce {
         relay.add_public_address(address);
     }
@@ -364,7 +376,7 @@ async fn reserves_against_loopback_only_relay(announce: Option<Multiaddr>) -> bo
         .unwrap();
     member.reserve_via_relay(dial_addr).await.unwrap();
 
-    tokio::time::timeout(Duration::from_secs(12), async {
+    let granted = tokio::time::timeout(Duration::from_secs(12), async {
         loop {
             tokio::select! {
                 event = member.next_event() => {
@@ -379,7 +391,9 @@ async fn reserves_against_loopback_only_relay(announce: Option<Multiaddr>) -> bo
         }
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false);
+
+    (granted, member.last_reservation_error().map(str::to_owned))
 }
 
 #[tokio::test]
@@ -397,18 +411,68 @@ async fn a_relay_with_no_external_address_cannot_grant_a_usable_reservation() {
 }
 
 #[tokio::test]
+async fn a_refused_reservation_says_it_was_refused() {
+    // **The diagnostic property, and it was missing.** A reservation fails for
+    // reasons an operator acts on differently — refused for capacity, answered
+    // with no addresses, never answered at all — and the client kept none of
+    // them: `ListenerClosed` was matched without its `reason`, and a refusal
+    // arrives with an empty address list, so the arm reported nothing and a
+    // consuming client was left describing possibilities.
+    //
+    // A ceiling of zero refuses everything, which is the deterministic way to
+    // ask a relay for a refusal.
+    let limits = RelayLimits {
+        max_reservations: 0,
+        ..RelayLimits::default()
+    };
+    let (granted, reason) = reserve_reporting(
+        Some("/dns4/relay.example/tcp/9999".parse().unwrap()),
+        limits,
+    )
+    .await;
+
+    assert!(!granted, "a relay with no reservation capacity must not grant one");
+    let reason = reason.expect(
+        "a refused reservation must report a reason — without one a caller can only          say that some window elapsed, which is what sent a real deployment looking          at a correctly configured relay",
+    );
+    assert!(
+        reason.to_lowercase().contains("limit") || reason.to_lowercase().contains("refus"),
+        "the reason should name the refusal, not something generic: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_reservation_with_no_addresses_says_that_instead() {
+    // The other cause, told apart from the one above — which is the whole
+    // point of keeping the reason rather than a boolean.
+    let (granted, reason) = reserve_reporting(None, RelayLimits::default()).await;
+    assert!(!granted);
+    let reason = reason.expect("a reservation answered with no addresses must report why");
+    assert!(
+        reason.to_lowercase().contains("address"),
+        "the reason should name the empty address list: {reason}"
+    );
+}
+
+#[tokio::test]
 async fn announcing_a_public_address_makes_reservations_usable_again() {
     // The fix, and the reason `add_public_address` exists: behind a proxy the
     // public address is not one the relay listens on, so nothing in the process
     // can infer it and it has to be supplied.
     //
-    // Note what this does *not* claim. The announced address is what makes the
-    // reservation acceptable; it is not what the client then dials. A client
-    // builds its own circuit address from the address it used to reach the
-    // relay, so a relay behind a TCP proxy works as long as it announces
-    // *something* routable — the announcement's job is to make the address list
-    // non-empty, and getting that wrong was a wrong assumption caught by writing
-    // this test rather than reasoning about it.
+    // **What this test cannot see, stated because the comment here used to claim
+    // the opposite.** It said the announcement's only job was to make the
+    // address list non-empty, and that a client builds its circuit address from
+    // the address it dialled — so any routable value would do. That is false.
+    // libp2p's relay client maps each announced address to
+    // `<announced>/p2p-circuit/p2p/<client>` and those become the client's
+    // listen addresses, which is what it then advertises to its peers. So an
+    // announcement that is merely non-empty buys an *accepted* reservation and a
+    // circuit address nobody can dial — a failure that moves one step later and
+    // looks like a working relay.
+    //
+    // This test asserts acceptance, which is all a loopback pair can observe.
+    // The address an operator must announce is the one peers actually reach.
     let announced: Multiaddr = "/dns4/relay.example/tcp/9999".parse().unwrap();
     assert!(
         reserves_against_loopback_only_relay(Some(announced)).await,
