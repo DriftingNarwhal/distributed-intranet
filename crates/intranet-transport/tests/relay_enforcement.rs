@@ -411,6 +411,82 @@ async fn a_relay_with_no_external_address_cannot_grant_a_usable_reservation() {
 }
 
 #[tokio::test]
+async fn a_designation_naming_the_wrong_relay_says_so() {
+    // **The failure this reproduces cost a two-machine test an evening.** A
+    // network's designated relay address named a peer id that was not the relay
+    // answering at that host and port. Every symptom pointed the wrong way: the
+    // host is right, TCP and Noise both complete, the relay's own log shows an
+    // inbound connection from each machine — and the dialer rejects the
+    // connection, because a peer id is what it asked for. No reservation is
+    // ever requested, so there is nothing in the relay's log to say otherwise.
+    //
+    // libp2p knew: `DialError::WrongPeerId` names the node that did answer. It
+    // reached nobody, because the relay client drops its pending state on a
+    // dial failure without telling the listener, so the reservation simply
+    // never arrived and the only thing left to report was a timeout.
+    let relay_identity = identity(1);
+    let mut relay = RelayNode::new(&relay_identity).unwrap();
+    relay.add_public_address("/dns4/relay.example/tcp/9999".parse().unwrap());
+    relay
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+
+    let listening = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = relay.next_event().await
+                && address.iter().any(|p| matches!(p, Protocol::Tcp(_)))
+            {
+                return address;
+            }
+        }
+    })
+    .await
+    .expect("relay should listen");
+
+    // The right host and port, somebody else's peer id — which is what a stale
+    // designation is.
+    let impostor = identity(9).peer_id();
+    let wrong = listening.with(Protocol::P2p(impostor));
+
+    let mut member = MemberNode::new(&identity(2)).unwrap();
+    member
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    member.reserve_via_relay(wrong).await.unwrap();
+
+    let granted = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            tokio::select! {
+                event = member.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && is_circuit(&address)
+                    {
+                        return true;
+                    }
+                }
+                _ = relay.next_event() => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(!granted, "a relay named by the wrong peer id must not grant a circuit");
+    let reason = member
+        .last_reservation_error()
+        .expect("a dial that reached a different node must be reported as the reason");
+    assert!(
+        reason.contains(&relay_identity.peer_id().to_string()),
+        "the reason must name who actually answered, since that is what identifies the \
+         relay the designation should have named: {reason}"
+    );
+    assert!(
+        reason.contains("designat"),
+        "and it must say this is a stale designation rather than a network fault: {reason}"
+    );
+}
+
+#[tokio::test]
 async fn a_refused_reservation_says_it_was_refused() {
     // **The diagnostic property, and it was missing.** A reservation fails for
     // reasons an operator acts on differently — refused for capacity, answered

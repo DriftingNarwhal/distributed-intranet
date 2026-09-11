@@ -714,6 +714,19 @@ pub struct MemberNode {
     /// causes in its error text, which is exactly the shape of message this
     /// project has already paid an evening for.
     reservation_listener: Option<libp2p::core::transport::ListenerId>,
+    /// The relay a reservation is pending on, by the peer id its address named.
+    ///
+    /// Kept so that a **dial** failure can be attributed to the reservation.
+    /// The relay client is no help here: it handles `FromSwarm::DialFailure` by
+    /// dropping its pending state and telling the listener nothing, so a relay
+    /// that cannot be dialled produces no reservation error at all — just a
+    /// listener that never yields an address, and a caller left with a timeout.
+    ///
+    /// The failure that made this worth having is a designation naming the
+    /// wrong peer id: the address is right, TCP and Noise both complete, the
+    /// relay logs an inbound connection — and the dialer rejects it, because a
+    /// peer id is what it asked for. Every symptom points at a working relay.
+    reservation_relay: Option<PeerId>,
     last_reservation_error: Option<String>,
     /// This node's replica of the network's governance log — §2.7.
     ///
@@ -911,6 +924,27 @@ pub struct MemberNode {
 /// the reference client, where an interrupted test run left daemons holding the
 /// suite's ports and every later run failed in a way that read as a
 /// distributed-systems fault.
+/// Why a dial failed, with the one cause that reads as something else named.
+///
+/// `WrongPeerId` is the reason this is not just `to_string()`. libp2p words it
+/// "Unexpected peer ID {obtained} at {address}", which is accurate and gets
+/// read as a transient network fault. It is not one: it means the host
+/// answering is a different node from the one asked for, which for a designated
+/// relay means the designation is stale — replayed by every member, so every
+/// member fails identically, and the relay's own log shows a healthy inbound
+/// connection throughout because TCP and Noise both completed.
+fn why_dial_failed(error: &libp2p::swarm::DialError) -> String {
+    match error {
+        libp2p::swarm::DialError::WrongPeerId { obtained, .. } => format!(
+            "a different node answered there: it is {obtained}, and the address asked for \
+             another. An address names a relay by its peer id, so this is a stale \
+             designation rather than a network fault — re-designate it with the peer id \
+             the relay itself reports"
+        ),
+        other => why_listen_failed(other),
+    }
+}
+
 fn why_listen_failed<E: std::error::Error>(error: &E) -> String {
     // Repeats are dropped rather than joined. A wrapped `io::Error` commonly
     // appears at three levels of the chain with identical text, and
@@ -1038,6 +1072,7 @@ impl MemberNode {
             direct_listeners: std::collections::BTreeSet::new(),
             circuit_listeners: std::collections::BTreeSet::new(),
             reservation_listener: None,
+            reservation_relay: None,
             last_reservation_error: None,
             log: GovernanceLog::new(),
             ledger: CapabilityLedger::new(*identity.network()),
@@ -2981,6 +3016,13 @@ impl MemberNode {
         // reason is cleared so a caller cannot read last time's failure as this
         // time's.
         self.last_reservation_error = None;
+        // Whose reservation this is, so that a dial failure against that peer
+        // can be reported as the reason rather than arriving as one of the
+        // routine dial failures a node sees all day.
+        self.reservation_relay = relay.iter().find_map(|part| match part {
+            libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
+            _ => None,
+        });
         let listener = self
             .swarm
             .listen_on(relay.with(libp2p::multiaddr::Protocol::P2pCircuit))
@@ -3332,6 +3374,17 @@ impl MemberNode {
                     // account of whether the SYN was refused, timed out, or
                     // never left — which is the difference between a NAT
                     // problem and a timing one.
+                    //
+                    // **And if it is the relay a reservation is waiting on, it
+                    // is the reason that reservation will never arrive.** The
+                    // relay client does not report this: it drops its pending
+                    // state on a dial failure and leaves the listener silent,
+                    // so without this the answer libp2p already has — an
+                    // unexpected peer id, a refused connection, a timeout —
+                    // is replaced by a caller saying some window elapsed.
+                    if peer_id.is_some() && peer_id == self.reservation_relay {
+                        self.last_reservation_error = Some(why_dial_failed(&error));
+                    }
                     return NodeEvent::DialFailed {
                         peer: peer_id,
                         error: error.to_string(),
