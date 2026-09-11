@@ -111,10 +111,31 @@ impl FetchPlan {
     /// An empty provider list marks the chunk exhausted rather than leaving it
     /// waiting forever: "nobody holds this" is an answer, and a plan that
     /// treated it as pending would never report completion.
+    /// `fallback` is asked only when the lookup named nobody usable.
+    ///
+    /// **Two different questions, and they were one parameter.** Who *holds*
+    /// this chunk is a fact about replication — it is the count this plan orders
+    /// by and the count an under-replication report is made of. Who to *ask
+    /// next* is a routing decision, and a provider record was never the only
+    /// possible answer to it.
+    ///
+    /// Collapsing them meant that a lookup returning nothing ended the fetch:
+    /// the chunk was marked exhausted and the content became unreachable for the
+    /// life of the process. On a two-member network that is the ordinary case
+    /// rather than an edge one — provider records have nowhere to live but the
+    /// holder, a member behind NAT never becomes a DHT server, and the one node
+    /// holding the bytes is the peer already on the other end of a socket.
+    ///
+    /// So a fallback is asked, and `holder_count` stays the number the lookup
+    /// actually produced. A fallback candidate is therefore correctly counted as
+    /// **zero known holders** — scarcest, which is where rarest-first should put
+    /// it — and nothing here inflates a replication figure with a peer that
+    /// merely might have something.
     pub fn record_providers(
         &mut self,
         cid: Cid,
         providers: Vec<PerNetworkIdentityId>,
+        fallback: Vec<PerNetworkIdentityId>,
         ledger: &CapabilityLedger,
         observations: &ReliabilityObservations,
         failure_threshold: f64,
@@ -126,7 +147,13 @@ impl FetchPlan {
             return;
         }
         let holder_count = providers.len() as u32;
-        let ordered = order_sources(providers, ledger, observations, failure_threshold);
+        let mut ordered = order_sources(providers, ledger, observations, failure_threshold);
+        if ordered.is_empty() {
+            // The ledger still filters and ranks these, so a peer that never
+            // volunteered to serve is not asked, and a peer known to fail is
+            // ordered last exactly as a named provider would be.
+            ordered = order_sources(fallback, ledger, observations, failure_threshold);
+        }
         *state = if ordered.is_empty() {
             ChunkState::Exhausted
         } else {
@@ -369,9 +396,79 @@ mod tests {
         plan.record_providers(
             which,
             providers.iter().map(|s| identity(*s).id()).collect(),
+            // No fallback: these tests are about what a lookup's own answer
+            // produces, and one supplied here would mask an empty result.
+            Vec::new(),
             ledger,
             &ReliabilityObservations::new(),
             0.5,
+        );
+    }
+
+    /// Records a lookup that named nobody, with peers to fall back on.
+    fn record_with_fallback(
+        plan: &mut FetchPlan,
+        which: Cid,
+        fallback: &[u8],
+        ledger: &CapabilityLedger,
+    ) {
+        plan.record_providers(
+            which,
+            Vec::new(),
+            fallback.iter().map(|s| identity(*s).id()).collect(),
+            ledger,
+            &ReliabilityObservations::new(),
+            0.5,
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_named_nobody_falls_back_to_a_reachable_peer() {
+        // **The failure this prevents made a two-member network unable to
+        // reconcile anything.** Both members wrote while apart; on meeting, each
+        // fetched the other's pointer from the other, then asked the DHT who
+        // held the segment it named. Over a two-peer routing table the lookup
+        // named nobody — without asking anybody — the chunk was marked
+        // exhausted, and the content stayed unreachable while its holder sat one
+        // hop away.
+        let mut plan = FetchPlan::new(vec![cid(1)], 4);
+        let ledger = ledger_with(&[(2, 1_000)]);
+
+        record(&mut plan, cid(1), &[], &ledger);
+        assert!(
+            plan.next_requests().is_empty(),
+            "with no providers and nothing to fall back on there is nobody to ask"
+        );
+
+        let mut plan = FetchPlan::new(vec![cid(1)], 4);
+        record_with_fallback(&mut plan, cid(1), &[2], &ledger);
+        let issued = plan.next_requests();
+        assert_eq!(
+            issued.len(),
+            1,
+            "a reachable peer must be asked when the lookup named nobody"
+        );
+        assert_eq!(issued[0].1, identity(2).id());
+    }
+
+    #[test]
+    fn a_fallback_is_not_counted_as_a_holder() {
+        // The other half, and the reason the fallback is a separate parameter.
+        // `holder_count` is what rarest-first orders by and what an
+        // under-replication report is made of, so a peer that merely might have
+        // something must not raise it. Zero known holders is also the truth, and
+        // it puts this chunk first where scarcity decides.
+        let ledger = ledger_with(&[(2, 1_000), (3, 1_000)]);
+
+        let mut scarce = FetchPlan::new(vec![cid(1), cid(2)], 4);
+        record_with_fallback(&mut scarce, cid(1), &[2, 3], &ledger);
+        record(&mut scarce, cid(2), &[2, 3], &ledger);
+
+        let issued = scarce.next_requests();
+        assert_eq!(
+            issued.first().map(|(chunk, _)| *chunk),
+            Some(cid(1)),
+            "the chunk no holder is known for is the scarcest and goes first: {issued:?}"
         );
     }
 

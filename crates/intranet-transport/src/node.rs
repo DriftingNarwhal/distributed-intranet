@@ -3542,10 +3542,36 @@ impl MemberNode {
                                 .iter()
                                 .filter_map(PerNetworkIdentityId::from_peer_id)
                                 .collect();
+// **"Nobody answered" is not "nobody holds it", and this is
+                            // where the two collapsed into one answer** — the
+                            // distinction Storage §4.4 and `design/05` §5.1 both
+                            // make, undone by the code implementing them.
+                            //
+                            // A lookup over an empty or thin routing table names
+                            // nobody without asking anybody, and on a two-member
+                            // network that is the normal case: provider records
+                            // have nowhere to live but the holder itself, and a
+                            // member behind NAT never becomes a DHT server. The
+                            // fetch was then marked exhausted and the content was
+                            // unreachable for the life of the process — while its
+                            // holder sat one hop away, having just served the
+                            // pointer that named it.
+                            //
+                            // The peers this node is already talking to are
+                            // handed over as a **fallback** rather than as
+                            // providers: the event below still reports exactly
+                            // what the DHT said, because that number is what an
+                            // under-replication report is made of.
+                            let reachable: Vec<PerNetworkIdentityId> = self
+                                .tiers
+                                .keys()
+                                .filter_map(PerNetworkIdentityId::from_peer_id)
+                                .collect();
                             if let Some(plan) = &mut self.fetch {
                                 plan.record_providers(
                                     cid,
                                     providers.clone(),
+                                    reachable,
                                     &self.ledger,
                                     &self.observations,
                                     UNRELIABLE_FAILURE_RATE,
