@@ -406,3 +406,43 @@ fn a_direct_message_does_not_decode_as_something_else_under_the_same_key() {
     assert!(DirectAck::decode(&message.encode()).is_err());
     assert!(DirectMessage::decode(&DirectAck::Received.encode()).is_err());
 }
+
+#[tokio::test]
+async fn a_sender_learns_its_payload_was_delivered() {
+    // §5.1 specifies an acknowledgement, and until this the loop had no arm for
+    // the response: it arrived, libp2p handed it over, and it was dropped. A
+    // sender could not tell a delivered payload from one that vanished, which
+    // leaves a consumer choosing between re-sending forever and losing the
+    // payload after one attempt.
+    let (mut a, mut b) = pair().await;
+    let alice = identity(1);
+    let bob = identity(2);
+
+    a.send_direct(bob.id(), &alice, "chat", "dm-invite", b"an invite".to_vec())
+        .expect("within the ceilings");
+
+    let delivered = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            tokio::select! {
+                event = a.next_event() => {
+                    if let NodeEvent::DirectDelivered { to, ack } = event {
+                        return Some((to, ack));
+                    }
+                }
+                _ = b.next_event() => {}
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+    .expect("the sender is told");
+
+    let (to, ack) = delivered;
+    assert_eq!(to, bob.id(), "answered by the member it was sent to");
+    assert!(
+        matches!(ack, DirectAck::Received),
+        "delivery-level only: it reached a consumer that understands it, and says \
+         nothing about anybody agreeing to it"
+    );
+}

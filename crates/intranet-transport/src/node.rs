@@ -461,6 +461,30 @@ pub enum NodeEvent {
         /// The verified message.
         message: crate::direct::DirectMessage,
     },
+    /// A direct message this node sent was answered — Core §5.1.
+    ///
+    /// **Delivery-level only, and the type is what keeps that honest.** §5.1 is
+    /// explicit that an acknowledgement says a payload reached a consumer which
+    /// understands it and *never* that anybody agreed to it — a request/response
+    /// cannot wait on a person reading their screen. So this carries the ack the
+    /// recipient's node returned and nothing else, and a consumer that treated
+    /// it as acceptance would be reading a fact about a socket as a fact about a
+    /// person.
+    ///
+    /// **Previously dropped rather than reported**, which was an implementation
+    /// gap rather than a specification one: the response arrived, libp2p handed
+    /// it over, and this loop had no arm for it — so a sender could not tell a
+    /// delivered payload from one that vanished, and the only shapes left to a
+    /// consumer were re-sending forever or forgetting after one attempt and
+    /// losing the request. Found by the first consumer to need it, which is the
+    /// third time this carrier has been completed that way after §1.2's proof
+    /// and §5.6's invite bytes.
+    DirectDelivered {
+        /// Who answered.
+        to: PerNetworkIdentityId,
+        /// What they said at the delivery level.
+        ack: crate::direct::DirectAck,
+    },
     /// A direct message was refused before reaching a consumer — Core §5.1.
     ///
     /// Reported rather than dropped silently, for the reason a relay's refusals
@@ -3428,6 +3452,25 @@ impl MemberNode {
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Direct(
                     request_response::Event::Message { peer, message, .. },
                 )) => {
+                    // The sender's half. Reported rather than dropped: §5.1
+                    // specifies an acknowledgement, and a sender that cannot see
+                    // it has to choose between re-sending forever and losing the
+                    // payload after one try.
+                    //
+                    // The peer is resolved back to an identity rather than
+                    // reported as a peer id, because an ed25519 peer id inlines
+                    // its public key and every consumer of this event is
+                    // reasoning about identities — a consumer left to convert
+                    // would be a consumer with its own opinion about how.
+                    if let request_response::Message::Response { response, .. } = &message {
+                        if let Some(to) = PerNetworkIdentityId::from_peer_id(&peer) {
+                            return NodeEvent::DirectDelivered {
+                                to,
+                                ack: response.clone(),
+                            };
+                        }
+                        continue;
+                    }
                     if let request_response::Message::Request {
                         request, channel, ..
                     } = message

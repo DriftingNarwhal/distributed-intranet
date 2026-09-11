@@ -121,6 +121,21 @@ impl ListenArgs {
                 // relay's refusals to be observable: a limit seen only as
                 // somebody else's timeout is indistinguishable from one that
                 // never ran.
+                // The sender's half, and worth printing for the same reason as
+                // the refusal below: a payload that was delivered and one that
+                // vanished look identical from the sending side otherwise, which
+                // is what this event was added to end.
+                NodeEvent::DirectDelivered { to, ack } => {
+                    println!(
+                        "direct-delivered: to={} ack={}",
+                        to.peer_id(),
+                        match ack {
+                            intranet_transport::direct::DirectAck::Received => "received",
+                            intranet_transport::direct::DirectAck::Refused(_) => "refused",
+                        }
+                    );
+                }
+
                 NodeEvent::DirectRefused { sender, reason } => {
                     println!(
                         "direct-refused: from={} reason={}",
