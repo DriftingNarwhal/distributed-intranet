@@ -4587,6 +4587,17 @@ impl RelayNode {
         self.swarm.add_external_address(address);
     }
 
+    /// Every address this relay is telling clients to reach it at.
+    ///
+    /// The set libp2p builds a reservation's address list from, which is what a
+    /// client accepts or rejects a reservation on and what it then advertises as
+    /// its own circuit address. Exposed because it is otherwise invisible: a
+    /// relay's operator can see what they *configured* and not what the node
+    /// promoted beside it.
+    pub fn announced_addresses(&self) -> Vec<Multiaddr> {
+        self.swarm.external_addresses().cloned().collect()
+    }
+
     /// Listens on the dual-stack defaults — TCP and QUIC over IPv4 and IPv6.
     ///
     /// A relay is reached by peers whose own connectivity varies, so it offers
@@ -4615,7 +4626,7 @@ impl RelayNode {
                     // reject it with `NoAddressesInReservation` — so tiers 2 and
                     // 3 fail while tier 1 keeps working and the relay's health
                     // check still reports ready.
-                    if !is_loopback(&address) {
+                    if !is_unusable_remotely(&address) {
                         self.swarm.add_external_address(address.clone());
                     }
                     return NodeEvent::Listening(address);
@@ -4712,10 +4723,79 @@ impl AddressShape {
 ///
 /// Used for whether a relay may advertise an address as external; listener
 /// pairing uses [`AddressShape`], which also accounts for address family.
-fn is_loopback(address: &Multiaddr) -> bool {
+/// Whether an address is one no remote peer could ever use.
+///
+/// # Why link-local counts, and what announcing one costs
+///
+/// Loopback is obvious. **Link-local is not, and it is the one that travelled.**
+/// A relay promotes the addresses it binds to external ones so that its
+/// reservations name somewhere (§5.4), and a container's interfaces routinely
+/// include an `fe80::` address — which is meaningless without a scope id and
+/// meaningless off the link either way.
+///
+/// Announced, it reaches every client in the reservation reply, becomes a
+/// circuit address each of them advertises, and rides into every invite minted
+/// from those addresses. Clients then dial it for as long as they hold it,
+/// getting a handshake timeout every time, against a relay that is working
+/// perfectly for everything else. A member with no permission to change the
+/// relay set has no way to stop it either.
+///
+/// Private addresses are deliberately still announced: a relay on the same LAN
+/// as its members is reachable and legitimate, which is why §5.1.1 demotes an
+/// unroutable hop rather than dropping it.
+fn is_unusable_remotely(address: &Multiaddr) -> bool {
     address.iter().any(|part| match part {
-        libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback(),
-        libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback(),
+        libp2p::multiaddr::Protocol::Ip4(ip) => ip.is_loopback() || ip.is_link_local(),
+        libp2p::multiaddr::Protocol::Ip6(ip) => ip.is_loopback() || ip.is_unicast_link_local(),
         _ => false,
     })
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::is_unusable_remotely;
+
+    /// Addresses a relay must never announce, and the ones it must.
+    ///
+    /// **A unit test because the integration version could not fail.** Written
+    /// first as a relay bound to a wildcard address, asserting nothing
+    /// link-local was promoted — which passed against the unfixed code too,
+    /// since this container has no link-local interface to promote. A test that
+    /// cannot fail is worse than no test: it reads as coverage of exactly the
+    /// thing it is blind to.
+    #[test]
+    fn a_relay_announces_only_what_a_remote_peer_could_dial() {
+        for unusable in [
+            // The one that reached the field: a container's link-local, which
+            // is meaningless without a scope id and meaningless off the link
+            // regardless. Announced, it lands in every reservation reply and
+            // every invite minted from one.
+            "/ip6/fe80::a0aa:8bff:fe5a:c187/udp/4001/quic-v1",
+            "/ip6/fe80::1/tcp/4001",
+            "/ip4/169.254.1.1/tcp/4001",
+            "/ip4/127.0.0.1/tcp/4001",
+            "/ip6/::1/tcp/4001",
+        ] {
+            assert!(
+                is_unusable_remotely(&unusable.parse().unwrap()),
+                "{unusable} cannot be dialled by a remote peer and must not be announced"
+            );
+        }
+
+        for usable in [
+            // Private, and deliberately still announced: a relay on the same
+            // LAN as its members is reachable and legitimate, which is why
+            // §5.1.1 demotes an unroutable hop rather than dropping it.
+            "/ip4/10.218.193.135/tcp/4001",
+            "/ip4/192.168.1.10/tcp/4001",
+            "/ip6/fd12:a6a1:7ec6:1::1/tcp/4001",
+            "/ip4/203.0.113.7/tcp/4001",
+            "/dns4/relay.example/tcp/55503",
+        ] {
+            assert!(
+                !is_unusable_remotely(&usable.parse().unwrap()),
+                "{usable} is a legitimate address to announce"
+            );
+        }
+    }
 }

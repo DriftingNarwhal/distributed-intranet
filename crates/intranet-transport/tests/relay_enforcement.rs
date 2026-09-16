@@ -555,3 +555,4 @@ async fn announcing_a_public_address_makes_reservations_usable_again() {
         "an announced public address should make the reservation usable"
     );
 }
+
