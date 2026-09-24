@@ -95,7 +95,10 @@ pub struct CallSession {
 
 impl CallSession {
     /// Opens a call in mesh topology.
-    pub fn open(participants: impl IntoIterator<Item = PerNetworkIdentityId>, threshold: u8) -> Self {
+    pub fn open(
+        participants: impl IntoIterator<Item = PerNetworkIdentityId>,
+        threshold: u8,
+    ) -> Self {
         Self {
             call_participants: participants.into_iter().collect(),
             threshold,
@@ -152,9 +155,7 @@ impl CallSession {
             Topology::Relayed { .. } if !relay_reachable => {
                 Some(RenegotiationTrigger::RelayUnavailable)
             }
-            Topology::Relayed { .. } if !at_threshold => {
-                Some(RenegotiationTrigger::BelowThreshold)
-            }
+            Topology::Relayed { .. } if !at_threshold => Some(RenegotiationTrigger::BelowThreshold),
             _ => None,
         }
     }
@@ -230,7 +231,10 @@ impl CallSession {
     /// Called only after the new path is up. Until then the old one is still
     /// carrying media, which is what make-before-break means in practice.
     pub fn complete_handover(&mut self) -> Result<Topology, RealtimeError> {
-        let pending = self.pending.take().ok_or(RealtimeError::NoHandoverPending)?;
+        let pending = self
+            .pending
+            .take()
+            .ok_or(RealtimeError::NoHandoverPending)?;
         self.active = pending;
         self.in_flight = None;
         Ok(pending)

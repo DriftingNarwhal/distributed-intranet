@@ -67,13 +67,11 @@ impl WaitingRoom {
         provenance: InviteProvenance,
         arrived_at: Timestamp,
     ) {
-        self.occupants
-            .entry(identity)
-            .or_insert(WaitingRoomEntry {
-                identity,
-                provenance,
-                arrived_at,
-            });
+        self.occupants.entry(identity).or_insert(WaitingRoomEntry {
+            identity,
+            provenance,
+            arrived_at,
+        });
     }
 
     /// Removes an identity, for instance once it has been admitted to a group.

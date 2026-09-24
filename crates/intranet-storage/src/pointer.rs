@@ -331,11 +331,7 @@ impl DekWrapping {
     /// The wrapper's signature is verified too, but only for accountability: an
     /// unsigned or forged wrapping is refused so that spam has an attributable
     /// author, not because signing is what confers validity.
-    pub fn unwrap(
-        &self,
-        epoch_key: &EpochKey,
-        dek_commitment: &Hash,
-    ) -> Result<Dek, StorageError> {
+    pub fn unwrap(&self, epoch_key: &EpochKey, dek_commitment: &Hash) -> Result<Dek, StorageError> {
         self.verify_signature()?;
 
         let dek = epoch_key.unwrap_dek(&self.pointer_id, &self.wrapped_dek)?;

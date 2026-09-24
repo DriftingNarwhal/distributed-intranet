@@ -19,13 +19,13 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn has_tcp(address: &Multiaddr) -> bool {
-    address
-        .iter()
-        .any(|part| matches!(part, Protocol::Tcp(_)))
+    address.iter().any(|part| matches!(part, Protocol::Tcp(_)))
 }
 
 /// Whether an address is loopback.
@@ -181,7 +181,8 @@ async fn dcutr_upgrades_a_relayed_connection_on_loopback() {
     );
     assert_eq!(tier, Some(ConnectionTier::HolePunched));
     assert!(
-        log.iter().any(|line| line == "upgrade attributed on the connection itself"),
+        log.iter()
+            .any(|line| line == "upgrade attributed on the connection itself"),
         "the upgrade must be attributed when the direct connection replaces the relayed \
          one, not only when DCUtR later reports its own dial succeeded — a caller that \
          settles on the first direct connection would otherwise record tier 1 for a \

@@ -199,22 +199,21 @@ impl GovernanceCommand {
                 for i in 0..padding {
                     let body = match with {
                         Padding::DeviceCertificates => {
-                            let device_seed = intranet_identity::DeviceSeed::from_entropy([
-                                (100 + i % 100) as u8;
-                                32
-                            ]);
-                            let key = device_seed
-                                .key_for(&network)
-                                .map_err(|e| e.to_string())?;
+                            let device_seed = intranet_identity::DeviceSeed::from_entropy(
+                                [(100 + i % 100) as u8; 32],
+                            );
+                            let key = device_seed.key_for(&network).map_err(|e| e.to_string())?;
                             let device = intranet_identity::DevicePublicKey::from_verifying_key(
                                 *key.id().verifying_key(),
                             );
-                            EntryBody::DeviceEnrollment(intranet_identity::DeviceCertificate::issue(
-                                &attacker,
-                                device,
-                                format!("grind{i}"),
-                                Timestamp::from_millis(100 + i64::from(i)),
-                            ))
+                            EntryBody::DeviceEnrollment(
+                                intranet_identity::DeviceCertificate::issue(
+                                    &attacker,
+                                    device,
+                                    format!("grind{i}"),
+                                    Timestamp::from_millis(100 + i64::from(i)),
+                                ),
+                            )
                         }
                         // Leaving is signed by the leaver and names nobody else,
                         // so the attacker mints these entirely on their own.
@@ -238,7 +237,10 @@ impl GovernanceCommand {
 
                 println!("honest-branch:   2 capability-gated actions");
                 println!("attacker-branch: {padding} capability-free entries ({with:?})");
-                println!("canonical-tip:   {}", tip.map(|h| h.to_string()).unwrap_or_default());
+                println!(
+                    "canonical-tip:   {}",
+                    tip.map(|h| h.to_string()).unwrap_or_default()
+                );
 
                 if tip == Some(honest_tip) {
                     println!("result: capability-free padding did not win the branch");

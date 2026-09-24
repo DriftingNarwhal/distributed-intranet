@@ -87,7 +87,10 @@ impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnexpectedEnd { needed, remaining } => {
-                write!(f, "input ended early: needed {needed} bytes, {remaining} remain")
+                write!(
+                    f,
+                    "input ended early: needed {needed} bytes, {remaining} remain"
+                )
             }
             Self::ImplausibleLength { claimed, remaining } => write!(
                 f,
@@ -166,17 +169,23 @@ impl<'a> Dec<'a> {
 
     /// Reads a big-endian `u32`.
     pub fn u32(&mut self) -> Result<u32, DecodeError> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")))
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
     }
 
     /// Reads a big-endian `u64`.
     pub fn u64(&mut self) -> Result<u64, DecodeError> {
-        Ok(u64::from_be_bytes(self.take(8)?.try_into().expect("8 bytes")))
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
     }
 
     /// Reads a big-endian `i64`.
     pub fn i64(&mut self) -> Result<i64, DecodeError> {
-        Ok(i64::from_be_bytes(self.take(8)?.try_into().expect("8 bytes")))
+        Ok(i64::from_be_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
     }
 
     /// Reads a boolean, rejecting any byte other than `0x00` or `0x01`.
@@ -400,7 +409,10 @@ mod tests {
 
         assert!(matches!(
             Dec::new(&encoded).u32().unwrap_err(),
-            DecodeError::UnexpectedEnd { needed: 4, remaining: 3 }
+            DecodeError::UnexpectedEnd {
+                needed: 4,
+                remaining: 3
+            }
         ));
     }
 }

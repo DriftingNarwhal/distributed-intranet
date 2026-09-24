@@ -98,8 +98,7 @@ pub const CHUNK_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/chunk/
 pub const POINTER_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/pointer/1.0.0");
 
 /// The append-set collection protocol's libp2p identifier — Storage Spec §2.5.
-pub const COLLECTION_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/intranet/append-set/1.0.0");
+pub const COLLECTION_PROTOCOL: StreamProtocol = StreamProtocol::new("/intranet/append-set/1.0.0");
 
 /// The direct member-to-member delivery protocol's libp2p identifier — Core §5.1.
 ///
@@ -169,8 +168,9 @@ pub const MAX_CHUNK_MESSAGE_BYTES: u64 = intranet_storage::MAX_CHUNK_BYTES as u6
 /// picked independently eventually disagree, and the failure mode is a legal
 /// Welcome that cannot be read. The allowance covers the sealed history keys and
 /// framing that travel alongside it.
-pub const MAX_EPOCH_MESSAGE_BYTES: u64 =
-    intranet_epoch::MAX_WELCOME_BYTES as u64 + (intranet_epoch::MAX_HISTORY_KEYS as u64 * 128) + 1024;
+pub const MAX_EPOCH_MESSAGE_BYTES: u64 = intranet_epoch::MAX_WELCOME_BYTES as u64
+    + (intranet_epoch::MAX_HISTORY_KEYS as u64 * 128)
+    + 1024;
 
 /// The largest media envelope this build will read.
 ///
@@ -277,16 +277,17 @@ pub fn gossip_behaviour() -> Result<libp2p::gossipsub::Behaviour, String> {
     let config = gossipsub::ConfigBuilder::default()
         .validation_mode(gossipsub::ValidationMode::None)
         .message_id_fn(|message: &gossipsub::Message| {
-            gossipsub::MessageId::from(intranet_crypto::hash_bytes(&message.data).as_bytes().to_vec())
+            gossipsub::MessageId::from(
+                intranet_crypto::hash_bytes(&message.data)
+                    .as_bytes()
+                    .to_vec(),
+            )
         })
         .build()
         .map_err(|err| err.to_string())?;
 
-    gossipsub::Behaviour::new(
-        gossipsub::MessageAuthenticity::Anonymous,
-        config,
-    )
-    .map_err(|err| err.to_string())
+    gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Anonymous, config)
+        .map_err(|err| err.to_string())
 }
 wire_message!(MediaAck);
 

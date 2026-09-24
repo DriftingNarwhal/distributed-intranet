@@ -148,10 +148,7 @@ pub fn first_hop_is_routable(address: &Multiaddr) -> bool {
                 let segments = ip.segments();
                 let unique_local = segments[0] & 0xfe00 == 0xfc00;
                 let link_local = segments[0] & 0xffc0 == 0xfe80;
-                return !(unique_local
-                    || link_local
-                    || ip.is_loopback()
-                    || ip.is_unspecified());
+                return !(unique_local || link_local || ip.is_loopback() || ip.is_unspecified());
             }
             _ => {}
         }
@@ -204,9 +201,15 @@ mod tests {
         // live one behind them — the failure arrived as `Response from behaviour
         // was canceled` against the address that would have worked.
         let ordered = order_candidates([
-            addr("/ip6/fd12:a6a1:7ec6:1::9867/udp/4001/quic-v1/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
-            addr("/ip4/10.140.152.103/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
-            addr("/dns4/switchback.proxy.rlwy.net/tcp/55503/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit"),
+            addr(
+                "/ip6/fd12:a6a1:7ec6:1::9867/udp/4001/quic-v1/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit",
+            ),
+            addr(
+                "/ip4/10.140.152.103/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit",
+            ),
+            addr(
+                "/dns4/switchback.proxy.rlwy.net/tcp/55503/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit",
+            ),
         ]);
 
         assert!(
@@ -243,7 +246,9 @@ mod tests {
         // Ordering demotes an unreachable hop; it never drops one. A network
         // whose only relay is a member on the same LAN still reaches it, which
         // is the case this must not break.
-        let only = addr("/ip4/192.168.1.5/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit");
+        let only = addr(
+            "/ip4/192.168.1.5/tcp/4001/p2p/12D3KooWAT1R2JjcZbnVUKLX8Xo1Qg5APTWMkpHarHY4Uo1YpGzT/p2p-circuit",
+        );
         assert_eq!(order_candidates([only.clone()]), vec![only]);
     }
 

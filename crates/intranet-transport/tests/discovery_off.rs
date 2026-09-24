@@ -52,7 +52,11 @@ fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
     )
 }
 
-fn admit(founder: &PerNetworkIdentity, parent: intranet_crypto::Hash, who: &PerNetworkIdentity) -> LogEntry {
+fn admit(
+    founder: &PerNetworkIdentity,
+    parent: intranet_crypto::Hash,
+    who: &PerNetworkIdentity,
+) -> LogEntry {
     LogEntry::create(
         founder,
         Some(parent),

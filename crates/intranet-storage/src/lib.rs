@@ -56,13 +56,13 @@ pub mod wire;
 pub use appendset::{AppendSetEntry, AppendSetView, collection_id, validate_entry_context};
 pub use chunk::ChunkSpec;
 pub use crypto::{Dek, EpochKey};
+pub use fetch::{DEFAULT_CONCURRENCY, FetchPlan};
 pub use object::{AppendOnlyObject, Cid, EncodedObject, Manifest, decode, encode};
 pub use pointer::{DekWrapping, MutablePointer, new_pointer_id};
 pub use replication::{
     HoldingAnnouncement, RepairPlan, ReplicationHealth, ReplicationStatus, ReplicationView,
 };
 pub use serving::{ServingRefusal, SourceCandidate, may_serve, rarest_first, select_sources};
-pub use fetch::{DEFAULT_CONCURRENCY, FetchPlan};
 pub use store::ChunkStore;
 pub use wire::{
     ChunkRefusal, ChunkRequest, ChunkResponse, CollectionRequest, CollectionResponse,

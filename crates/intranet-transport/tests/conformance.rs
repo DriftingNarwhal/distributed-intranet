@@ -15,7 +15,9 @@ use intranet_transport::{
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -38,8 +40,16 @@ fn regenerating_a_transport_handle_does_not_reset_the_limit() {
     });
     let requester = Requester::Admitted(identity(1).id());
 
-    assert!(guard.try_reserve(requester.clone(), TransportHandle(1), at(0)).is_ok());
-    assert!(guard.try_reserve(requester.clone(), TransportHandle(2), at(0)).is_ok());
+    assert!(
+        guard
+            .try_reserve(requester.clone(), TransportHandle(1), at(0))
+            .is_ok()
+    );
+    assert!(
+        guard
+            .try_reserve(requester.clone(), TransportHandle(2), at(0))
+            .is_ok()
+    );
 
     // A fresh handle each time — as a client cycling peer IDs would produce.
     for handle in 3..10 {
@@ -63,12 +73,20 @@ fn distinct_identities_are_metered_separately() {
 
     assert!(
         guard
-            .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+            .try_reserve(
+                Requester::Admitted(identity(1).id()),
+                TransportHandle(1),
+                at(0)
+            )
             .is_ok()
     );
     assert!(
         guard
-            .try_reserve(Requester::Admitted(identity(2).id()), TransportHandle(2), at(0))
+            .try_reserve(
+                Requester::Admitted(identity(2).id()),
+                TransportHandle(2),
+                at(0)
+            )
             .is_ok(),
         "one identity's ceiling must not deny an unrelated identity"
     );
@@ -85,12 +103,20 @@ fn the_global_reservation_ceiling_is_enforced() {
     for i in 0..3 {
         assert!(
             guard
-                .try_reserve(Requester::Admitted(identity(i).id()), TransportHandle(i as u64), at(0))
+                .try_reserve(
+                    Requester::Admitted(identity(i).id()),
+                    TransportHandle(i as u64),
+                    at(0)
+                )
                 .is_ok()
         );
     }
     assert!(matches!(
-        guard.try_reserve(Requester::Admitted(identity(9).id()), TransportHandle(9), at(0)),
+        guard.try_reserve(
+            Requester::Admitted(identity(9).id()),
+            TransportHandle(9),
+            at(0)
+        ),
         Err(RelayDenied::ReservationCeiling { limit: 3 })
     ));
 }
@@ -114,7 +140,9 @@ fn many_pre_admission_identities_off_one_invite_are_caught_per_invite() {
             invite,
         };
         assert!(
-            guard.try_reserve(requester, TransportHandle(i as u64), at(0)).is_ok(),
+            guard
+                .try_reserve(requester, TransportHandle(i as u64), at(0))
+                .is_ok(),
             "genuine joiners under one invite must still get through"
         );
     }
@@ -183,7 +211,9 @@ fn an_admitted_identity_is_not_subject_to_invite_metering() {
     let requester = Requester::Admitted(admitted);
     for handle in 0..4 {
         assert!(
-            guard.try_reserve(requester.clone(), TransportHandle(handle), at(0)).is_ok(),
+            guard
+                .try_reserve(requester.clone(), TransportHandle(handle), at(0))
+                .is_ok(),
             "an admitted identity is metered per-identity, not per-invite"
         );
     }
@@ -196,7 +226,11 @@ fn a_circuit_cannot_be_opened_without_a_reservation() {
     // a reservation this guard issued.
     let mut guard = RelayGuard::new(RelayLimits::default());
     let reservation = guard
-        .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+        .try_reserve(
+            Requester::Admitted(identity(1).id()),
+            TransportHandle(1),
+            at(0),
+        )
         .unwrap();
 
     assert!(guard.open_circuit(reservation, at(0)).is_ok());
@@ -212,7 +246,11 @@ fn a_circuit_cannot_be_opened_without_a_reservation() {
 fn releasing_a_reservation_closes_its_circuits() {
     let mut guard = RelayGuard::new(RelayLimits::default());
     let reservation = guard
-        .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+        .try_reserve(
+            Requester::Admitted(identity(1).id()),
+            TransportHandle(1),
+            at(0),
+        )
         .unwrap();
     guard.open_circuit(reservation, at(0)).unwrap();
     guard.open_circuit(reservation, at(0)).unwrap();
@@ -235,7 +273,11 @@ fn the_byte_ceiling_actually_closes_the_circuit() {
         ..RelayLimits::default()
     });
     let reservation = guard
-        .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+        .try_reserve(
+            Requester::Admitted(identity(1).id()),
+            TransportHandle(1),
+            at(0),
+        )
         .unwrap();
     let circuit = guard.open_circuit(reservation, at(0)).unwrap();
 
@@ -243,7 +285,10 @@ fn the_byte_ceiling_actually_closes_the_circuit() {
     assert_eq!(guard.circuit_count(), 1);
 
     let closure = guard.record_bytes(circuit, 200).unwrap();
-    assert!(closure.is_some(), "exceeding the ceiling must close the circuit");
+    assert!(
+        closure.is_some(),
+        "exceeding the ceiling must close the circuit"
+    );
     assert_eq!(guard.circuit_count(), 0);
     assert!(
         matches!(guard.record_bytes(circuit, 1), Err(RelayDenied::NoCircuit)),
@@ -258,11 +303,18 @@ fn circuits_are_expired_at_their_maximum_duration() {
         ..RelayLimits::default()
     });
     let reservation = guard
-        .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+        .try_reserve(
+            Requester::Admitted(identity(1).id()),
+            TransportHandle(1),
+            at(0),
+        )
         .unwrap();
     let circuit = guard.open_circuit(reservation, at(0)).unwrap();
 
-    assert!(guard.expire(at(120_000)).is_empty(), "not yet past the limit");
+    assert!(
+        guard.expire(at(120_000)).is_empty(),
+        "not yet past the limit"
+    );
     assert_eq!(guard.circuit_count(), 1);
 
     let expired = guard.expire(at(120_001));
@@ -278,7 +330,11 @@ fn the_circuit_ceiling_is_enforced() {
         ..RelayLimits::default()
     });
     let reservation = guard
-        .try_reserve(Requester::Admitted(identity(1).id()), TransportHandle(1), at(0))
+        .try_reserve(
+            Requester::Admitted(identity(1).id()),
+            TransportHandle(1),
+            at(0),
+        )
         .unwrap();
 
     guard.open_circuit(reservation, at(0)).unwrap();
@@ -313,8 +369,12 @@ async fn a_node_presents_a_different_peer_id_in_each_network() {
     // Key-level unlinkability is void if the transport reuses one fingerprint,
     // so this is a hard requirement rather than a nicety.
     let seed = MasterSeed::from_entropy([7u8; 32]);
-    let here = seed.identity_for(&NetworkId::from_bytes([1u8; 32])).unwrap();
-    let there = seed.identity_for(&NetworkId::from_bytes([2u8; 32])).unwrap();
+    let here = seed
+        .identity_for(&NetworkId::from_bytes([1u8; 32]))
+        .unwrap();
+    let there = seed
+        .identity_for(&NetworkId::from_bytes([2u8; 32]))
+        .unwrap();
 
     let here_node = MemberNode::new(&here).unwrap();
     let there_node = MemberNode::new(&there).unwrap();
@@ -369,7 +429,10 @@ async fn two_nodes_connect_directly_and_the_tier_is_recorded() {
         .unwrap();
 
     let addresses = listen_addresses(&mut listener).await;
-    assert!(!addresses.is_empty(), "listener must report listen addresses");
+    assert!(
+        !addresses.is_empty(),
+        "listener must report listen addresses"
+    );
 
     dialer.dial_candidates(addresses).unwrap();
 

@@ -18,8 +18,7 @@
 
 use intranet_crypto::{Hash, Timestamp};
 use intranet_governance::{
-    Capability, CapabilitySet, EntryBody, GroupId, LogEntry, MembershipAction,
-    NetworkPolicy,
+    Capability, CapabilitySet, EntryBody, GroupId, LogEntry, MembershipAction, NetworkPolicy,
 };
 use intranet_identity::{
     DeviceCertificate, DevicePublicKey, DeviceSeed, MasterSeed, NetworkId, PerNetworkIdentity,
@@ -32,7 +31,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 /// A genesis entry authored by `founder`, who thereby holds every capability.
@@ -85,7 +86,8 @@ fn ungated(author: &PerNetworkIdentity, parent: Hash, n: u32, at: i64) -> LogEnt
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -176,7 +178,13 @@ async fn a_node_that_has_never_seen_the_log_receives_it_on_connecting() {
 
     source.dial_candidates([joiner_addr]).unwrap();
     assert!(
-        drive(&mut source, &mut joiner, Duration::from_secs(20), same_length).await,
+        drive(
+            &mut source,
+            &mut joiner,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
         "the joiner should have received the whole log"
     );
 
@@ -281,9 +289,12 @@ async fn capability_free_padding_does_not_win_a_partition_race() {
     honest.dial_candidates([grinder_addr]).unwrap();
     let total = 2 + 2 + padding as usize;
     assert!(
-        drive(&mut honest, &mut grinder, Duration::from_secs(30), |a, b| {
-            a.governance_log().len() == total && b.governance_log().len() == total
-        })
+        drive(
+            &mut honest,
+            &mut grinder,
+            Duration::from_secs(30),
+            |a, b| { a.governance_log().len() == total && b.governance_log().len() == total }
+        )
         .await,
         "both sides should hold every entry, including the padding"
     );
@@ -443,7 +454,10 @@ async fn a_log_with_nothing_to_offer_syncs_to_a_no_op() {
     })
     .await;
 
-    assert_eq!(transfers, 0, "two logs already in step should transfer nothing");
+    assert_eq!(
+        transfers, 0,
+        "two logs already in step should transfer nothing"
+    );
     assert_eq!(left.governance_log().len(), 1);
     assert_eq!(right.governance_log().len(), 1);
     assert_converged(&left, &right);
@@ -472,7 +486,8 @@ async fn an_entry_appended_after_connecting_reaches_the_peer_on_the_next_sync() 
     );
 
     let peer = right.peer_id();
-    left.append_entry(gated(&founder, root, "later", 50)).unwrap();
+    left.append_entry(gated(&founder, root, "later", 50))
+        .unwrap();
     right.sync_with(peer);
 
     assert!(

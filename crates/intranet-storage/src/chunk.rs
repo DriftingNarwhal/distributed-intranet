@@ -103,9 +103,14 @@ pub fn split(plaintext: &[u8], spec: ChunkSpec) -> Vec<&[u8]> {
 /// object whose earlier boundaries are already settled, and must reach exactly
 /// the boundaries a whole-object run reaches.
 pub(crate) fn cut(region: &[u8], spec: ChunkSpec) -> Vec<&[u8]> {
-    fastcdc::v2020::FastCDC::new(region, spec.min as usize, spec.target as usize, spec.max as usize)
-        .map(|chunk| &region[chunk.offset..chunk.offset + chunk.length])
-        .collect()
+    fastcdc::v2020::FastCDC::new(
+        region,
+        spec.min as usize,
+        spec.target as usize,
+        spec.max as usize,
+    )
+    .map(|chunk| &region[chunk.offset..chunk.offset + chunk.length])
+    .collect()
 }
 
 #[cfg(test)]
@@ -125,7 +130,10 @@ mod tests {
     }
 
     fn digests(chunks: &[&[u8]]) -> Vec<intranet_crypto::Hash> {
-        chunks.iter().map(|c| intranet_crypto::hash_bytes(c)).collect()
+        chunks
+            .iter()
+            .map(|c| intranet_crypto::hash_bytes(c))
+            .collect()
     }
 
     #[test]
@@ -146,7 +154,10 @@ mod tests {
     fn chunking_is_deterministic() {
         let spec = ChunkSpec::default();
         let content = data(500_000, 7);
-        assert_eq!(digests(&split(&content, spec)), digests(&split(&content, spec)));
+        assert_eq!(
+            digests(&split(&content, spec)),
+            digests(&split(&content, spec))
+        );
     }
 
     #[test]

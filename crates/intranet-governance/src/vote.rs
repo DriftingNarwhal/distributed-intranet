@@ -277,7 +277,10 @@ impl QuorumCertificate {
             ballot
                 .verify()
                 .map_err(|_| GovernanceError::InvalidQuorumCertificate {
-                    reason: format!("ballot from {} has an invalid signature", ballot.voter.short()),
+                    reason: format!(
+                        "ballot from {} has an invalid signature",
+                        ballot.voter.short()
+                    ),
                 })?;
 
             if !proposal.electorate_snapshot.contains(&ballot.voter) {

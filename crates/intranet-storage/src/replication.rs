@@ -79,12 +79,7 @@ impl HoldingAnnouncement {
 
     /// Verifies the announcement's signature.
     pub fn verify(&self) -> Result<(), StorageError> {
-        let payload = Self::payload(
-            &self.network,
-            &self.node,
-            &self.holdings,
-            self.announced_at,
-        );
+        let payload = Self::payload(&self.network, &self.node, &self.holdings, self.announced_at);
         self.node
             .verifying_key()
             .verify(&payload, &self.signature)
@@ -380,11 +375,7 @@ impl ReplicationView {
     }
 
     /// Plans repair for everything this view tracks.
-    pub fn plan_all_repairs(
-        &self,
-        ledger: &CapabilityLedger,
-        target: usize,
-    ) -> Vec<RepairPlan> {
+    pub fn plan_all_repairs(&self, ledger: &CapabilityLedger, target: usize) -> Vec<RepairPlan> {
         self.tracked()
             .filter_map(|cid| self.plan_repair(cid, ledger, target))
             .collect()

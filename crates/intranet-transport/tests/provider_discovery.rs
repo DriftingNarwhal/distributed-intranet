@@ -32,7 +32,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -93,7 +95,8 @@ async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
     node.set_dht_server_mode(true);
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -168,7 +171,8 @@ async fn pair() -> (MemberNode, MemberNode) {
     let (mut guest, guest_addr) = node(2).await;
 
     let root = host.append_entry(genesis(&founder)).unwrap();
-    host.append_entry(admit(&founder, root, &joiner, 5)).unwrap();
+    host.append_entry(admit(&founder, root, &joiner, 5))
+        .unwrap();
 
     host.dial_candidates([guest_addr]).unwrap();
     assert!(

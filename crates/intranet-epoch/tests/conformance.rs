@@ -1,18 +1,20 @@
 //! Epoch keying conformance tests — Core Protocol Spec §3, Harness §3.
 
 use intranet_crypto::{Hash, Timestamp};
+use intranet_epoch::{EpochKeyring, GroupSession, RotationStatus, identity_label};
 use intranet_governance::{
     Capability, EntryBody, GovernanceLog, GroupId, HistoryAccess, LogEntry, MembershipAction,
     NetworkPolicy, RotationReason,
 };
-use intranet_epoch::{EpochKeyring, GroupSession, RotationStatus, identity_label};
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_storage::{ChunkSpec, Dek, DekWrapping, EpochKey, MutablePointer, encode};
 
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -44,7 +46,11 @@ fn adding_a_member_advances_the_epoch_and_both_derive_the_same_key() {
     let joiner = GroupSession::prepare_join(b"joiner").unwrap();
     let rotation = founder.add_member(&joiner.key_package().unwrap()).unwrap();
 
-    assert_ne!(before.fingerprint(), rotation.key.fingerprint(), "a membership change must rekey");
+    assert_ne!(
+        before.fingerprint(),
+        rotation.key.fingerprint(),
+        "a membership change must rekey"
+    );
     assert_eq!(founder.member_count(), 2);
 
     let joined = joiner.join(rotation.welcome.as_ref().unwrap()).unwrap();
@@ -448,7 +454,9 @@ fn a_rewelcome_restores_a_member_onto_the_canonical_branch() {
     let mut canonical = GroupSession::create(b"founder").unwrap();
     let stranded = GroupSession::prepare_join(b"stranded").unwrap();
 
-    let rotation = canonical.add_member(&stranded.key_package().unwrap()).unwrap();
+    let rotation = canonical
+        .add_member(&stranded.key_package().unwrap())
+        .unwrap();
     let recovered = stranded.join(rotation.welcome.as_ref().unwrap()).unwrap();
 
     assert_eq!(
@@ -526,7 +534,9 @@ fn a_joiner_accepts_delivered_keys_and_can_read_with_them() {
     let pointer = intranet_storage::new_pointer_id().unwrap();
     let wrapped = key(9).wrap(&pointer, &dek);
 
-    let held = joiner.key_for(&rotation).expect("joiner should hold the key");
+    let held = joiner
+        .key_for(&rotation)
+        .expect("joiner should hold the key");
     assert!(held.unwrap_dek(&pointer, &wrapped).is_ok());
 }
 
@@ -585,7 +595,10 @@ fn rotation_cost_scales_with_live_objects_not_content_volume() {
         "a re-wrap is a small key record, not content"
     );
     assert_ne!(old_wrapping.wrapped_dek, new_wrapping.wrapped_dek);
-    assert!(object.stored_len() > 1_000_000, "the object really is large");
+    assert!(
+        object.stored_len() > 1_000_000,
+        "the object really is large"
+    );
 }
 
 #[test]

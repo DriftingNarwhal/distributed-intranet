@@ -18,8 +18,7 @@
 use intranet_app::{DirectoryListing, browse, name_registration_entry, resolve};
 use intranet_crypto::{Hash, Timestamp};
 use intranet_governance::{
-    AppName, Capability, EntryBody, GroupId, LogEntry, MembershipAction,
-    NetworkPolicy, PointerId,
+    AppName, Capability, EntryBody, GroupId, LogEntry, MembershipAction, NetworkPolicy, PointerId,
 };
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_storage::{AppendSetEntry, AppendSetView, decode_entry, encode_entry};
@@ -31,7 +30,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 /// Genesis granting `everyone` read plus the ordinary registration capability.
@@ -59,7 +60,12 @@ fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
     )
 }
 
-fn admit(founder: &PerNetworkIdentity, parent: Hash, who: &PerNetworkIdentity, at: i64) -> LogEntry {
+fn admit(
+    founder: &PerNetworkIdentity,
+    parent: Hash,
+    who: &PerNetworkIdentity,
+    at: i64,
+) -> LogEntry {
     LogEntry::create(
         founder,
         Some(parent),
@@ -76,7 +82,8 @@ async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
     node.set_dht_server_mode(true);
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -132,9 +139,12 @@ async fn pair() -> (MemberNode, MemberNode) {
 
     publisher.dial_candidates([browser_addr]).unwrap();
     assert!(
-        drive(&mut publisher, &mut browser, Duration::from_secs(20), |a, b| {
-            a.governance_log().len() == 2 && b.governance_log().len() == 2
-        })
+        drive(
+            &mut publisher,
+            &mut browser,
+            Duration::from_secs(20),
+            |a, b| { a.governance_log().len() == 2 && b.governance_log().len() == 2 }
+        )
         .await
     );
 
@@ -256,9 +266,12 @@ async fn a_name_registered_on_one_node_resolves_on_another() {
     let publisher_peer = publisher.peer_id();
     browser.sync_with(publisher_peer);
     assert!(
-        drive(&mut publisher, &mut browser, Duration::from_secs(20), |_, b| {
-            b.governance_log().len() == 3
-        })
+        drive(
+            &mut publisher,
+            &mut browser,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().len() == 3 }
+        )
         .await,
         "the registration should reach the other node"
     );
@@ -283,9 +296,12 @@ async fn the_directory_index_makes_a_published_app_browsable() {
     let publisher_peer = publisher.peer_id();
     browser.sync_with(publisher_peer);
     assert!(
-        drive(&mut publisher, &mut browser, Duration::from_secs(20), |_, b| {
-            b.governance_log().len() == 3
-        })
+        drive(
+            &mut publisher,
+            &mut browser,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().len() == 3 }
+        )
         .await
     );
     settle(&mut publisher, &mut browser, Duration::from_secs(3)).await;
@@ -327,9 +343,12 @@ async fn a_name_still_resolves_when_the_directory_index_is_empty() {
     let publisher_peer = publisher.peer_id();
     browser.sync_with(publisher_peer);
     assert!(
-        drive(&mut publisher, &mut browser, Duration::from_secs(20), |_, b| {
-            b.governance_log().len() == 3
-        })
+        drive(
+            &mut publisher,
+            &mut browser,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().len() == 3 }
+        )
         .await
     );
     settle(&mut publisher, &mut browser, Duration::from_secs(2)).await;
@@ -365,9 +384,12 @@ async fn a_directory_entry_cannot_claim_a_name_its_publisher_does_not_own() {
     let publisher_peer = publisher.peer_id();
     browser.sync_with(publisher_peer);
     assert!(
-        drive(&mut publisher, &mut browser, Duration::from_secs(20), |_, b| {
-            b.governance_log().len() == 3
-        })
+        drive(
+            &mut publisher,
+            &mut browser,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().len() == 3 }
+        )
         .await
     );
 

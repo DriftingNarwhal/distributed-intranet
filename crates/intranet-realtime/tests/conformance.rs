@@ -10,8 +10,7 @@ use intranet_ledger::{
 };
 use intranet_realtime::{
     CallId, CallKey, CallKeyEnvelope, CallSession, LiveStream, ProposalOutcome, RealtimeError,
-    RelayObservation, RenegotiationTrigger, StreamId, Topology, VodRetention, assign_tier,
-    relay,
+    RelayObservation, RenegotiationTrigger, StreamId, Topology, VodRetention, assign_tier, relay,
 };
 use intranet_storage::Cid;
 use std::collections::BTreeSet;
@@ -19,7 +18,9 @@ use std::collections::BTreeSet;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -115,10 +116,7 @@ fn a_relay_holding_only_the_frame_learns_nothing() {
     let frame = key.seal_frame(&call(), 1, b"a private conversation");
 
     assert!(
-        !frame
-            .ciphertext
-            .windows(7)
-            .any(|w| w == b"private"),
+        !frame.ciphertext.windows(7).any(|w| w == b"private"),
         "plaintext must not survive into what a relay forwards"
     );
     assert!(
@@ -171,8 +169,7 @@ fn call_keys_are_delivered_under_identity_derived_secrets() {
     let participant = identity(3);
     let key = CallKey::generate().unwrap();
 
-    let envelope =
-        CallKeyEnvelope::seal(&initiator, &participant.id(), call(), &key).unwrap();
+    let envelope = CallKeyEnvelope::seal(&initiator, &participant.id(), call(), &key).unwrap();
     let received = envelope.open(&participant).unwrap();
 
     assert_eq!(received.fingerprint(), key.fingerprint());
@@ -185,8 +182,7 @@ fn an_envelope_cannot_be_opened_by_anyone_else() {
     let eavesdropper = identity(4);
     let key = CallKey::generate().unwrap();
 
-    let envelope =
-        CallKeyEnvelope::seal(&initiator, &participant.id(), call(), &key).unwrap();
+    let envelope = CallKeyEnvelope::seal(&initiator, &participant.id(), call(), &key).unwrap();
     assert!(matches!(
         envelope.open(&eavesdropper),
         Err(RealtimeError::NotTheRecipient)
@@ -198,7 +194,10 @@ fn key_agreement_reaches_the_same_secret_from_both_sides() {
     let a = identity(2);
     let b = identity(3);
     assert_eq!(a.agree(&b.id()).unwrap(), b.agree(&a.id()).unwrap());
-    assert_ne!(a.agree(&b.id()).unwrap(), a.agree(&identity(4).id()).unwrap());
+    assert_ne!(
+        a.agree(&b.id()).unwrap(),
+        a.agree(&identity(4).id()).unwrap()
+    );
 }
 
 #[test]
@@ -244,30 +243,35 @@ fn reaching_the_threshold_triggers_a_move_to_relay() {
 #[test]
 fn mesh_upload_cost_grows_with_the_call() {
     // The number the threshold exists to bound.
-    assert_eq!(CallSession::open(participants(2), 4).mesh_upload_streams(), 1);
-    assert_eq!(CallSession::open(participants(5), 4).mesh_upload_streams(), 4);
+    assert_eq!(
+        CallSession::open(participants(2), 4).mesh_upload_streams(),
+        1
+    );
+    assert_eq!(
+        CallSession::open(participants(5), 4).mesh_upload_streams(),
+        4
+    );
 }
 
 #[test]
 fn dropping_below_the_threshold_returns_to_mesh() {
     let relay = identity(50).id();
     let mut session = CallSession::open(participants(5), 4);
-    session
-        .receive_proposal(
-            session
-                .propose(
-                    identity(2).id(),
-                    RenegotiationTrigger::ThresholdReached,
-                    Some(intranet_realtime::RelayChoice {
-                        relay,
-                        worst_latency_millis: 10,
-                        upload_capacity: 1_000_000,
-                    }),
-                    at(100),
-                )
-                .unwrap(),
-            at(100),
-        );
+    session.receive_proposal(
+        session
+            .propose(
+                identity(2).id(),
+                RenegotiationTrigger::ThresholdReached,
+                Some(intranet_realtime::RelayChoice {
+                    relay,
+                    worst_latency_millis: 10,
+                    upload_capacity: 1_000_000,
+                }),
+                at(100),
+            )
+            .unwrap(),
+        at(100),
+    );
     session.complete_handover().unwrap();
     assert!(session.active_topology().involves_relay());
 
@@ -348,7 +352,10 @@ fn media_keeps_flowing_over_the_old_path_until_handover_completes() {
         Topology::Mesh,
         "media is still on the old path"
     );
-    assert!(session.pending_topology().is_some(), "the new one is coming up");
+    assert!(
+        session.pending_topology().is_some(),
+        "the new one is coming up"
+    );
 
     session.complete_handover().unwrap();
     assert!(session.active_topology().involves_relay());
@@ -493,10 +500,26 @@ fn relay_selection_minimises_the_worst_participant_latency() {
     let people: Vec<PerNetworkIdentityId> = members.iter().copied().collect();
 
     let observations = vec![
-        RelayObservation { relay: near, participant: people[0], latency_millis: 40 },
-        RelayObservation { relay: near, participant: people[1], latency_millis: 45 },
-        RelayObservation { relay: lopsided, participant: people[0], latency_millis: 2 },
-        RelayObservation { relay: lopsided, participant: people[1], latency_millis: 400 },
+        RelayObservation {
+            relay: near,
+            participant: people[0],
+            latency_millis: 40,
+        },
+        RelayObservation {
+            relay: near,
+            participant: people[1],
+            latency_millis: 45,
+        },
+        RelayObservation {
+            relay: lopsided,
+            participant: people[0],
+            latency_millis: 2,
+        },
+        RelayObservation {
+            relay: lopsided,
+            participant: people[1],
+            latency_millis: 400,
+        },
     ];
 
     let choice = relay::select(
@@ -522,9 +545,21 @@ fn a_candidate_not_measured_by_everyone_is_skipped() {
 
     let observations = vec![
         // Only one participant measured this one.
-        RelayObservation { relay: identity(3).id(), participant: people[0], latency_millis: 1 },
-        RelayObservation { relay: identity(2).id(), participant: people[0], latency_millis: 50 },
-        RelayObservation { relay: identity(2).id(), participant: people[1], latency_millis: 50 },
+        RelayObservation {
+            relay: identity(3).id(),
+            participant: people[0],
+            latency_millis: 1,
+        },
+        RelayObservation {
+            relay: identity(2).id(),
+            participant: people[0],
+            latency_millis: 50,
+        },
+        RelayObservation {
+            relay: identity(2).id(),
+            participant: people[1],
+            latency_millis: 50,
+        },
     ];
 
     let choice = relay::select(
@@ -580,8 +615,16 @@ fn an_unreliable_relay_is_ranked_behind_a_slower_reliable_one() {
     }
 
     let observations = vec![
-        RelayObservation { relay: flaky, participant: people[0], latency_millis: 1 },
-        RelayObservation { relay: steady, participant: people[0], latency_millis: 90 },
+        RelayObservation {
+            relay: flaky,
+            participant: people[0],
+            latency_millis: 1,
+        },
+        RelayObservation {
+            relay: steady,
+            participant: people[0],
+            latency_millis: 90,
+        },
     ];
 
     let choice = relay::select(&observations, &members, &ledger, &reliability, 0.5).unwrap();
@@ -626,7 +669,11 @@ fn stream_tiers_weight_upload_not_storage() {
 
 #[test]
 fn a_tier_is_recomputed_only_when_a_member_drops_out() {
-    let (ledger, _) = ledger_of(&[(2, 1_000_000, true), (3, 1_000_000, true), (5, 1_000_000, true)]);
+    let (ledger, _) = ledger_of(&[
+        (2, 1_000_000, true),
+        (3, 1_000_000, true),
+        (5, 1_000_000, true),
+    ]);
     let stream = StreamId::from_hash(Hash::from_bytes([1u8; 32]));
     let live = LiveStream::start(stream, &ledger, 2, 10);
 
@@ -642,7 +689,11 @@ fn a_tier_is_recomputed_only_when_a_member_drops_out() {
 
 #[test]
 fn a_departed_tier_member_is_replaced_on_recompute() {
-    let (ledger, _) = ledger_of(&[(2, 1_000_000, true), (3, 1_000_000, true), (5, 1_000_000, true)]);
+    let (ledger, _) = ledger_of(&[
+        (2, 1_000_000, true),
+        (3, 1_000_000, true),
+        (5, 1_000_000, true),
+    ]);
     let stream = StreamId::from_hash(Hash::from_bytes([1u8; 32]));
     let mut live = LiveStream::start(stream, &ledger, 2, 10);
     let departed = live.tier()[0];

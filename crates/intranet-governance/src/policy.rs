@@ -554,7 +554,9 @@ mod tests {
         assert!(policy.allows_content_type(&ContentType::new("text")));
 
         // A chat-style network scoping itself away from app hosting entirely.
-        policy.content_type_allowlist.remove(&ContentType::new("app-bundle"));
+        policy
+            .content_type_allowlist
+            .remove(&ContentType::new("app-bundle"));
         assert!(!policy.allows_content_type(&ContentType::new("app-bundle")));
     }
 

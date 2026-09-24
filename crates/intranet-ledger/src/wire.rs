@@ -309,7 +309,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     fn advertisement(n: u8, window: Option<TimeOfDayWindow>) -> CapabilityAdvertisement {
@@ -449,7 +451,10 @@ mod tests {
                 truncated: true,
             },
         ] {
-            assert_eq!(LedgerResponse::decode(&response.encode()).unwrap(), response);
+            assert_eq!(
+                LedgerResponse::decode(&response.encode()).unwrap(),
+                response
+            );
         }
     }
 

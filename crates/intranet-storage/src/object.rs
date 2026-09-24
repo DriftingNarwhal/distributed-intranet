@@ -101,8 +101,12 @@ impl Manifest {
         let mut cursor = 0usize;
 
         let take = |cursor: &mut usize, n: usize| -> Result<&[u8], StorageError> {
-            let end = cursor.checked_add(n).ok_or(StorageError::MalformedManifest)?;
-            let slice = bytes.get(*cursor..end).ok_or(StorageError::MalformedManifest)?;
+            let end = cursor
+                .checked_add(n)
+                .ok_or(StorageError::MalformedManifest)?;
+            let slice = bytes
+                .get(*cursor..end)
+                .ok_or(StorageError::MalformedManifest)?;
             *cursor = end;
             Ok(slice)
         };
@@ -369,13 +373,11 @@ pub fn decode(
     let mut plaintext = Vec::with_capacity(manifest.plaintext_len as usize);
 
     for cid in &manifest.chunks {
-        let blob = blobs.get(cid).ok_or(StorageError::MissingChunk {
-            cid: cid.short(),
-        })?;
+        let blob = blobs
+            .get(cid)
+            .ok_or(StorageError::MissingChunk { cid: cid.short() })?;
         if !cid.verifies(blob) {
-            return Err(StorageError::ChunkVerificationFailed {
-                cid: cid.short(),
-            });
+            return Err(StorageError::ChunkVerificationFailed { cid: cid.short() });
         }
         plaintext.extend_from_slice(&dek.open_chunk(blob)?);
     }
@@ -414,7 +416,10 @@ mod tests {
         let dek = Dek::generate().unwrap();
         let content = data(300_000, 3);
         let object = encode(&content, &dek, ChunkSpec::default());
-        assert_eq!(decode(&object.manifest, &blobs(&object), &dek).unwrap(), content);
+        assert_eq!(
+            decode(&object.manifest, &blobs(&object), &dek).unwrap(),
+            content
+        );
     }
 
     #[test]
@@ -422,7 +427,10 @@ mod tests {
         let dek = Dek::generate().unwrap();
         let object = encode(&[], &dek, ChunkSpec::default());
         assert!(object.chunks.is_empty());
-        assert_eq!(decode(&object.manifest, &blobs(&object), &dek).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            decode(&object.manifest, &blobs(&object), &dek).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
@@ -511,7 +519,11 @@ mod tests {
                 "plaintext must not survive into stored bytes"
             );
         }
-        assert!(Dek::from_bytes([0u8; 32]).open_chunk(&object.chunks[0].1).is_err());
+        assert!(
+            Dek::from_bytes([0u8; 32])
+                .open_chunk(&object.chunks[0].1)
+                .is_err()
+        );
     }
 
     #[test]

@@ -25,7 +25,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 /// The TCP port component of a multiaddr, if it has one.
@@ -144,7 +146,11 @@ async fn port_reuse_survives_dialling_two_different_peers() {
     })
     .await;
 
-    assert_eq!(observed_ports.len(), 2, "both peers should have been reached");
+    assert_eq!(
+        observed_ports.len(),
+        2,
+        "both peers should have been reached"
+    );
     for port in observed_ports {
         assert_eq!(
             port, dialer_port,

@@ -2,8 +2,8 @@
 
 use intranet_crypto::Timestamp;
 use intranet_governance::{
-    Capability, CapabilitySet, EntryBody, GovernanceState, GroupId, LogEntry,
-    MembershipAction, NetworkPolicy,
+    Capability, CapabilitySet, EntryBody, GovernanceState, GroupId, LogEntry, MembershipAction,
+    NetworkPolicy,
 };
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_ledger::{
@@ -15,7 +15,9 @@ const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 const OTHER: NetworkId = NetworkId::from_bytes([43u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -127,7 +129,9 @@ fn a_forged_advertisement_is_refused() {
 #[test]
 fn an_advertisement_from_another_network_is_refused() {
     let node = identity(2);
-    let elsewhere = MasterSeed::from_entropy([2u8; 32]).identity_for(&OTHER).unwrap();
+    let elsewhere = MasterSeed::from_entropy([2u8; 32])
+        .identity_for(&OTHER)
+        .unwrap();
     let state = GovernanceState::replay(&network_with(&[&node])).unwrap();
     let mut ledger = CapabilityLedger::new(NETWORK);
 
@@ -143,8 +147,12 @@ fn a_newer_advertisement_replaces_an_older_one() {
     let state = GovernanceState::replay(&network_with(&[&node])).unwrap();
     let mut ledger = CapabilityLedger::new(NETWORK);
 
-    ledger.insert(advert_for(&node, 1_000, 500, false, 100), &state).unwrap();
-    ledger.insert(advert_for(&node, 9_000, 500, false, 200), &state).unwrap();
+    ledger
+        .insert(advert_for(&node, 1_000, 500, false, 100), &state)
+        .unwrap();
+    ledger
+        .insert(advert_for(&node, 9_000, 500, false, 200), &state)
+        .unwrap();
 
     assert_eq!(ledger.len(), 1);
     assert_eq!(ledger.get(&node.id()).unwrap().storage_offered, 9_000);
@@ -158,8 +166,12 @@ fn a_stale_advertisement_arriving_late_does_not_overwrite_a_newer_one() {
     let state = GovernanceState::replay(&network_with(&[&node])).unwrap();
     let mut ledger = CapabilityLedger::new(NETWORK);
 
-    ledger.insert(advert_for(&node, 9_000, 500, false, 200), &state).unwrap();
-    ledger.insert(advert_for(&node, 1_000, 500, false, 100), &state).unwrap();
+    ledger
+        .insert(advert_for(&node, 9_000, 500, false, 200), &state)
+        .unwrap();
+    ledger
+        .insert(advert_for(&node, 1_000, 500, false, 100), &state)
+        .unwrap();
 
     assert_eq!(
         ledger.get(&node.id()).unwrap().storage_offered,
@@ -173,7 +185,9 @@ fn expiry_drops_unrefreshed_advertisements() {
     let node = identity(2);
     let state = GovernanceState::replay(&network_with(&[&node])).unwrap();
     let mut ledger = CapabilityLedger::new(NETWORK);
-    ledger.insert(advert_for(&node, 1_000, 500, false, 0), &state).unwrap();
+    ledger
+        .insert(advert_for(&node, 1_000, 500, false, 0), &state)
+        .unwrap();
 
     assert_eq!(ledger.expire(at(1_000), 5_000), 0);
     assert_eq!(ledger.expire(at(6_000), 5_000), 1);
@@ -187,7 +201,9 @@ fn reconciling_drops_advertisements_from_departed_members() {
     let state = GovernanceState::replay(&chain).unwrap();
 
     let mut ledger = CapabilityLedger::new(NETWORK);
-    ledger.insert(advert_for(&node, 1_000, 500, false, 0), &state).unwrap();
+    ledger
+        .insert(advert_for(&node, 1_000, 500, false, 0), &state)
+        .unwrap();
     assert_eq!(ledger.len(), 1);
 
     push(
@@ -275,12 +291,16 @@ fn stream_tiers_draw_from_media_relays_and_weight_upload() {
     let storage_only = identity(2);
     let relay_a = identity(3);
     let relay_b = identity(4);
-    let state = GovernanceState::replay(&network_with(&[&storage_only, &relay_a, &relay_b])).unwrap();
+    let state =
+        GovernanceState::replay(&network_with(&[&storage_only, &relay_a, &relay_b])).unwrap();
 
     let mut ledger = CapabilityLedger::new(NETWORK);
     // Enormous disk, but not willing to relay media.
     ledger
-        .insert(advert_for(&storage_only, 100_000_000, 10_000_000, false, 0), &state)
+        .insert(
+            advert_for(&storage_only, 100_000_000, 10_000_000, false, 0),
+            &state,
+        )
         .unwrap();
     ledger
         .insert(advert_for(&relay_a, 1_000, 9_000_000, true, 0), &state)
@@ -331,7 +351,10 @@ fn an_unobserved_peer_reports_no_evidence_rather_than_perfect_reliability() {
     // Collapsing "never seen" into 0.0 would let an unknown peer look exactly
     // as good as one with a long clean record.
     let observations = ReliabilityObservations::new();
-    assert_eq!(observations.for_peer(&identity(9).id()).failure_rate(), None);
+    assert_eq!(
+        observations.for_peer(&identity(9).id()).failure_rate(),
+        None
+    );
     assert_eq!(observations.for_peer(&identity(9).id()).total(), 0);
 }
 
@@ -401,11 +424,20 @@ fn an_authorized_auditor_receives_signed_raw_counters() {
 
     let request = AuditRequest::create(&auditor, subject.id(), at(1_000));
     let response = observations
-        .respond_to_audit(&request, &responder, &state, at(1_000), AuditRateLimit::default())
+        .respond_to_audit(
+            &request,
+            &responder,
+            &state,
+            at(1_000),
+            AuditRateLimit::default(),
+        )
         .expect("an authorized audit must be answered");
 
-    assert!(response.verify().is_ok(), "responses are signed so a requester \
-         cross-referencing many observers can prove each came from the node it claims");
+    assert!(
+        response.verify().is_ok(),
+        "responses are signed so a requester \
+         cross-referencing many observers can prove each came from the node it claims"
+    );
     assert_eq!(response.observations.failed, 3);
     assert_eq!(response.observations.verified, 1);
     assert_eq!(response.subject, subject.id());
@@ -507,7 +539,13 @@ fn responding_is_mandatory_even_with_nothing_to_report() {
     let mut observations = ReliabilityObservations::new();
     let request = AuditRequest::create(&auditor, subject.id(), at(1_000));
     let response = observations
-        .respond_to_audit(&request, &responder, &state, at(1_000), AuditRateLimit::default())
+        .respond_to_audit(
+            &request,
+            &responder,
+            &state,
+            at(1_000),
+            AuditRateLimit::default(),
+        )
         .expect("a node with no observations must still answer");
 
     assert_eq!(response.observations.total(), 0);
@@ -528,7 +566,13 @@ fn a_tampered_audit_response_fails_verification() {
 
     let request = AuditRequest::create(&auditor, subject.id(), at(1_000));
     let mut response = observations
-        .respond_to_audit(&request, &responder, &state, at(1_000), AuditRateLimit::default())
+        .respond_to_audit(
+            &request,
+            &responder,
+            &state,
+            at(1_000),
+            AuditRateLimit::default(),
+        )
         .unwrap();
 
     response.observations.failed = 9_999;

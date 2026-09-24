@@ -385,7 +385,10 @@ impl RelayGuard {
         circuit: CircuitId,
         bytes: u64,
     ) -> Result<Option<CircuitClosure>, RelayDenied> {
-        let entry = self.circuits.get_mut(&circuit).ok_or(RelayDenied::NoCircuit)?;
+        let entry = self
+            .circuits
+            .get_mut(&circuit)
+            .ok_or(RelayDenied::NoCircuit)?;
         entry.bytes = entry.bytes.saturating_add(bytes);
 
         if entry.bytes > self.limits.max_circuit_bytes {

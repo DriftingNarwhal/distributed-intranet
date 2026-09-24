@@ -68,9 +68,7 @@ impl ChunkStore {
     /// (§4.4 step 5, Core Protocol Spec §4.6).
     pub fn insert(&mut self, cid: Cid, bytes: Vec<u8>) -> Result<(), StorageError> {
         if !cid.verifies(&bytes) {
-            return Err(StorageError::ChunkVerificationFailed {
-                cid: cid.short(),
-            });
+            return Err(StorageError::ChunkVerificationFailed { cid: cid.short() });
         }
         self.chunks.insert(cid, bytes);
         Ok(())

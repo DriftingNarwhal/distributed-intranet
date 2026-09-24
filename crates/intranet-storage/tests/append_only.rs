@@ -38,7 +38,8 @@ fn agrees_at_every_step(pieces: &[Vec<u8>], spec: ChunkSpec) {
         let encoded = encode(&whole, &dek, spec);
 
         assert_eq!(
-            appended.manifest.chunks, encoded.manifest.chunks,
+            appended.manifest.chunks,
+            encoded.manifest.chunks,
             "chunk ids diverged at step {step} ({} bytes)",
             whole.len()
         );
@@ -47,7 +48,8 @@ fn agrees_at_every_step(pieces: &[Vec<u8>], spec: ChunkSpec) {
             "declared length diverged at step {step}"
         );
         assert_eq!(
-            appended.chunks, encoded.chunks,
+            appended.chunks,
+            encoded.chunks,
             "ciphertext diverged at step {step} ({} bytes)",
             whole.len()
         );
@@ -192,7 +194,8 @@ fn a_sub_target_region_is_still_cut_once_anything_is_settled() {
             let appended = incremental.extend(&piece, &dek).clone();
             let encoded = encode(&whole, &dek, spec);
             assert_eq!(
-                appended.manifest.chunks, encoded.manifest.chunks,
+                appended.manifest.chunks,
+                encoded.manifest.chunks,
                 "diverged at seed {seed} step {step} with {} bytes",
                 whole.len()
             );

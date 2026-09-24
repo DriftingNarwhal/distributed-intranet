@@ -27,7 +27,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn tcp_port(address: &Multiaddr) -> Option<u16> {
@@ -126,14 +128,18 @@ async fn observed_source_port(listen_on: &str, how: Reserve) -> (u16, u16) {
     .await
     .expect("the member should reach the relay");
 
-    (listen_port.expect("a listen port should have been reported"), observed)
+    (
+        listen_port.expect("a listen port should have been reported"),
+        observed,
+    )
 }
 
 #[tokio::test]
 async fn a_concrete_bind_reuses_the_port_even_when_reserving_immediately() {
     // The control: binding a concrete address registers synchronously, so the
     // ordering does not matter and reuse happens regardless.
-    let (listen, observed) = observed_source_port("/ip4/127.0.0.1/tcp/0", Reserve::Immediately).await;
+    let (listen, observed) =
+        observed_source_port("/ip4/127.0.0.1/tcp/0", Reserve::Immediately).await;
     assert_eq!(
         listen, observed,
         "a concrete bind should reuse its port without needing to settle first"
@@ -195,13 +201,17 @@ async fn reserve_via_relay_restores_port_reuse_for_a_wildcard_bind() {
 async fn observed_source_port_routable_relay(how: Reserve) -> (u16, u16) {
     let relay_identity = identity(1);
     let mut relay = RelayNode::new(&relay_identity).unwrap();
-    relay.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    relay
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
 
     let relay_addr = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let NodeEvent::Listening(address) = relay.next_event().await
                 && tcp_port(&address).is_some()
-                && !address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+                && !address
+                    .iter()
+                    .any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
             {
                 return address;
             }
@@ -211,12 +221,16 @@ async fn observed_source_port_routable_relay(how: Reserve) -> (u16, u16) {
     .expect("relay should listen on a routable address");
 
     let mut member = MemberNode::new(&identity(2)).unwrap();
-    member.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    member
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
 
     let relay_full = relay_addr.with(Protocol::P2p(relay_identity.peer_id()));
     match how {
         Reserve::ViaHelper => member.reserve_via_relay(relay_full).await.unwrap(),
-        _ => member.listen_on(relay_full.with(Protocol::P2pCircuit)).unwrap(),
+        _ => member
+            .listen_on(relay_full.with(Protocol::P2pCircuit))
+            .unwrap(),
     }
 
     let mut routable_listen = None;
@@ -251,8 +265,10 @@ async fn observed_source_port_routable_relay(how: Reserve) -> (u16, u16) {
 #[tokio::test]
 async fn diagnostic_wildcard_with_routable_relay() {
     let (listen, observed) = observed_source_port_routable_relay(Reserve::ViaHelper).await;
-    println!("ROUTABLE-RELAY listen_port={listen} observed_source_port={observed} reused={}",
-        listen == observed);
+    println!(
+        "ROUTABLE-RELAY listen_port={listen} observed_source_port={observed} reused={}",
+        listen == observed
+    );
 }
 
 #[tokio::test]
@@ -266,13 +282,17 @@ async fn reserve_via_relay_waits_for_a_listener_of_the_relays_family() {
     // case where both are live at once and the race stops being theoretical.
     let relay_identity = identity(1);
     let mut relay = RelayNode::new(&relay_identity).unwrap();
-    relay.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    relay
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
 
     let relay_addr = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let NodeEvent::Listening(address) = relay.next_event().await
                 && tcp_port(&address).is_some()
-                && !address.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
+                && !address
+                    .iter()
+                    .any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback()))
             {
                 return address;
             }
@@ -284,7 +304,9 @@ async fn reserve_via_relay_waits_for_a_listener_of_the_relays_family() {
     // Bind IPv6 first, so the naive wait would be satisfied by the wrong family.
     let mut member = MemberNode::new(&identity(2)).unwrap();
     member.listen_on("/ip6/::/tcp/0".parse().unwrap()).unwrap();
-    member.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    member
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
 
     let relay_full = relay_addr.with(Protocol::P2p(relay_identity.peer_id()));
     member.reserve_via_relay(relay_full).await.unwrap();

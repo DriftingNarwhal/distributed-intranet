@@ -407,7 +407,9 @@ mod tests {
         let identity = MasterSeed::from_entropy([8u8; 32])
             .identity_for(&network)
             .unwrap();
-        let device = DeviceSeed::from_entropy([8u8; 32]).key_for(&network).unwrap();
+        let device = DeviceSeed::from_entropy([8u8; 32])
+            .key_for(&network)
+            .unwrap();
         assert_ne!(identity.id(), device.id());
     }
 
@@ -429,7 +431,11 @@ mod tests {
         assert_ne!(a, b, "purpose must separate paths");
         assert_ne!(a, c, "network must separate paths");
         for index in a {
-            assert_eq!(index & 0x8000_0000, 0, "high bit must be free for hardening");
+            assert_eq!(
+                index & 0x8000_0000,
+                0,
+                "high bit must be free for hardening"
+            );
         }
     }
 
@@ -462,7 +468,9 @@ mod tests {
     fn short_backup_phrases_are_rejected_not_silently_padded() {
         // A 12-word phrase carries 16 bytes of entropy, not 32. Accepting it
         // would silently halve the master seed's entropy.
-        let twelve = bip39::Mnemonic::from_entropy(&[7u8; 16]).unwrap().to_string();
+        let twelve = bip39::Mnemonic::from_entropy(&[7u8; 16])
+            .unwrap()
+            .to_string();
         assert!(matches!(
             MasterSeed::from_backup_phrase(&twelve),
             Err(IdentityError::WrongEntropyLength { got: 16 })
@@ -511,8 +519,12 @@ mod peer_id_tests {
     #[test]
     fn different_identities_have_different_peer_ids() {
         let network = NetworkId::from_bytes([9u8; 32]);
-        let a = MasterSeed::from_entropy([1u8; 32]).identity_for(&network).unwrap();
-        let b = MasterSeed::from_entropy([2u8; 32]).identity_for(&network).unwrap();
+        let a = MasterSeed::from_entropy([1u8; 32])
+            .identity_for(&network)
+            .unwrap();
+        let b = MasterSeed::from_entropy([2u8; 32])
+            .identity_for(&network)
+            .unwrap();
         assert_ne!(a.id().peer_id(), b.id().peer_id());
     }
 }

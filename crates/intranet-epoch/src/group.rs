@@ -22,12 +22,12 @@
 //! deliberately does **not** decide their order; that belongs to the log.
 
 use crate::EpochError;
+use intranet_crypto::{Dec, Enc};
 use intranet_identity::PerNetworkIdentityId;
 use intranet_storage::EpochKey;
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
-use intranet_crypto::{Dec, Enc};
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 
@@ -440,8 +440,8 @@ impl GroupSession {
 
         // An add is among the committed proposals, so a Welcome is not optional
         // here the way it is for a bare removal.
-        let welcome = welcome
-            .ok_or_else(|| EpochError::Mls("a replacement produced no welcome".into()))?;
+        let welcome =
+            welcome.ok_or_else(|| EpochError::Mls("a replacement produced no welcome".into()))?;
 
         Ok(Rotation {
             commit: Self::encode(&commit)?,
@@ -565,13 +565,9 @@ impl PendingMember {
         };
 
         let config = GroupSession::config();
-        let staged = StagedWelcome::new_from_welcome(
-            &self.provider,
-            config.join_config(),
-            welcome,
-            None,
-        )
-        .map_err(|e| EpochError::Mls(format!("stage welcome: {e:?}")))?;
+        let staged =
+            StagedWelcome::new_from_welcome(&self.provider, config.join_config(), welcome, None)
+                .map_err(|e| EpochError::Mls(format!("stage welcome: {e:?}")))?;
 
         let group = staged
             .into_group(&self.provider)

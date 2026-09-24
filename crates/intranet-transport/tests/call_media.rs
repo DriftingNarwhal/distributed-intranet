@@ -16,8 +16,7 @@ use intranet_governance::{
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
 use intranet_realtime::{
     CallId, CallKey, CallKeyEnvelope, MediaEnvelope, Recipient, RenegotiationTrigger, SignalBody,
-    Topology,
-    TopologyProposal,
+    Topology, TopologyProposal,
 };
 use intranet_transport::{MediaRelayDenied, MediaRelayLimits, MemberNode, NodeEvent};
 use libp2p::Multiaddr;
@@ -27,7 +26,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -64,7 +65,8 @@ fn admit(
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -125,11 +127,17 @@ async fn trio() -> (MemberNode, MemberNode, MemberNode) {
     callee.dial_candidates([relay_addr]).unwrap();
 
     assert!(
-        drive(&mut caller, &mut callee, &mut relay, Duration::from_secs(25), |a, b, c| {
-            a.governance_log().len() == 3
-                && b.governance_log().len() == 3
-                && c.governance_log().len() == 3
-        })
+        drive(
+            &mut caller,
+            &mut callee,
+            &mut relay,
+            Duration::from_secs(25),
+            |a, b, c| {
+                a.governance_log().len() == 3
+                    && b.governance_log().len() == 3
+                    && c.governance_log().len() == 3
+            }
+        )
         .await,
         "all three should agree on governance"
     );
@@ -315,7 +323,9 @@ async fn a_relay_forwards_media_it_cannot_read() {
 
     // The relay agrees to carry the call. This is the entirety of what it is
     // told: the call id and who is in it.
-    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
+    relay
+        .relay_call(call, [caller_identity.id(), callee_identity.id()])
+        .unwrap();
     assert!(relay.is_relaying(&call));
 
     let plaintext = b"this must never reach the relay in the clear";
@@ -386,7 +396,10 @@ async fn a_relay_fans_one_envelope_out_to_the_rest_of_the_call() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     relay
-        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .relay_call(
+            call,
+            [caller_identity.id(), a_identity.id(), b_identity.id()],
+        )
         .unwrap();
 
     let plaintext = b"one envelope in, two out";
@@ -488,7 +501,9 @@ async fn a_relay_refuses_to_fan_out_for_a_sender_outside_the_call() {
 
     // Control first, so a silent drop cannot be mistaken for enforcement: the
     // relay does fan out for this call when the sender is in it.
-    relay.relay_call(call, [caller_identity.id(), a_identity.id()]).unwrap();
+    relay
+        .relay_call(call, [caller_identity.id(), a_identity.id()])
+        .unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -499,7 +514,9 @@ async fn a_relay_refuses_to_fan_out_for_a_sender_outside_the_call() {
         },
     );
     assert!(
-        await_media(&mut callee_a, &mut caller, &mut relay).await.is_some(),
+        await_media(&mut callee_a, &mut caller, &mut relay)
+            .await
+            .is_some(),
         "precondition: the relay fans out for a sender who is in the call"
     );
 
@@ -563,7 +580,10 @@ async fn a_relay_will_not_fan_out_for_a_spoofed_sender() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     relay
-        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .relay_call(
+            call,
+            [caller_identity.id(), a_identity.id(), b_identity.id()],
+        )
         .unwrap();
 
     // Control: the real caller's fan-out is carried.
@@ -577,7 +597,9 @@ async fn a_relay_will_not_fan_out_for_a_spoofed_sender() {
         },
     );
     assert!(
-        await_media(&mut callee_a, &mut caller, &mut relay).await.is_some(),
+        await_media(&mut callee_a, &mut caller, &mut relay)
+            .await
+            .is_some(),
         "precondition: the relay fans out for the participant that really sent it"
     );
 
@@ -726,7 +748,9 @@ async fn a_relaying_participant_hears_a_frame_it_has_nobody_to_forward_to() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     // The callee carries the call *and* is in it, with nobody else present.
-    callee.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
+    callee
+        .relay_call(call, [caller_identity.id(), callee_identity.id()])
+        .unwrap();
 
     let plaintext = b"nobody to pass this on to";
     caller.send_media(
@@ -857,7 +881,10 @@ async fn a_relay_stops_forwarding_once_its_byte_allowance_is_spent() {
     let call = CallId::generate().unwrap();
     let key = CallKey::generate().unwrap();
     relay
-        .relay_call(call, [caller_identity.id(), a_identity.id(), b_identity.id()])
+        .relay_call(
+            call,
+            [caller_identity.id(), a_identity.id(), b_identity.id()],
+        )
         .unwrap();
 
     let send = |caller: &mut MemberNode, seq: u64| {
@@ -887,12 +914,17 @@ async fn a_relay_stops_forwarding_once_its_byte_allowance_is_spent() {
                 _ = relay.next_event() => {}
                 _ = caller.next_event() => {}
             }
-            if delivered == 2 { return true; }
+            if delivered == 2 {
+                return true;
+            }
         }
     })
     .await
     .unwrap_or(false);
-    assert!(first, "precondition: the first frame is within the allowance");
+    assert!(
+        first,
+        "precondition: the first frame is within the allowance"
+    );
 
     // Now drain it. Each frame costs its size times two recipients.
     let mut refused = None;
@@ -985,7 +1017,9 @@ async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
     // relay carries *this* call, and the frame gets through — which establishes
     // that the path works and the caller can reach the relay at all.
     let carried = CallId::generate().unwrap();
-    relay.relay_call(carried, [caller_identity.id(), callee_identity.id()]).unwrap();
+    relay
+        .relay_call(carried, [caller_identity.id(), callee_identity.id()])
+        .unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -996,7 +1030,9 @@ async fn a_relay_refuses_to_forward_for_a_call_it_never_agreed_to_carry() {
         },
     );
     assert!(
-        await_media(&mut callee, &mut caller, &mut relay).await.is_some(),
+        await_media(&mut callee, &mut caller, &mut relay)
+            .await
+            .is_some(),
         "precondition: the relay does forward for a call it agreed to carry"
     );
 
@@ -1057,7 +1093,9 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
     // Same call, same route, same everything except who the relay was told is
     // in it — so what the assertion below observes is the participant check and
     // not some unrelated failure to deliver.
-    relay.relay_call(call, [caller_identity.id(), callee_identity.id()]).unwrap();
+    relay
+        .relay_call(call, [caller_identity.id(), callee_identity.id()])
+        .unwrap();
     caller.send_media(
         relay_identity.id(),
         MediaEnvelope {
@@ -1068,12 +1106,16 @@ async fn a_relay_will_not_forward_to_a_non_participant() {
         },
     );
     assert!(
-        await_media(&mut callee, &mut caller, &mut relay).await.is_some(),
+        await_media(&mut callee, &mut caller, &mut relay)
+            .await
+            .is_some(),
         "precondition: the relay forwards to a participant"
     );
 
     // Now the callee is no longer a participant as far as the relay was told.
-    relay.relay_call(call, [caller_identity.id(), relay_identity.id()]).unwrap();
+    relay
+        .relay_call(call, [caller_identity.id(), relay_identity.id()])
+        .unwrap();
 
     caller.send_media(
         relay_identity.id(),

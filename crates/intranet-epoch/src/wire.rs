@@ -558,8 +558,14 @@ mod tests {
         let outsider = identity(3, 7);
 
         let keys = vec![
-            (Hash::from_bytes([1u8; 32]), EpochKey::from_bytes([11u8; 32])),
-            (Hash::from_bytes([2u8; 32]), EpochKey::from_bytes([22u8; 32])),
+            (
+                Hash::from_bytes([1u8; 32]),
+                EpochKey::from_bytes([11u8; 32]),
+            ),
+            (
+                Hash::from_bytes([2u8; 32]),
+                EpochKey::from_bytes([22u8; 32]),
+            ),
         ];
         let sealed = seal_history(&sender, &recipient.id(), &keys).unwrap();
 
@@ -582,7 +588,10 @@ mod tests {
         // unwrap for reasons pointing at the wrong layer.
         let sender = identity(1, 7);
         let recipient = identity(2, 7);
-        let keys = vec![(Hash::from_bytes([1u8; 32]), EpochKey::from_bytes([11u8; 32]))];
+        let keys = vec![(
+            Hash::from_bytes([1u8; 32]),
+            EpochKey::from_bytes([11u8; 32]),
+        )];
         let mut sealed = seal_history(&sender, &recipient.id(), &keys).unwrap();
 
         sealed[0].rotation_ref = Hash::from_bytes([8u8; 32]);

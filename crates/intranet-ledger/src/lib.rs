@@ -30,12 +30,12 @@ pub mod wire;
 
 pub use advertisement::{BandwidthCap, CapabilityAdvertisement, ComputeClass, TimeOfDayWindow};
 pub use placement::{ScoredCandidate, WeightField};
+pub use reliability::{
+    AuditRateLimit, AuditRequest, AuditResponse, PeerObservations, ReliabilityObservations,
+};
 pub use wire::{
     LedgerRequest, LedgerResponse, MAX_ADVERTISEMENTS_PER_RESPONSE, decode_advertisement,
     encode_advertisement,
-};
-pub use reliability::{
-    AuditRateLimit, AuditRequest, AuditResponse, PeerObservations, ReliabilityObservations,
 };
 
 use intranet_crypto::Timestamp;

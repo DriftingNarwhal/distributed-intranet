@@ -168,12 +168,7 @@ impl DirectMessage {
             .map_err(|_| DirectError::BadSignature)
     }
 
-    fn signed(
-        sender: &PerNetworkIdentityId,
-        namespace: &str,
-        kind: &str,
-        payload: &[u8],
-    ) -> Enc {
+    fn signed(sender: &PerNetworkIdentityId, namespace: &str, kind: &str, payload: &[u8]) -> Enc {
         let mut e = Enc::domain(DIRECT_SIGNED_DOMAIN);
         sender.encode(&mut e);
         e.str(namespace);

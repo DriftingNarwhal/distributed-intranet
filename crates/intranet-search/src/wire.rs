@@ -30,8 +30,8 @@
 
 use crate::{Field, Posting, SearchError, Term, TermStats};
 use intranet_crypto::{Dec, DecodeError, Enc, Signature, Timestamp};
-use intranet_identity::PerNetworkIdentityId;
 use intranet_governance::PointerId;
+use intranet_identity::PerNetworkIdentityId;
 use std::collections::BTreeMap;
 
 /// Domain tag for a posting on the wire.
@@ -154,7 +154,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     fn posting(publisher: &PerNetworkIdentity) -> Posting {

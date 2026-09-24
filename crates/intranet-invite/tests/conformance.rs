@@ -2,7 +2,7 @@
 
 use intranet_crypto::Timestamp;
 use intranet_governance::{
-    Capability, CapabilitySet, EntryBody, EVERYONE, GovernanceState, GroupId, InviteProvenance,
+    Capability, CapabilitySet, EVERYONE, EntryBody, GovernanceState, GroupId, InviteProvenance,
     LogEntry, MembershipAction, NetworkPolicy, starter_content_types,
 };
 use intranet_identity::{MasterSeed, NetworkId, PerNetworkIdentity};
@@ -12,7 +12,9 @@ const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 const OTHER_NETWORK: NetworkId = NetworkId::from_bytes([43u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -256,7 +258,9 @@ fn revoking_an_admin_kills_their_outstanding_invites() {
     let invite = valid_invite(&deputy);
     let joiner = identity(9);
     assert!(
-        invite.validate(&joiner.id(), &state_of(&chain), at(50)).is_ok(),
+        invite
+            .validate(&joiner.id(), &state_of(&chain), at(50))
+            .is_ok(),
         "while the deputy holds approve-node the invite works"
     );
 
@@ -369,7 +373,10 @@ fn use_count_is_derived_from_replayed_membership_provenance() {
     assert!(
         matches!(
             invite.validate(&identity(11).id(), &state_of(&chain), at(50)),
-            Err(InviteError::Exhausted { used: 2, max_uses: 2 })
+            Err(InviteError::Exhausted {
+                used: 2,
+                max_uses: 2
+            })
         ),
         "an exhausted invite must be refused"
     );
@@ -630,7 +637,9 @@ fn an_invite_and_a_join_request_cannot_be_decoded_as_each_other() {
     let request = intranet_invite::JoinRequest::create(&joiner, invite.clone());
 
     assert!(intranet_invite::decode_invite(&request.encode()).is_err());
-    assert!(intranet_invite::JoinRequest::decode(&intranet_invite::encode_invite(&invite)).is_err());
+    assert!(
+        intranet_invite::JoinRequest::decode(&intranet_invite::encode_invite(&invite)).is_err()
+    );
 }
 
 #[test]
@@ -645,5 +654,8 @@ fn decoding_an_invite_establishes_nothing_about_it() {
     let carried = intranet_invite::encode_invite(&invite);
     let back = intranet_invite::decode_invite(&carried).expect("still decodes");
     assert_eq!(back.max_uses, 99);
-    assert!(back.verify_signature().is_err(), "tampering is caught later, not here");
+    assert!(
+        back.verify_signature().is_err(),
+        "tampering is caught later, not here"
+    );
 }

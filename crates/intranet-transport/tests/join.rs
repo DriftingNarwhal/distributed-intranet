@@ -32,7 +32,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity, mode: AdmissionMode) -> LogEntry {
@@ -64,7 +66,8 @@ fn invite(issuer: &PerNetworkIdentity, subject: InviteSubject, max_uses: u32) ->
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -167,7 +170,15 @@ async fn auto_admit_turns_a_redeemed_invite_into_membership_and_then_a_key() {
     founder_node.create_epoch_group(&founder).unwrap();
 
     founder_node.dial_candidates([joiner_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     let outcome = present_invite(
         &mut founder_node,
@@ -187,9 +198,12 @@ async fn auto_admit_turns_a_redeemed_invite_into_membership_and_then_a_key() {
     // rather than on the responder's word.
     joiner_node.sync_with(founder.peer_id());
     assert!(
-        drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), |_, b| {
-            b.governance_log().get(&entry).is_some()
-        })
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().get(&entry).is_some() }
+        )
         .await,
         "the admission entry should reach the joiner"
     );
@@ -211,7 +225,9 @@ async fn auto_admit_turns_a_redeemed_invite_into_membership_and_then_a_key() {
     );
 
     // The key arrives over the ordinary protocol, no join-time special case.
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     let mut answered = false;
     let keyed = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -254,7 +270,15 @@ async fn explicit_intake_grants_a_waiting_place_and_nothing_else() {
     founder_node.create_epoch_group(&founder).unwrap();
 
     founder_node.dial_candidates([joiner_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     let ticket = invite(&founder, InviteSubject::Bearer, 4);
     let invite_id = ticket.invite_id();
@@ -292,7 +316,9 @@ async fn explicit_intake_grants_a_waiting_place_and_nothing_else() {
     // And a key delivery is refused, which is the consequence that matters:
     // a waiting-room identity is valid and non-revoked, and must still get
     // nothing.
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     let refused = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             tokio::select! {
@@ -331,7 +357,15 @@ async fn an_admin_admitting_from_the_waiting_room_clears_the_queue() {
         .append_entry(genesis(&founder, AdmissionMode::ExplicitIntake))
         .unwrap();
     founder_node.dial_candidates([joiner_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     present_invite(
         &mut founder_node,
@@ -391,7 +425,13 @@ async fn a_bearer_invite_cannot_fill_the_waiting_room_past_what_it_could_admit()
         let (mut joiner_node, joiner_addr) = node(seed).await;
         founder_node.dial_candidates([joiner_addr]).unwrap();
         assert!(
-            drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await
+            drive(
+                &mut founder_node,
+                &mut joiner_node,
+                Duration::from_secs(20),
+                same_length
+            )
+            .await
         );
         outcomes.push(
             present_invite(
@@ -433,7 +473,15 @@ async fn an_exhausted_or_expired_invite_is_refused() {
         .append_entry(genesis(&founder, AdmissionMode::AutoAdmit))
         .unwrap();
     founder_node.dial_candidates([joiner_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     // Presented after its expiry, evaluated against the responder's clock.
     let expired = Invite::issue(
@@ -481,7 +529,13 @@ async fn an_invite_naming_someone_else_is_refused() {
         .unwrap();
     founder_node.dial_candidates([interloper_addr]).unwrap();
     assert!(
-        drive(&mut founder_node, &mut interloper_node, Duration::from_secs(20), same_length).await
+        drive(
+            &mut founder_node,
+            &mut interloper_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
     );
 
     let targeted = invite(&founder, InviteSubject::Identity(intended.id()), 4);
@@ -556,7 +610,15 @@ async fn an_invite_from_a_stripped_issuer_stops_working() {
         .unwrap();
 
     founder_node.dial_candidates([joiner_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     let outcome = present_invite(
         &mut founder_node,

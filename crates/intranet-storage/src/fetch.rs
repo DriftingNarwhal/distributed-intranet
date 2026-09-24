@@ -324,7 +324,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     /// A ledger in which every named node advertises upload capacity.
@@ -387,12 +389,7 @@ mod tests {
         Cid::of(&[n; 8])
     }
 
-    fn record(
-        plan: &mut FetchPlan,
-        which: Cid,
-        providers: &[u8],
-        ledger: &CapabilityLedger,
-    ) {
+    fn record(plan: &mut FetchPlan, which: Cid, providers: &[u8], ledger: &CapabilityLedger) {
         plan.record_providers(
             which,
             providers.iter().map(|s| identity(*s).id()).collect(),

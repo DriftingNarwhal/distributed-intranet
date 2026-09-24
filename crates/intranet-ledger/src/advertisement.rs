@@ -278,8 +278,7 @@ mod tests {
     fn inflating_declared_capacity_breaks_the_signature() {
         let network = NetworkId::from_bytes([1u8; 32]);
         let node = node(1, &network);
-        let mut advertisement =
-            CapabilityAdvertisement::none(&node, Timestamp::from_millis(0));
+        let mut advertisement = CapabilityAdvertisement::none(&node, Timestamp::from_millis(0));
         advertisement.storage_offered = u64::MAX;
         assert!(advertisement.verify().is_err());
     }

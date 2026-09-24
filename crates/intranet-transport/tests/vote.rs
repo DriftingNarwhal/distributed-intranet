@@ -33,7 +33,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -94,7 +96,8 @@ fn voting_log(founder: &PerNetworkIdentity, voters: &[u8], quorum: u32) -> Vec<L
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -144,7 +147,12 @@ fn open_vote(
     quorum: u32,
 ) -> VoteProposal {
     let state = node.governance_log().replay_canonical().unwrap();
-    let tip = node.governance_log().canonical_chain().last().copied().unwrap();
+    let tip = node
+        .governance_log()
+        .canonical_chain()
+        .last()
+        .copied()
+        .unwrap();
     let proposal = VoteProposal::open(
         admission_of(newcomer).action_hash(),
         GroupId::everyone(),
@@ -217,7 +225,12 @@ async fn ballots_cast_on_one_node_reach_another_and_settle_the_vote() {
 
     // Recording the outcome is what makes the admission authorized — and any
     // member may do it, holding no capability.
-    let tip = a.governance_log().canonical_chain().last().copied().unwrap();
+    let tip = a
+        .governance_log()
+        .canonical_chain()
+        .last()
+        .copied()
+        .unwrap();
     a.append_entry(LogEntry::create(
         &voter_a,
         Some(tip),
@@ -226,7 +239,12 @@ async fn ballots_cast_on_one_node_reach_another_and_settle_the_vote() {
     ))
     .unwrap();
 
-    let tip = a.governance_log().canonical_chain().last().copied().unwrap();
+    let tip = a
+        .governance_log()
+        .canonical_chain()
+        .last()
+        .copied()
+        .unwrap();
     a.append_entry(LogEntry::create(
         &voter_a,
         Some(tip),
@@ -295,7 +313,10 @@ async fn a_certificate_assembled_after_close_still_passes() {
         "a certificate assembled after close, from ballots cast before it, is valid"
     );
     assert!(
-        certificate.ballots.iter().all(|ballot| ballot.cast_at <= proposal.close_time),
+        certificate
+            .ballots
+            .iter()
+            .all(|ballot| ballot.cast_at <= proposal.close_time),
         "and every ballot in it qualified on its own timestamp"
     );
 }
@@ -327,7 +348,12 @@ async fn ballots_from_outside_the_frozen_electorate_are_refused() {
         "a ballot cast after close must be refused"
     );
     assert!(
-        !a.record_ballot(Ballot::cast(&voter_a, Hash::from_bytes([9u8; 32]), true, at(1_000))),
+        !a.record_ballot(Ballot::cast(
+            &voter_a,
+            Hash::from_bytes([9u8; 32]),
+            true,
+            at(1_000)
+        )),
         "a ballot for a vote this node does not know is open must be refused"
     );
     assert!(a.ballots_for(&vote_id).is_empty());
@@ -353,7 +379,15 @@ async fn a_non_member_is_refused_ballots() {
     a.cast_ballot(vote_id, true, at(1_000), &voter_a).unwrap();
 
     a.dial_candidates([outsider_addr]).unwrap();
-    assert!(drive(&mut a, &mut outsider_node, Duration::from_secs(20), same_log).await);
+    assert!(
+        drive(
+            &mut a,
+            &mut outsider_node,
+            Duration::from_secs(20),
+            same_log
+        )
+        .await
+    );
 
     outsider_node.sync_ballots_with(voter_a.id().peer_id(), vote_id);
     let refusal = tokio::time::timeout(Duration::from_secs(20), async {

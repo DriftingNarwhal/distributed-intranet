@@ -312,7 +312,10 @@ mod tests {
             e.finish()
         };
         assert_eq!(enc(&Capability::DefineGroup), enc(&Capability::DefineGroup));
-        assert_ne!(enc(&Capability::DefineGroup), enc(&Capability::DefinePolicy));
+        assert_ne!(
+            enc(&Capability::DefineGroup),
+            enc(&Capability::DefinePolicy)
+        );
         assert_ne!(
             enc(&Capability::manage_membership("a")),
             enc(&Capability::manage_membership("b"))

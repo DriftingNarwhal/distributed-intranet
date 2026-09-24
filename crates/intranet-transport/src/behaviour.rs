@@ -9,10 +9,12 @@
     reason = "derive(NetworkBehaviour) emits an undocumented event enum"
 )]
 
-use crate::sync::{BallotCodec, ChunkCodec, CollectionCodec, DirectCodec, EpochCodec, JoinCodec, LedgerCodec, MediaCodec, PointerCodec, SignalCodec, SyncCodec};
+use crate::sync::{
+    BallotCodec, ChunkCodec, CollectionCodec, DirectCodec, EpochCodec, JoinCodec, LedgerCodec,
+    MediaCodec, PointerCodec, SignalCodec, SyncCodec,
+};
 use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response,
-    swarm::NetworkBehaviour,
+    dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
     swarm::behaviour::toggle::Toggle,
 };
 

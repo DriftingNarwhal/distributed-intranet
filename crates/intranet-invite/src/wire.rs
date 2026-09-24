@@ -447,15 +447,17 @@ fn common_suffix(addresses: &[String]) -> &str {
     let Some(first) = addresses.first() else {
         return "";
     };
-    let mut length = addresses[1..].iter().fold(first.len(), |shortest, address| {
-        let shared = first
-            .bytes()
-            .rev()
-            .zip(address.bytes().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        shortest.min(shared)
-    });
+    let mut length = addresses[1..]
+        .iter()
+        .fold(first.len(), |shortest, address| {
+            let shared = first
+                .bytes()
+                .rev()
+                .zip(address.bytes().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            shortest.min(shared)
+        });
     while length > 0
         && !addresses
             .iter()
@@ -480,7 +482,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([9u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     fn invite(issuer: &PerNetworkIdentity, subject: InviteSubject) -> Invite {
@@ -586,8 +590,9 @@ mod tests {
         let issuer = identity(1);
         let joiner = identity(2);
         let mut oversized = invite(&issuer, InviteSubject::Bearer);
-        oversized.bootstrap_addresses =
-            (0..MAX_BOOTSTRAP_ADDRESSES + 1).map(|n| format!("/ip4/127.0.0.1/tcp/{n}")).collect();
+        oversized.bootstrap_addresses = (0..MAX_BOOTSTRAP_ADDRESSES + 1)
+            .map(|n| format!("/ip4/127.0.0.1/tcp/{n}"))
+            .collect();
         let request = JoinRequest::create(&joiner, oversized);
 
         assert!(matches!(
@@ -638,7 +643,10 @@ mod address_encoding_tests {
         // The degenerate case: the shared ending is the whole string and the
         // remainder is empty, which the decoder must rejoin to the same address
         // rather than to nothing.
-        assert_eq!(round_trip(&["/ip4/203.0.113.7/tcp/1"]), ["/ip4/203.0.113.7/tcp/1"]);
+        assert_eq!(
+            round_trip(&["/ip4/203.0.113.7/tcp/1"]),
+            ["/ip4/203.0.113.7/tcp/1"]
+        );
         assert!(round_trip(&[]).is_empty());
     }
 
@@ -675,7 +683,13 @@ mod address_encoding_tests {
 
         let refusal = get_addresses(&mut Dec::new(&bytes)).expect_err("must be refused");
         assert!(
-            matches!(refusal, WireError::TooLarge { what: "bootstrap address", .. }),
+            matches!(
+                refusal,
+                WireError::TooLarge {
+                    what: "bootstrap address",
+                    ..
+                }
+            ),
             "{refusal:?}"
         );
     }

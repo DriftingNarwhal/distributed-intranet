@@ -19,7 +19,9 @@ use intranet_storage::{
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -127,10 +129,7 @@ fn losing_the_publish_capability_freezes_an_owners_existing_pointers() {
     let refused = pointer
         .update(&author, pointer.current_cid, &narrowed)
         .expect_err("an owner who lost publish:text may no longer update");
-    assert!(matches!(
-        refused,
-        StorageError::PublishNotPermitted { .. }
-    ));
+    assert!(matches!(refused, StorageError::PublishNotPermitted { .. }));
 
     // And ownership is unaffected by the correction: passing the publish gates
     // never lets a non-owner update somebody else's pointer.
@@ -267,10 +266,17 @@ fn a_stale_lower_version_never_supersedes() {
     let state = state_of(&network(&[&owner]));
     let (v0, dek) = publish_text(&owner, b"v0", &state);
     let v1 = v0
-        .update(&owner, encode(b"v1", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"v1", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
 
-    assert!(!v0.supersedes(&v1), "replaying an old record must not roll content back");
+    assert!(
+        !v0.supersedes(&v1),
+        "replaying an old record must not roll content back"
+    );
     assert_eq!(MutablePointer::resolve(&v0, &v1), &v1);
 }
 
@@ -283,10 +289,18 @@ fn same_version_collisions_resolve_by_lower_record_hash() {
     let (v0, dek) = publish_text(&owner, b"v0", &state);
 
     let branch_a = v0
-        .update(&owner, encode(b"branch a", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"branch a", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
     let branch_b = v0
-        .update(&owner, encode(b"branch b", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"branch b", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
 
     assert_eq!(branch_a.version, branch_b.version, "a genuine collision");
@@ -308,16 +322,28 @@ fn the_losing_record_is_retryable_at_an_incremented_version() {
     let (v0, dek) = publish_text(&owner, b"v0", &state);
 
     let a = v0
-        .update(&owner, encode(b"a", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"a", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
     let b = v0
-        .update(&owner, encode(b"b", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"b", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
     let winner = MutablePointer::resolve(&a, &b).clone();
 
     // The loser retries against the now-canonical record rather than merging.
     let retry = winner
-        .update(&owner, encode(b"b again", &dek, ChunkSpec::default()).manifest_cid(), &state)
+        .update(
+            &owner,
+            encode(b"b again", &dek, ChunkSpec::default()).manifest_cid(),
+            &state,
+        )
         .unwrap();
     assert_eq!(retry.version, winner.version + 1);
     assert!(retry.supersedes(&winner));
@@ -485,7 +511,9 @@ fn a_revoked_member_cannot_open_a_wrapping_made_after_removal() {
     );
 
     assert!(
-        rewrapped.unwrap(&held_by_revoked, &pointer.dek_commitment).is_err(),
+        rewrapped
+            .unwrap(&held_by_revoked, &pointer.dek_commitment)
+            .is_err(),
         "the old epoch key must not open a wrapping made after removal"
     );
 }
@@ -664,7 +692,10 @@ fn an_entry_cannot_be_inserted_into_the_wrong_collection() {
         b"x".to_vec(),
         None,
     );
-    assert_eq!(view.insert(entry, &state), Err(StorageError::WrongCollection));
+    assert_eq!(
+        view.insert(entry, &state),
+        Err(StorageError::WrongCollection)
+    );
 }
 
 #[test]
@@ -696,7 +727,10 @@ fn a_waiting_room_identity_is_refused_despite_being_valid() {
     let waiting = identity(9);
     let state = state_of(&network(&[]));
 
-    assert!(!state.is_member(&waiting.id()), "valid identity, no membership");
+    assert!(
+        !state.is_member(&waiting.id()),
+        "valid identity, no membership"
+    );
     assert!(matches!(
         may_serve(&waiting.id(), &state),
         Err(ServingRefusal::NoReadContent { .. })
@@ -764,7 +798,10 @@ fn rarest_chunks_are_fetched_first() {
 fn rarest_first_is_deterministic_on_ties() {
     let a = Cid::from_hash(Hash::from_bytes([1u8; 32]));
     let b = Cid::from_hash(Hash::from_bytes([2u8; 32]));
-    assert_eq!(rarest_first(&[(b, 3), (a, 3)]), rarest_first(&[(a, 3), (b, 3)]));
+    assert_eq!(
+        rarest_first(&[(b, 3), (a, 3)]),
+        rarest_first(&[(a, 3), (b, 3)])
+    );
 }
 
 #[test]
@@ -847,8 +884,14 @@ fn a_peer_advertising_no_upload_capacity_is_not_offered_as_a_source() {
     }];
 
     assert!(
-        select_sources(&candidates, &ledger, &intranet_ledger::ReliabilityObservations::new(), 0.5, 3)
-            .is_empty(),
+        select_sources(
+            &candidates,
+            &ledger,
+            &intranet_ledger::ReliabilityObservations::new(),
+            0.5,
+            3
+        )
+        .is_empty(),
         "a node that never advertised capacity has not volunteered to serve"
     );
 }

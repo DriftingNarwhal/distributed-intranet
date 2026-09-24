@@ -86,7 +86,12 @@ impl LiveStream {
     /// constantly would have the broadcaster tearing down and rebuilding
     /// connections on a sub-second basis for no benefit; a stable tier lets it
     /// hold persistent connections to a small fixed set for the session.
-    pub fn start(stream: StreamId, ledger: &CapabilityLedger, tier_size: usize, window: usize) -> Self {
+    pub fn start(
+        stream: StreamId,
+        ledger: &CapabilityLedger,
+        tier_size: usize,
+        window: usize,
+    ) -> Self {
         Self {
             stream,
             tier: assign_tier(&stream, ledger, tier_size),
@@ -331,7 +336,10 @@ mod tests {
         let live = empty_stream(2);
         let mut all: Vec<(u64, Cid)> = (1u8..=4).map(|n| (u64::from(n), cid(n))).collect();
         all.reverse();
-        let manifest = live.into_vod(&all, 100, VodRetention::Enabled).unwrap().unwrap();
+        let manifest = live
+            .into_vod(&all, 100, VodRetention::Enabled)
+            .unwrap()
+            .unwrap();
         assert_eq!(manifest.chunks[0], cid(1), "sorted by sequence");
     }
 

@@ -116,10 +116,7 @@ impl ChunkRequest {
     pub fn verify(&self) -> Result<(), WireError> {
         self.requester
             .verifying_key()
-            .verify(
-                &Self::payload(&self.cid, &self.requester),
-                &self.signature,
-            )
+            .verify(&Self::payload(&self.cid, &self.requester), &self.signature)
             .map_err(|_| WireError::BadSignature)
     }
 
@@ -246,7 +243,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     #[test]
@@ -454,7 +453,10 @@ impl CollectionResponse {
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::domain(COLLECTION_RESPONSE_DOMAIN);
         match self {
-            Self::Entries { payloads, truncated } => {
+            Self::Entries {
+                payloads,
+                truncated,
+            } => {
                 e.variant(0);
                 e.seq(payloads.iter(), |e, payload| {
                     e.bytes(payload);
@@ -506,7 +508,8 @@ pub const MAX_ENTRY_PAYLOAD_BYTES: usize = 64 * 1024;
 /// Encodes an append-set entry for announcement — §2.5.
 pub fn encode_entry(entry: &crate::AppendSetEntry) -> Vec<u8> {
     let mut e = Enc::domain(ENTRY_WIRE_DOMAIN);
-    e.fixed(entry.collection_id.as_bytes()).bytes(&entry.payload);
+    e.fixed(entry.collection_id.as_bytes())
+        .bytes(&entry.payload);
     e.option(entry.references.as_ref(), |e, pointer| {
         e.fixed(pointer.as_bytes());
     });
@@ -532,8 +535,9 @@ pub fn decode_entry(bytes: &[u8]) -> Result<crate::AppendSetEntry, WireError> {
             size: payload.len(),
         });
     }
-    let references = d
-        .option::<_, WireError>(|d| Ok(intranet_governance::PointerId::from_bytes(d.fixed::<32>()?)))?;
+    let references = d.option::<_, WireError>(|d| {
+        Ok(intranet_governance::PointerId::from_bytes(d.fixed::<32>()?))
+    })?;
     let publisher_identity = get_identity(&mut d)?;
     let signature = Signature::from_bytes(d.fixed::<64>()?);
     d.finish()?;
@@ -746,7 +750,8 @@ impl PointerRequest {
                 signature: Signature::from_bytes(d.fixed::<64>()?),
             },
             1 => {
-                let wanted = d.seq::<_, WireError>(|d| Ok(PointerId::from_bytes(d.fixed::<32>()?)))?;
+                let wanted =
+                    d.seq::<_, WireError>(|d| Ok(PointerId::from_bytes(d.fixed::<32>()?)))?;
                 if wanted.len() > MAX_POINTERS_PER_RESPONSE {
                     return Err(WireError::TooManyEntries {
                         got: wanted.len(),
@@ -878,10 +883,7 @@ impl PointerResponse {
                             limit: MAX_WRAPPINGS_PER_POINTER,
                         });
                     }
-                    Ok(PointerRecord {
-                        pointer,
-                        wrappings,
-                    })
+                    Ok(PointerRecord { pointer, wrappings })
                 })?;
                 if records.len() > MAX_POINTERS_PER_RESPONSE {
                     return Err(WireError::TooManyEntries {

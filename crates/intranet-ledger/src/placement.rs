@@ -216,7 +216,8 @@ mod tests {
         let mut firsts = std::collections::BTreeSet::new();
         for i in 0..40u32 {
             let key = format!("cid-{i}");
-            if let Some(first) = select(key.as_bytes(), &pool, WeightField::StorageOffered, 1).first()
+            if let Some(first) =
+                select(key.as_bytes(), &pool, WeightField::StorageOffered, 1).first()
             {
                 firsts.insert(*first);
             }
@@ -285,8 +286,8 @@ mod tests {
         // Same routine, different field. A node generous with disk but stingy
         // with upload should rank differently for storage than for streaming.
         let pool = vec![
-            advert(1, 10_000_000, 1_000),     // lots of disk, little upload
-            advert(2, 1_000, 10_000_000),     // little disk, lots of upload
+            advert(1, 10_000_000, 1_000), // lots of disk, little upload
+            advert(2, 1_000, 10_000_000), // little disk, lots of upload
             advert(3, 1_000_000, 1_000_000),
         ];
 

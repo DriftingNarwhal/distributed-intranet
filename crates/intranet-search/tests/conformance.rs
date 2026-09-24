@@ -15,7 +15,9 @@ const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 const OTHER_NETWORK: NetworkId = NetworkId::from_bytes([43u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -133,8 +135,16 @@ fn an_opt_in_index_document_adds_searchable_body_and_tags() {
         .insert(Posting::build(&publisher, &content, at(100)), &state)
         .unwrap();
 
-    assert_eq!(search(&index, "rendezvous").results.len(), 1, "tags searchable");
-    assert_eq!(search(&index, "hashing").results.len(), 1, "body searchable");
+    assert_eq!(
+        search(&index, "rendezvous").results.len(),
+        1,
+        "tags searchable"
+    );
+    assert_eq!(
+        search(&index, "hashing").results.len(),
+        1,
+        "body searchable"
+    );
     assert!(
         search(&index, "unmentioned").results.is_empty(),
         "only what the publisher mapped in is searchable"
@@ -176,8 +186,12 @@ fn one_posting_carries_every_term_rather_than_one_object_per_term() {
 #[test]
 fn announcements_are_scoped_to_the_publishing_network() {
     let publisher = identity(2);
-    let posting =
-        posting_from_metadata(&publisher, PointerId::from_bytes([7u8; 32]), "shared", "term");
+    let posting = posting_from_metadata(
+        &publisher,
+        PointerId::from_bytes([7u8; 32]),
+        "shared",
+        "term",
+    );
 
     let here = posting.announcements(&NETWORK);
     let there = posting.announcements(&OTHER_NETWORK);
@@ -196,8 +210,12 @@ fn announcements_are_scoped_to_the_publishing_network() {
 fn a_forged_posting_is_rejected() {
     let publisher = identity(2);
     let state = state_of(&network(&[&publisher]));
-    let mut posting =
-        posting_from_metadata(&publisher, PointerId::from_bytes([7u8; 32]), "honest", "content");
+    let mut posting = posting_from_metadata(
+        &publisher,
+        PointerId::from_bytes([7u8; 32]),
+        "honest",
+        "content",
+    );
 
     // Keyword stuffing after signing.
     posting.terms.insert(
@@ -209,7 +227,10 @@ fn a_forged_posting_is_rejected() {
     );
 
     let mut index = LocalIndex::new(NETWORK);
-    assert_eq!(index.insert(posting, &state), Err(SearchError::BadSignature));
+    assert_eq!(
+        index.insert(posting, &state),
+        Err(SearchError::BadSignature)
+    );
 }
 
 #[test]
@@ -247,7 +268,9 @@ fn delisted_content_is_excluded_even_though_its_publisher_remains_valid() {
 
     push(
         &mut chain,
-        &MasterSeed::from_entropy([1u8; 32]).identity_for(&NETWORK).unwrap(),
+        &MasterSeed::from_entropy([1u8; 32])
+            .identity_for(&NETWORK)
+            .unwrap(),
         500,
         EntryBody::Moderation(ModerationEntry {
             action: ModerationAction::Delist,
@@ -288,7 +311,9 @@ fn a_revoked_publishers_postings_fall_out_of_the_index() {
 
     push(
         &mut chain,
-        &MasterSeed::from_entropy([1u8; 32]).identity_for(&NETWORK).unwrap(),
+        &MasterSeed::from_entropy([1u8; 32])
+            .identity_for(&NETWORK)
+            .unwrap(),
         500,
         EntryBody::MembershipChange {
             group: GroupId::everyone(),
@@ -307,7 +332,9 @@ fn relisting_lets_content_be_indexed_again() {
     let mut chain = network(&[&publisher]);
     let pointer = PointerId::from_bytes([7u8; 32]);
     let posting = posting_from_metadata(&publisher, pointer, "Restored", "content");
-    let founder = MasterSeed::from_entropy([1u8; 32]).identity_for(&NETWORK).unwrap();
+    let founder = MasterSeed::from_entropy([1u8; 32])
+        .identity_for(&NETWORK)
+        .unwrap();
 
     push(
         &mut chain,
@@ -353,7 +380,12 @@ fn a_query_never_returns_results_from_another_network() {
     let mut here_index = LocalIndex::new(NETWORK);
     here_index
         .insert(
-            posting_from_metadata(&here, PointerId::from_bytes([1u8; 32]), "Shared Term", "here"),
+            posting_from_metadata(
+                &here,
+                PointerId::from_bytes([1u8; 32]),
+                "Shared Term",
+                "here",
+            ),
             &here_state,
         )
         .unwrap();
@@ -361,7 +393,12 @@ fn a_query_never_returns_results_from_another_network() {
     let mut there_index = LocalIndex::new(OTHER_NETWORK);
     there_index
         .insert(
-            posting_from_metadata(&there, PointerId::from_bytes([2u8; 32]), "Shared Term", "there"),
+            posting_from_metadata(
+                &there,
+                PointerId::from_bytes([2u8; 32]),
+                "Shared Term",
+                "there",
+            ),
             &there_state,
         )
         .unwrap();
@@ -371,7 +408,10 @@ fn a_query_never_returns_results_from_another_network() {
     let from_there = search(&there_index, "shared");
     assert_eq!(from_here.results.len(), 1);
     assert_eq!(from_there.results.len(), 1);
-    assert_ne!(from_here.results[0].pointer_id, from_there.results[0].pointer_id);
+    assert_ne!(
+        from_here.results[0].pointer_id,
+        from_there.results[0].pointer_id
+    );
 }
 
 #[test]
@@ -385,10 +425,12 @@ fn a_posting_from_another_network_cannot_be_inserted() {
     ));
 
     let mut index = LocalIndex::new(NETWORK);
-    let posting =
-        posting_from_metadata(&here, PointerId::from_bytes([1u8; 32]), "term", "content");
+    let posting = posting_from_metadata(&here, PointerId::from_bytes([1u8; 32]), "term", "content");
 
-    assert_eq!(index.insert(posting, &there_state), Err(SearchError::WrongNetwork));
+    assert_eq!(
+        index.insert(posting, &there_state),
+        Err(SearchError::WrongNetwork)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +444,12 @@ fn unrefreshed_postings_expire() {
     let mut index = LocalIndex::new(NETWORK).with_ttl(1_000);
     index
         .insert(
-            posting_from_metadata(&publisher, PointerId::from_bytes([7u8; 32]), "Ephemeral", "x"),
+            posting_from_metadata(
+                &publisher,
+                PointerId::from_bytes([7u8; 32]),
+                "Ephemeral",
+                "x",
+            ),
             &state,
         )
         .unwrap();

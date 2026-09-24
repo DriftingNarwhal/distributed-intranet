@@ -1,11 +1,11 @@
 //! App hosting conformance tests — App Hosting Spec §2, §3.5, §4.3–4.4, Harness §5.
 
-use intranet_crypto::{Hash, Timestamp};
 use intranet_app::{
     AppManifest, DirectoryListing, PendingPublish, PublishingPolicy, RequestedCapability,
     ReviewQueue, browse, directory_collection, is_available, name_registration_entry,
     register_capabilities, resolve, supports_app_hosting,
 };
+use intranet_crypto::{Hash, Timestamp};
 use intranet_governance::{
     APPROVE_APP_PUBLISH, AppName, Capability, CapabilitySet, EVERYONE, EntryBody, GovernanceError,
     GovernanceState, GroupId, LogEntry, MembershipAction, ModerationAction, ModerationEntry,
@@ -17,7 +17,9 @@ use intranet_storage::AppendSetView;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -149,8 +151,14 @@ fn registering_capabilities_assigns_the_split_tiers() {
     register_capabilities(&mut policy);
 
     use intranet_governance::Tier;
-    assert_eq!(policy.extension_tier(REGISTER_APP_NAME), Some(Tier::Ordinary));
-    assert_eq!(policy.extension_tier(RECLAIM_APP_NAME), Some(Tier::Governance));
+    assert_eq!(
+        policy.extension_tier(REGISTER_APP_NAME),
+        Some(Tier::Ordinary)
+    );
+    assert_eq!(
+        policy.extension_tier(RECLAIM_APP_NAME),
+        Some(Tier::Governance)
+    );
     assert_eq!(
         policy.extension_tier(APPROVE_APP_PUBLISH),
         Some(Tier::Governance)
@@ -163,7 +171,10 @@ fn everyone_may_hold_register_but_never_reclaim() {
     // resolved purely from the tier registry.
     let founder = identity(1);
     let mut chain = app_network(&[]);
-    assert!(GovernanceState::replay(&chain).is_ok(), "register is ordinary");
+    assert!(
+        GovernanceState::replay(&chain).is_ok(),
+        "register is ordinary"
+    );
 
     push(
         &mut chain,
@@ -225,7 +236,10 @@ fn the_owner_may_repoint_their_own_name_to_a_new_version() {
 
     let state = state_of(&chain);
     assert_eq!(
-        resolve(&AppName::new("wiki"), &state).unwrap().record.app_id,
+        resolve(&AppName::new("wiki"), &state)
+            .unwrap()
+            .record
+            .app_id,
         app(8)
     );
 }
@@ -287,7 +301,10 @@ fn a_backdated_claim_does_not_gain_priority() {
     chain.pop();
     let state = state_of(&chain);
     assert_eq!(
-        resolve(&AppName::new("popular"), &state).unwrap().record.owner,
+        resolve(&AppName::new("popular"), &state)
+            .unwrap()
+            .record
+            .owner,
         genuine.id()
     );
 }
@@ -471,7 +488,10 @@ fn an_index_entry_contradicting_the_log_is_discarded() {
         "a listing disagreeing with the log must not be shown"
     );
     assert_eq!(
-        resolve(&AppName::new("wiki"), &state).unwrap().record.app_id,
+        resolve(&AppName::new("wiki"), &state)
+            .unwrap()
+            .record
+            .app_id,
         app(7),
         "and ownership is unaffected"
     );
@@ -534,7 +554,10 @@ fn a_delisted_apps_listing_stops_being_honoured_by_the_index() {
 
     let mut index = AppendSetView::new(directory_collection(&NETWORK));
     index
-        .insert(listing("wiki", app(7)).announce(&developer, &NETWORK), &state)
+        .insert(
+            listing("wiki", app(7)).announce(&developer, &NETWORK),
+            &state,
+        )
         .unwrap();
     assert_eq!(browse(&index, &state).0.len(), 1);
 
@@ -720,13 +743,7 @@ fn a_name_registration_is_capability_gated_so_it_counts_toward_branch_length() {
     let developer = identity(2);
     let chain = app_network(&[&developer]);
     let parent = chain.last().unwrap().hash();
-    let entry = name_registration_entry(
-        &developer,
-        parent,
-        at(100),
-        AppName::new("wiki"),
-        app(7),
-    );
+    let entry = name_registration_entry(&developer, parent, at(100), AppName::new("wiki"), app(7));
     assert!(entry.is_capability_gated());
 }
 

@@ -1,6 +1,7 @@
 //! Member and relay nodes — Core Protocol Spec §5.1–5.5.
 
 use crate::dial::{ConnectionTier, classify};
+use crate::media_limits::{MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
 use crate::{RelayLimits, TransportError, behaviour::*};
 use intranet_crypto::{Hash, Timestamp};
 use intranet_epoch::{
@@ -10,11 +11,11 @@ use intranet_epoch::{
 };
 use intranet_governance::{
     AdmissionMode, Ballot, BallotRefusal, BallotRequest, BallotResponse, EntryBody,
-    GovernanceError, GovernanceLog, GovernanceState, GroupId, MAX_BALLOTS_PER_RESPONSE,
-    QuorumCertificate,
-    HistoryAccess, LogEntry, MAX_ENTRIES_PER_RESPONSE, MembershipAction, PointerId,
-    RotationReason, SyncRequest, SyncResponse,
+    GovernanceError, GovernanceLog, GovernanceState, GroupId, HistoryAccess, LogEntry,
+    MAX_BALLOTS_PER_RESPONSE, MAX_ENTRIES_PER_RESPONSE, MembershipAction, PointerId,
+    QuorumCertificate, RotationReason, SyncRequest, SyncResponse,
 };
+use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use intranet_invite::{
     Invite, JoinRefusal, JoinRequest, JoinResponse, WaitingRoom, WaitingRoomEntry,
 };
@@ -22,19 +23,19 @@ use intranet_ledger::{
     CapabilityAdvertisement, CapabilityLedger, LedgerError, LedgerRequest, LedgerResponse,
     MAX_ADVERTISEMENTS_PER_RESPONSE, ReliabilityObservations,
 };
-use crate::media_limits::{MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
-use intranet_realtime::{CallId, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody};
+use intranet_realtime::{
+    CallId, MediaAck, MediaEnvelope, Recipient, Signal, SignalAck, SignalBody,
+};
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
     CollectionResponse, DekWrapping, EpochKey, FetchPlan, MAX_COLLECTION_ENTRIES,
     MAX_POINTERS_PER_RESPONSE, MutablePointer, PointerDigestEntry, PointerRecord, PointerRefusal,
     PointerRequest, PointerResponse, StorageError, may_serve,
 };
-use intranet_identity::{PerNetworkIdentity, PerNetworkIdentityId};
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, mdns, ping,
-    relay, request_response, request_response::ResponseChannel,
-    swarm::SwarmEvent, swarm::behaviour::toggle::Toggle,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, mdns, ping, relay,
+    request_response, request_response::ResponseChannel, swarm::SwarmEvent,
+    swarm::behaviour::toggle::Toggle,
 };
 use std::collections::BTreeMap;
 
@@ -765,7 +766,8 @@ pub struct MemberNode {
     /// what rarest-first ordering needs. Reporting each batch separately would
     /// make a chunk look scarcer than it is, purely because its providers
     /// happened to arrive spread out.
-    provider_queries: std::collections::HashMap<kad::QueryId, (Cid, std::collections::BTreeSet<PeerId>)>,
+    provider_queries:
+        std::collections::HashMap<kad::QueryId, (Cid, std::collections::BTreeSet<PeerId>)>,
     /// The multi-source fetch in progress, if any — §4.4.
     ///
     /// One plan rather than one per call: a second fetch extends the first, so
@@ -790,7 +792,8 @@ pub struct MemberNode {
     /// without bound for content that never changed.
     collections: BTreeMap<Hash, BTreeMap<Hash, Vec<u8>>>,
     /// Collection lookups in flight, and the providers found so far.
-    collection_queries: std::collections::HashMap<kad::QueryId, (Hash, std::collections::BTreeSet<PeerId>)>,
+    collection_queries:
+        std::collections::HashMap<kad::QueryId, (Hash, std::collections::BTreeSet<PeerId>)>,
     /// Enumeration requests outstanding, by request identifier.
     collection_requests: BTreeMap<request_response::OutboundRequestId, Hash>,
     /// This node's own public identifier.
@@ -888,7 +891,8 @@ pub struct MemberNode {
     /// the harness can drive finality on a virtual clock. Requests that fail a
     /// check are refused in the loop and never reach here, so ignoring an event
     /// leaves a requester unanswered rather than wrongly admitted.
-    inbound_epoch_requests: BTreeMap<EpochRequestId, (EpochKeyRequest, ResponseChannel<EpochKeyResponse>)>,
+    inbound_epoch_requests:
+        BTreeMap<EpochRequestId, (EpochKeyRequest, ResponseChannel<EpochKeyResponse>)>,
     /// Source of the next [`EpochRequestId`].
     next_epoch_request: u64,
     /// Calls this node is relaying media for, and what it agreed to spend.
@@ -909,7 +913,6 @@ pub struct MemberNode {
     /// decided anything. See [`crate::direct_limits`].
     direct_meter: crate::direct_limits::DirectMeter,
 }
-
 
 /// Says why a listen failed, which libp2p's own `Display` does not.
 ///
@@ -1003,64 +1006,65 @@ impl MemberNode {
     ) -> Result<Self, TransportError> {
         let keypair = crate::keypair_for(identity);
 
-        let swarm = SwarmBuilder::with_existing_identity(keypair)
-            .with_tokio()
-            .with_tcp(
-                libp2p::tcp::Config::default().nodelay(true),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )
-            .map_err(|e| TransportError::Build(e.to_string()))?
-            .with_quic()
-            // Without this, a `/dns4/…` address cannot be dialled at all: the
-            // transport reports it unsupported, the swarm surfaces nothing a
-            // caller returns, and the relay never sees a connection attempt.
-            // Every address in this project was an `/ip4/` literal until a
-            // deployed relay was addressed by name, which is why it took a real
-            // deployment to find (§5.1 says nothing about *how* an address is
-            // written, so a name has always been legitimate).
-            .with_dns()
-            .map_err(|e| TransportError::Build(e.to_string()))?
-            .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
-            .map_err(|e| TransportError::Build(e.to_string()))?
-            .with_behaviour(|key, relay_client| {
-                let peer = key.public().to_peer_id();
-                let gossip =
-                    crate::sync::gossip_behaviour().expect("the gossip configuration is valid");
-                MemberBehaviour {
-                    gossip,
-                    kad: Toggle::from(discovery.on().then(|| {
-                        kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer))
-                    })),
-                    mdns: Toggle::from(discovery.on().then(|| {
-                        mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
-                            .expect("mdns config is valid")
-                    })),
-                    identify: identify::Behaviour::new(identify::Config::new(
-                        PROTOCOL_VERSION.into(),
-                        key.public(),
-                    )),
-                    ping: ping::Behaviour::default(),
-                    relay_client,
-                    dcutr: dcutr::Behaviour::new(peer),
-                    sync: crate::sync::behaviour(),
-                    ballot: crate::sync::ballot_behaviour(),
-                    join: crate::sync::join_behaviour(),
-                    epoch: crate::sync::epoch_behaviour(),
-                    ledger: crate::sync::ledger_behaviour(),
-                    chunk: crate::sync::chunk_behaviour(),
-                    pointer: crate::sync::pointer_behaviour(),
-                    collection: crate::sync::collection_behaviour(),
-                    direct: crate::sync::direct_behaviour(),
-                    signal: crate::sync::signal_behaviour(),
-                    media: crate::sync::media_behaviour(),
-                }
-            })
-            .map_err(|e| TransportError::Build(e.to_string()))?
-            .with_swarm_config(|config| {
-                config.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
-            })
-            .build();
+        let swarm =
+            SwarmBuilder::with_existing_identity(keypair)
+                .with_tokio()
+                .with_tcp(
+                    libp2p::tcp::Config::default().nodelay(true),
+                    libp2p::noise::Config::new,
+                    libp2p::yamux::Config::default,
+                )
+                .map_err(|e| TransportError::Build(e.to_string()))?
+                .with_quic()
+                // Without this, a `/dns4/…` address cannot be dialled at all: the
+                // transport reports it unsupported, the swarm surfaces nothing a
+                // caller returns, and the relay never sees a connection attempt.
+                // Every address in this project was an `/ip4/` literal until a
+                // deployed relay was addressed by name, which is why it took a real
+                // deployment to find (§5.1 says nothing about *how* an address is
+                // written, so a name has always been legitimate).
+                .with_dns()
+                .map_err(|e| TransportError::Build(e.to_string()))?
+                .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+                .map_err(|e| TransportError::Build(e.to_string()))?
+                .with_behaviour(|key, relay_client| {
+                    let peer = key.public().to_peer_id();
+                    let gossip =
+                        crate::sync::gossip_behaviour().expect("the gossip configuration is valid");
+                    MemberBehaviour {
+                        gossip,
+                        kad: Toggle::from(discovery.on().then(|| {
+                            kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer))
+                        })),
+                        mdns: Toggle::from(discovery.on().then(|| {
+                            mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
+                                .expect("mdns config is valid")
+                        })),
+                        identify: identify::Behaviour::new(identify::Config::new(
+                            PROTOCOL_VERSION.into(),
+                            key.public(),
+                        )),
+                        ping: ping::Behaviour::default(),
+                        relay_client,
+                        dcutr: dcutr::Behaviour::new(peer),
+                        sync: crate::sync::behaviour(),
+                        ballot: crate::sync::ballot_behaviour(),
+                        join: crate::sync::join_behaviour(),
+                        epoch: crate::sync::epoch_behaviour(),
+                        ledger: crate::sync::ledger_behaviour(),
+                        chunk: crate::sync::chunk_behaviour(),
+                        pointer: crate::sync::pointer_behaviour(),
+                        collection: crate::sync::collection_behaviour(),
+                        direct: crate::sync::direct_behaviour(),
+                        signal: crate::sync::signal_behaviour(),
+                        media: crate::sync::media_behaviour(),
+                    }
+                })
+                .map_err(|e| TransportError::Build(e.to_string()))?
+                .with_swarm_config(|config| {
+                    config.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT)
+                })
+                .build();
 
         Ok(Self {
             swarm,
@@ -1108,7 +1112,6 @@ impl MemberNode {
         })
     }
 
-
     // -----------------------------------------------------------------------
     // Epoch key delivery — Core Protocol Spec §3.5
     // -----------------------------------------------------------------------
@@ -1122,10 +1125,7 @@ impl MemberNode {
     /// genesis is the log entry that produced it. Storage Spec §5.3 requires a
     /// wrapping to reference the entry hash that produced its epoch, and for the
     /// network's first epoch there is no rotation entry to point at.
-    pub fn create_epoch_group(
-        &mut self,
-        identity: &PerNetworkIdentity,
-    ) -> Result<(), EpochError> {
+    pub fn create_epoch_group(&mut self, identity: &PerNetworkIdentity) -> Result<(), EpochError> {
         let session = GroupSession::create(&identity_label(&identity.id()))?;
         let key = session.epoch_key()?;
         let epoch = session.epoch();
@@ -1181,7 +1181,8 @@ impl MemberNode {
     ) -> Result<EpochKey, EpochError> {
         let session = GroupSession::restore(saved)?;
         let key = session.epoch_key()?;
-        self.keyring.record(rotation_ref, session.epoch(), key.clone());
+        self.keyring
+            .record(rotation_ref, session.epoch(), key.clone());
         self.group = Some(session);
         Ok(key)
     }
@@ -1430,7 +1431,10 @@ impl MemberNode {
         // Superseded epochs only: the joiner derives the current key from the
         // Welcome itself, so re-sending it would be shipping raw key material
         // for something they are about to compute anyway.
-        let history = match self.governance_state().map(|state| state.policy.history_access) {
+        let history = match self
+            .governance_state()
+            .map(|state| state.policy.history_access)
+        {
             Some(HistoryAccess::FullHistory) => {
                 let keys: Vec<_> = self
                     .keyring
@@ -1588,10 +1592,7 @@ impl MemberNode {
     /// replica is deliberate: a node that cannot yet see itself as a member has
     /// no business claiming capacity, and silently accepting it locally would
     /// hide the fact that no peer will accept it either.
-    pub fn advertise(
-        &mut self,
-        advertisement: CapabilityAdvertisement,
-    ) -> Result<(), LedgerError> {
+    pub fn advertise(&mut self, advertisement: CapabilityAdvertisement) -> Result<(), LedgerError> {
         let state = self.governance_state().ok_or(LedgerError::NotAMember {
             node: advertisement.node.short(),
         })?;
@@ -1883,8 +1884,7 @@ impl MemberNode {
             .or_default()
             .insert(entry_id, payload);
         if let Some(kad) = self.kad()
-            && let Err(error) =
-                kad.start_providing(kad::RecordKey::new(&collection_id.as_bytes()))
+            && let Err(error) = kad.start_providing(kad::RecordKey::new(&collection_id.as_bytes()))
         {
             tracing::debug!(%error, "could not announce collection yet");
         }
@@ -1935,10 +1935,11 @@ impl MemberNode {
         collection_id: Hash,
         requester: &PerNetworkIdentity,
     ) -> request_response::OutboundRequestId {
-        let id = self.swarm.behaviour_mut().collection.send_request(
-            &peer,
-            CollectionRequest::create(requester, collection_id),
-        );
+        let id = self
+            .swarm
+            .behaviour_mut()
+            .collection
+            .send_request(&peer, CollectionRequest::create(requester, collection_id));
         self.collection_requests.insert(id, collection_id);
         id
     }
@@ -3337,7 +3338,8 @@ impl MemberNode {
                 })) => {
                     return match result {
                         Ok(_) => {
-                            self.tiers.insert(remote_peer_id, ConnectionTier::HolePunched);
+                            self.tiers
+                                .insert(remote_peer_id, ConnectionTier::HolePunched);
                             self.relayed_since.remove(&remote_peer_id);
                             // Now, rather than when the connection arrived: this
                             // is the moment the peer became something §5.2
@@ -3439,10 +3441,10 @@ impl MemberNode {
                                 .collect();
                             if !wanted.is_empty() {
                                 let have = self.log.heads();
-                                self.swarm.behaviour_mut().sync.send_request(
-                                    &peer,
-                                    SyncRequest::Fetch { wanted, have },
-                                );
+                                self.swarm
+                                    .behaviour_mut()
+                                    .sync
+                                    .send_request(&peer, SyncRequest::Fetch { wanted, have });
                             }
                         }
                         SyncResponse::Entries { entries, truncated } => {
@@ -3501,7 +3503,9 @@ impl MemberNode {
                 },
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Kad(
-                    kad::Event::OutboundQueryProgressed { id, result, step, .. },
+                    kad::Event::OutboundQueryProgressed {
+                        id, result, step, ..
+                    },
                 )) => {
                     if let kad::QueryResult::GetProviders(result) = result {
                         if let Some((_, found)) = self.collection_queries.get_mut(&id) {
@@ -3537,12 +3541,14 @@ impl MemberNode {
                                 found.extend(providers.iter().copied());
                             }
                         }
-                        if step.last && let Some((cid, found)) = self.provider_queries.remove(&id) {
+                        if step.last
+                            && let Some((cid, found)) = self.provider_queries.remove(&id)
+                        {
                             let providers: Vec<PerNetworkIdentityId> = found
                                 .iter()
                                 .filter_map(PerNetworkIdentityId::from_peer_id)
                                 .collect();
-// **"Nobody answered" is not "nobody holds it", and this is
+                            // **"Nobody answered" is not "nobody holds it", and this is
                             // where the two collapsed into one answer** — the
                             // distinction Storage §4.4 and `design/05` §5.1 both
                             // make, undone by the code implementing them.
@@ -4078,9 +4084,7 @@ impl MemberNode {
                             continue;
                         }
                         return match response {
-                            JoinResponse::Admitted { entry } => {
-                                NodeEvent::Admitted { peer, entry }
-                            }
+                            JoinResponse::Admitted { entry } => NodeEvent::Admitted { peer, entry },
                             // Recorded as waiting is a *successful* join under
                             // explicit intake, not a failure: connectivity and
                             // an identity is the entirety of what §2.4 promises.
@@ -4107,10 +4111,11 @@ impl MemberNode {
                         // wrongly keyed in.
                         match self.screen_epoch_request(&request, peer) {
                             Err(reason) => {
-                                let _ = self.swarm.behaviour_mut().epoch.send_response(
-                                    channel,
-                                    EpochKeyResponse::Refused { reason },
-                                );
+                                let _ = self
+                                    .swarm
+                                    .behaviour_mut()
+                                    .epoch
+                                    .send_response(channel, EpochKeyResponse::Refused { reason });
                             }
                             Ok(()) => {
                                 let id = EpochRequestId(self.next_epoch_request);
@@ -4282,7 +4287,10 @@ impl MemberNode {
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Chunk(
                     request_response::Event::OutboundFailure {
-                        peer, request_id, error, ..
+                        peer,
+                        request_id,
+                        error,
+                        ..
                     },
                 )) => {
                     if let Some((_, _, cid)) = self.inflight.remove(&request_id) {

@@ -16,7 +16,9 @@ const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 /// A deterministic identity, so tests can name participants by number.
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -122,7 +124,10 @@ fn founders_holds_every_capability_including_ones_defined_later() {
         &founder.id(),
         &Capability::manage_membership("a-group-invented-later")
     ));
-    assert!(state.identity_holds(&founder.id(), &Capability::extension("defined-by-a-later-spec")));
+    assert!(state.identity_holds(
+        &founder.id(),
+        &Capability::extension("defined-by-a-later-spec")
+    ));
 }
 
 #[test]
@@ -162,7 +167,10 @@ fn everyone_may_not_be_granted_governance_tier_capability_later() {
         &mut chain,
         &founder,
         at(10),
-        define_group(EVERYONE, [Capability::ReadContent, Capability::ModerateContent]),
+        define_group(
+            EVERYONE,
+            [Capability::ReadContent, Capability::ModerateContent],
+        ),
     );
 
     assert!(matches!(
@@ -233,7 +241,10 @@ fn a_namespace_registration_covers_every_scope_beneath_it() {
         .extension_capabilities
         .insert("chat:post:".into(), Tier::Ordinary);
 
-    assert_eq!(policy.extension_tier("chat:post:general"), Some(Tier::Ordinary));
+    assert_eq!(
+        policy.extension_tier("chat:post:general"),
+        Some(Tier::Ordinary)
+    );
     assert_eq!(policy.extension_tier("chat:post:*"), Some(Tier::Ordinary));
     assert_eq!(
         policy.extension_tier("chat:post:cat:0badc0de"),
@@ -391,7 +402,12 @@ fn everyone_may_never_hold_the_unrestricted_set() {
 fn everyone_may_manage_membership_of_a_powerless_group() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("readers", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("readers", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -418,7 +434,12 @@ fn everyone_may_manage_membership_of_a_powerless_group() {
 fn everyone_may_not_manage_membership_of_a_powerful_group() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("mods", [Capability::ModerateContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("mods", [Capability::ModerateContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -457,7 +478,12 @@ fn empowering_a_group_everyone_already_manages_is_rejected_retroactively() {
     // `everyone`'s own capability set.
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("helpers", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("helpers", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -470,7 +496,10 @@ fn empowering_a_group_everyone_already_manages_is_rejected_retroactively() {
             ],
         ),
     );
-    assert!(GovernanceState::replay(&chain).is_ok(), "setup must be legal");
+    assert!(
+        GovernanceState::replay(&chain).is_ok(),
+        "setup must be legal"
+    );
 
     append(
         &mut chain,
@@ -495,7 +524,12 @@ fn a_management_cycle_without_governance_power_resolves_rather_than_hanging() {
     // and not be refused as if it were dangerous.
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("a", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("a", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -510,15 +544,26 @@ fn a_management_cycle_without_governance_power_resolves_rather_than_hanging() {
     );
 
     let state = GovernanceState::replay(&chain).unwrap();
-    assert_eq!(state.tier_of(&Capability::manage_membership("a")).unwrap(), Tier::Ordinary);
-    assert_eq!(state.tier_of(&Capability::manage_membership("b")).unwrap(), Tier::Ordinary);
+    assert_eq!(
+        state.tier_of(&Capability::manage_membership("a")).unwrap(),
+        Tier::Ordinary
+    );
+    assert_eq!(
+        state.tier_of(&Capability::manage_membership("b")).unwrap(),
+        Tier::Ordinary
+    );
 }
 
 #[test]
 fn a_management_cycle_containing_governance_power_is_governance_tier() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("a", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("a", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -556,7 +601,12 @@ fn an_unauthorized_identity_cannot_define_groups() {
     let founder = identity(1);
     let outsider = identity(2);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &outsider, at(10), define_group("mine", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &outsider,
+        at(10),
+        define_group("mine", [Capability::ReadContent]),
+    );
 
     assert!(matches!(
         GovernanceState::replay(&chain),
@@ -571,15 +621,30 @@ fn managing_one_group_does_not_confer_managing_another() {
     let newcomer = identity(3);
 
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("alpha", [Capability::ReadContent]));
-    append(&mut chain, &founder, at(11), define_group("beta", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("alpha", [Capability::ReadContent]),
+    );
+    append(
+        &mut chain,
+        &founder,
+        at(11),
+        define_group("beta", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
         at(12),
         define_group("alpha-admins", [Capability::manage_membership("alpha")]),
     );
-    append(&mut chain, &founder, at(13), add_to("alpha-admins", &delegate));
+    append(
+        &mut chain,
+        &founder,
+        at(13),
+        add_to("alpha-admins", &delegate),
+    );
 
     // Permitted: the delegate manages alpha.
     let mut ok = chain.clone();
@@ -599,7 +664,12 @@ fn managing_one_group_does_not_confer_managing_another() {
 fn membership_changes_to_an_unknown_group_are_refused() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), add_to("no-such-group", &identity(2)));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        add_to("no-such-group", &identity(2)),
+    );
     assert!(matches!(
         GovernanceState::replay(&chain),
         Err(GovernanceError::UnknownGroup(_))
@@ -626,7 +696,12 @@ fn cascade_fixture() -> (Vec<LogEntry>, PerNetworkIdentity, [PerNetworkIdentity;
     let late_downstream = identity(6);
 
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("crew", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("crew", [Capability::ReadContent]),
+    );
     append(
         &mut chain,
         &founder,
@@ -634,7 +709,12 @@ fn cascade_fixture() -> (Vec<LogEntry>, PerNetworkIdentity, [PerNetworkIdentity;
         define_group("crew-admins", [Capability::manage_membership("crew")]),
     );
     for (i, admin) in [&recruiter, &early, &late].into_iter().enumerate() {
-        append(&mut chain, &founder, at(12 + i as i64), add_to("crew-admins", admin));
+        append(
+            &mut chain,
+            &founder,
+            at(12 + i as i64),
+            add_to("crew-admins", admin),
+        );
     }
     // The recruiter is itself a member of the group it manages, so that
     // removing it from `crew` is a real removal rather than a no-op.
@@ -644,8 +724,18 @@ fn cascade_fixture() -> (Vec<LogEntry>, PerNetworkIdentity, [PerNetworkIdentity;
     append(&mut chain, &recruiter, at(1_000), add_to("crew", &early));
     append(&mut chain, &recruiter, at(500_000), add_to("crew", &late));
     // Each of those onboards someone else, so recursion has somewhere to go.
-    append(&mut chain, &early, at(500_100), add_to("crew", &early_downstream));
-    append(&mut chain, &late, at(500_200), add_to("crew", &late_downstream));
+    append(
+        &mut chain,
+        &early,
+        at(500_100),
+        add_to("crew", &early_downstream),
+    );
+    append(
+        &mut chain,
+        &late,
+        at(500_200),
+        add_to("crew", &late_downstream),
+    );
 
     (
         chain,
@@ -659,7 +749,12 @@ fn removal_does_not_cascade_by_default() {
     let (mut chain, recruiter, [early, late, early_downstream, late_downstream]) =
         cascade_fixture();
     let founder = identity(1);
-    append(&mut chain, &founder, at(600_000), remove_from("crew", &recruiter, None));
+    append(
+        &mut chain,
+        &founder,
+        at(600_000),
+        remove_from("crew", &recruiter, None),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     let crew = &state.groups[&GroupId::new("crew")];
@@ -681,7 +776,13 @@ fn opt_in_cascade_removes_downstream_memberships_recursively() {
         &mut chain,
         &founder,
         at(600_000),
-        remove_from("crew", &recruiter, Some(Cascade { window_millis: None })),
+        remove_from(
+            "crew",
+            &recruiter,
+            Some(Cascade {
+                window_millis: None,
+            }),
+        ),
     );
 
     let state = GovernanceState::replay(&chain).unwrap();
@@ -728,7 +829,12 @@ fn a_member_holding_no_capability_may_remove_themselves() {
         &Capability::manage_membership(GroupId::everyone().as_str())
     ));
 
-    append(&mut chain, &leaver, at(20), remove_from("everyone", &leaver, None));
+    append(
+        &mut chain,
+        &leaver,
+        at(20),
+        remove_from("everyone", &leaver, None),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     assert!(
@@ -743,13 +849,23 @@ fn leaving_a_role_does_not_need_the_capability_to_manage_it() {
     let leaver = identity(2);
 
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("crew", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("crew", [Capability::ReadContent]),
+    );
     append(&mut chain, &founder, at(11), add_to("everyone", &leaver));
     append(&mut chain, &founder, at(12), add_to("crew", &leaver));
 
     // Stepping out of one role, while staying in the network. Membership of
     // `everyone` is what gives standing to append at all, and it survives.
-    append(&mut chain, &leaver, at(20), remove_from("crew", &leaver, None));
+    append(
+        &mut chain,
+        &leaver,
+        at(20),
+        remove_from("crew", &leaver, None),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     assert!(!state.groups[&GroupId::new("crew")].contains(&leaver.id()));
@@ -764,7 +880,12 @@ fn the_same_entry_removing_somebody_else_is_still_refused() {
     // a different identity is the capability-gated removal it always was, so
     // §2.5.1 opens no route to ejecting anybody.
     let parent = chain.last().map(LogEntry::hash);
-    let entry = LogEntry::create(&leaver, parent, at(20), remove_from("everyone", &other, None));
+    let entry = LogEntry::create(
+        &leaver,
+        parent,
+        at(20),
+        remove_from("everyone", &other, None),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     let refusal = state.apply(&entry).unwrap_err();
@@ -784,20 +905,35 @@ fn a_departure_carries_no_fork_choice_weight() {
     // departure is now one. Counting it would be cheap weight to grind: under
     // `admission: auto` an attacker mints identities freely, and each could then
     // leave every group it was in.
-    let departure = LogEntry::create(&leaver, parent, at(20), remove_from("everyone", &leaver, None));
+    let departure = LogEntry::create(
+        &leaver,
+        parent,
+        at(20),
+        remove_from("everyone", &leaver, None),
+    );
     assert!(!departure.is_capability_gated());
 
     // The same removal by somebody with the capability is an ordinary
     // governance action and still counts, so the exclusion is as narrow as the
     // rule that produced it.
-    let ejection = LogEntry::create(&founder, parent, at(20), remove_from("everyone", &other, None));
+    let ejection = LogEntry::create(
+        &founder,
+        parent,
+        at(20),
+        remove_from("everyone", &other, None),
+    );
     assert!(ejection.is_capability_gated());
 }
 
 #[test]
 fn a_departure_records_and_does_not_itself_rotate() {
     let (mut chain, leaver, _other) = departure_fixture();
-    append(&mut chain, &leaver, at(20), remove_from("everyone", &leaver, None));
+    append(
+        &mut chain,
+        &leaver,
+        at(20),
+        remove_from("everyone", &leaver, None),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
 
@@ -893,8 +1029,18 @@ fn windowed_cascade_only_unwinds_recent_additions() {
 fn removing_a_non_member_is_an_error_not_a_silent_no_op() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("crew", [Capability::ReadContent]));
-    append(&mut chain, &founder, at(20), remove_from("crew", &identity(7), None));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("crew", [Capability::ReadContent]),
+    );
+    append(
+        &mut chain,
+        &founder,
+        at(20),
+        remove_from("crew", &identity(7), None),
+    );
 
     assert!(matches!(
         GovernanceState::replay(&chain),
@@ -927,14 +1073,26 @@ fn state_hash_is_sensitive_to_every_material_difference() {
     let base = vec![genesis(&founder)];
 
     let mut with_group = base.clone();
-    append(&mut with_group, &founder, at(10), define_group("x", [Capability::ReadContent]));
+    append(
+        &mut with_group,
+        &founder,
+        at(10),
+        define_group("x", [Capability::ReadContent]),
+    );
 
     let mut with_other_group = base.clone();
-    append(&mut with_other_group, &founder, at(10), define_group("y", [Capability::ReadContent]));
+    append(
+        &mut with_other_group,
+        &founder,
+        at(10),
+        define_group("y", [Capability::ReadContent]),
+    );
 
     let a = GovernanceState::replay(&base).unwrap().state_hash();
     let b = GovernanceState::replay(&with_group).unwrap().state_hash();
-    let c = GovernanceState::replay(&with_other_group).unwrap().state_hash();
+    let c = GovernanceState::replay(&with_other_group)
+        .unwrap()
+        .state_hash();
 
     assert_ne!(a, b);
     assert_ne!(b, c);
@@ -944,7 +1102,12 @@ fn state_hash_is_sensitive_to_every_material_difference() {
 fn a_tampered_entry_breaks_replay_rather_than_producing_a_plausible_state() {
     let founder = identity(1);
     let mut chain = vec![genesis(&founder)];
-    append(&mut chain, &founder, at(10), define_group("crew", [Capability::ReadContent]));
+    append(
+        &mut chain,
+        &founder,
+        at(10),
+        define_group("crew", [Capability::ReadContent]),
+    );
 
     // Rewrite the group's capabilities without re-signing.
     chain[1].body = define_group("crew", [Capability::RevokeNode]);
@@ -979,14 +1142,24 @@ fn delisting_is_resolved_by_replay_and_is_reversible() {
     let pointer = PointerId::from_bytes([77u8; 32]);
     let mut chain = vec![genesis(&founder)];
 
-    assert!(!GovernanceState::replay(&chain).unwrap().is_delisted(&pointer));
+    assert!(
+        !GovernanceState::replay(&chain)
+            .unwrap()
+            .is_delisted(&pointer)
+    );
 
     append(&mut chain, &founder, at(10), delist(pointer));
-    assert!(GovernanceState::replay(&chain).unwrap().is_delisted(&pointer));
+    assert!(
+        GovernanceState::replay(&chain)
+            .unwrap()
+            .is_delisted(&pointer)
+    );
 
     append(&mut chain, &founder, at(20), relist(pointer));
     assert!(
-        !GovernanceState::replay(&chain).unwrap().is_delisted(&pointer),
+        !GovernanceState::replay(&chain)
+            .unwrap()
+            .is_delisted(&pointer),
         "moderation is corrected by appending, never by rewriting history"
     );
 }
@@ -1032,7 +1205,9 @@ fn moderation_state_is_per_pointer() {
 // ---------------------------------------------------------------------------
 
 fn device_for(owner: &PerNetworkIdentity, seed: u8) -> (DevicePublicKey, DeviceCertificate) {
-    let key = DeviceSeed::from_entropy([seed; 32]).key_for(&NETWORK).unwrap();
+    let key = DeviceSeed::from_entropy([seed; 32])
+        .key_for(&NETWORK)
+        .unwrap();
     let public = DevicePublicKey::from_verifying_key(*key.id().verifying_key());
     let cert = DeviceCertificate::issue(owner, public, "laptop", at(5));
     (public, cert)
@@ -1046,13 +1221,23 @@ fn a_member_may_enroll_and_revoke_its_own_device_without_any_capability() {
 
     let mut chain = vec![genesis(&founder)];
     append(&mut chain, &founder, at(10), add_to(EVERYONE, &member));
-    append(&mut chain, &member, at(20), EntryBody::DeviceEnrollment(cert));
+    append(
+        &mut chain,
+        &member,
+        at(20),
+        EntryBody::DeviceEnrollment(cert),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     assert!(state.device_is_authorized(&device, &member.id()));
 
     let revocation = intranet_identity::DeviceCertificateRevocation::issue(&member, device, at(30));
-    append(&mut chain, &member, at(30), EntryBody::DeviceRevocation(revocation));
+    append(
+        &mut chain,
+        &member,
+        at(30),
+        EntryBody::DeviceRevocation(revocation),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     assert!(
@@ -1072,7 +1257,12 @@ fn nobody_may_enroll_a_device_on_another_identitys_behalf() {
 
     let mut chain = vec![genesis(&founder)];
     append(&mut chain, &founder, at(10), add_to(EVERYONE, &member));
-    append(&mut chain, &founder, at(20), EntryBody::DeviceEnrollment(cert));
+    append(
+        &mut chain,
+        &founder,
+        at(20),
+        EntryBody::DeviceEnrollment(cert),
+    );
 
     assert!(matches!(
         GovernanceState::replay(&chain),
@@ -1095,8 +1285,18 @@ fn a_revoked_device_cannot_be_re_enrolled_by_replaying_its_certificate() {
         EntryBody::DeviceEnrollment(cert.clone()),
     );
     let revocation = intranet_identity::DeviceCertificateRevocation::issue(&member, device, at(30));
-    append(&mut chain, &member, at(30), EntryBody::DeviceRevocation(revocation));
-    append(&mut chain, &member, at(40), EntryBody::DeviceEnrollment(cert));
+    append(
+        &mut chain,
+        &member,
+        at(30),
+        EntryBody::DeviceRevocation(revocation),
+    );
+    append(
+        &mut chain,
+        &member,
+        at(40),
+        EntryBody::DeviceEnrollment(cert),
+    );
 
     let state = GovernanceState::replay(&chain).unwrap();
     assert!(
@@ -1121,8 +1321,18 @@ fn forked_log() -> (GovernanceLog, PerNetworkIdentity, Hash) {
 fn a_single_entry_fork_is_broken_by_the_lower_entry_hash() {
     let (mut log, founder, root) = forked_log();
 
-    let left = LogEntry::create(&founder, Some(root), at(10), define_group("left", [Capability::ReadContent]));
-    let right = LogEntry::create(&founder, Some(root), at(11), define_group("right", [Capability::ReadContent]));
+    let left = LogEntry::create(
+        &founder,
+        Some(root),
+        at(10),
+        define_group("left", [Capability::ReadContent]),
+    );
+    let right = LogEntry::create(
+        &founder,
+        Some(root),
+        at(11),
+        define_group("right", [Capability::ReadContent]),
+    );
     let expected = left.hash().min(right.hash());
 
     log.insert(left).unwrap();
@@ -1134,8 +1344,18 @@ fn a_single_entry_fork_is_broken_by_the_lower_entry_hash() {
 #[test]
 fn fork_choice_does_not_depend_on_insertion_order() {
     let (_, founder, root) = forked_log();
-    let left = LogEntry::create(&founder, Some(root), at(10), define_group("left", [Capability::ReadContent]));
-    let right = LogEntry::create(&founder, Some(root), at(11), define_group("right", [Capability::ReadContent]));
+    let left = LogEntry::create(
+        &founder,
+        Some(root),
+        at(10),
+        define_group("left", [Capability::ReadContent]),
+    );
+    let right = LogEntry::create(
+        &founder,
+        Some(root),
+        at(11),
+        define_group("right", [Capability::ReadContent]),
+    );
 
     let build = |first: LogEntry, second: LogEntry| {
         let mut log = GovernanceLog::new();
@@ -1156,7 +1376,12 @@ fn fork_choice_does_not_depend_on_insertion_order() {
 fn the_branch_with_more_capability_gated_actions_wins() {
     let (mut log, founder, root) = forked_log();
 
-    let short = LogEntry::create(&founder, Some(root), at(10), define_group("short", [Capability::ReadContent]));
+    let short = LogEntry::create(
+        &founder,
+        Some(root),
+        at(10),
+        define_group("short", [Capability::ReadContent]),
+    );
     let short_hash = short.hash();
     log.insert(short).unwrap();
 
@@ -1216,7 +1441,9 @@ fn padding_a_branch_with_capability_free_entries_does_not_win_it() {
     let mut parent = fork_point;
     let mut attacker_tip = fork_point;
     for i in 0..20u8 {
-        let key = DeviceSeed::from_entropy([100 + i; 32]).key_for(&NETWORK).unwrap();
+        let key = DeviceSeed::from_entropy([100 + i; 32])
+            .key_for(&NETWORK)
+            .unwrap();
         let public = DevicePublicKey::from_verifying_key(*key.id().verifying_key());
         let cert = DeviceCertificate::issue(&attacker, public, "grind", at(100 + i64::from(i)));
         let entry = LogEntry::create(
@@ -1404,7 +1631,10 @@ fn finality_only_ever_moves_forward() {
 
     // Reconciling again with an earlier clock must not un-finalize anything.
     let earlier = log.reconcile(at(t)).finalized;
-    assert_eq!(far, earlier, "finality is a commitment, not a recomputation");
+    assert_eq!(
+        far, earlier,
+        "finality is a commitment, not a recomputation"
+    );
 }
 
 #[test]
@@ -1451,7 +1681,11 @@ fn reconciliation_reports_voided_entries_and_flags_lost_revocations() {
         .filter(|v| v.hash == revocation_hash)
         .collect();
 
-    assert_eq!(voided.len(), 1, "the voided revocation must appear in the report");
+    assert_eq!(
+        voided.len(),
+        1,
+        "the voided revocation must appear in the report"
+    );
     assert_eq!(voided[0].kind, "membership-remove");
     assert!(
         voided[0].security_relevant,
@@ -1531,7 +1765,12 @@ fn member_vote_cannot_be_paired_with_auto_admit() {
         window_millis: 72_000,
     };
     good.admission_mode = AdmissionMode::ExplicitIntake;
-    append(&mut chain, &founder, at(110), EntryBody::PolicyChange { policy: good });
+    append(
+        &mut chain,
+        &founder,
+        at(110),
+        EntryBody::PolicyChange { policy: good },
+    );
     assert!(GovernanceState::replay(&chain).is_ok());
 }
 
@@ -1575,7 +1814,12 @@ fn voting_network(voters: usize) -> (Vec<LogEntry>, Vec<PerNetworkIdentity>) {
     let mut members = Vec::new();
     for i in 0..voters {
         let member = identity(10 + i as u8);
-        append(&mut chain, &founder, at(10 + i as i64), add_to(EVERYONE, &member));
+        append(
+            &mut chain,
+            &founder,
+            at(10 + i as i64),
+            add_to(EVERYONE, &member),
+        );
         members.push(member);
     }
 
@@ -1585,7 +1829,12 @@ fn voting_network(voters: usize) -> (Vec<LogEntry>, Vec<PerNetworkIdentity>) {
         quorum: 3,
         window_millis: 72_000,
     };
-    append(&mut chain, &founder, at(50), EntryBody::PolicyChange { policy });
+    append(
+        &mut chain,
+        &founder,
+        at(50),
+        EntryBody::PolicyChange { policy },
+    );
     (chain, members)
 }
 
@@ -1654,7 +1903,11 @@ fn under_member_vote_an_admission_needs_a_passing_certificate() {
 
     // Now the same admission is authorized — and by a member with no capability.
     let state = GovernanceState::replay(&chain).unwrap();
-    assert!(state.passed_votes.contains(&admission_of(&newcomer).action_hash()));
+    assert!(
+        state
+            .passed_votes
+            .contains(&admission_of(&newcomer).action_hash())
+    );
     let admission = LogEntry::create(
         &voters[1],
         Some(chain.last().unwrap().hash()),
@@ -1845,7 +2098,12 @@ fn electorate_fixture(voters: usize) -> (Vec<LogEntry>, Vec<PerNetworkIdentity>)
     let mut members = Vec::new();
     for i in 0..voters {
         let member = identity(10 + i as u8);
-        append(&mut chain, &founder, at(10 + i as i64), add_to(EVERYONE, &member));
+        append(
+            &mut chain,
+            &founder,
+            at(10 + i as i64),
+            add_to(EVERYONE, &member),
+        );
         members.push(member);
     }
     (chain, members)
@@ -1984,7 +2242,12 @@ fn the_electorate_is_frozen_against_mid_vote_additions() {
     let founder = identity(1);
     let latecomer = identity(99);
     let mut extended = chain;
-    append(&mut extended, &founder, at(5_000), add_to(EVERYONE, &latecomer));
+    append(
+        &mut extended,
+        &founder,
+        at(5_000),
+        add_to(EVERYONE, &latecomer),
+    );
     let state = GovernanceState::replay(&extended).unwrap();
     assert!(state.groups[&GroupId::everyone()].contains(&latecomer.id()));
 
@@ -2415,8 +2678,14 @@ fn a_truncated_response_is_still_a_valid_prefix() {
 fn policy_with_app_values() -> NetworkPolicy {
     let mut policy = NetworkPolicy::conservative_default();
     policy.app_policy.extend([
-        ("chat:message-rate-per-minute".to_owned(), PolicyValue::Int(30)),
-        ("chat:network-profile".to_owned(), PolicyValue::Text("conversation".to_owned())),
+        (
+            "chat:message-rate-per-minute".to_owned(),
+            PolicyValue::Int(30),
+        ),
+        (
+            "chat:network-profile".to_owned(),
+            PolicyValue::Text("conversation".to_owned()),
+        ),
         ("chat:vod-retention".to_owned(), PolicyValue::Flag(true)),
     ]);
     policy
@@ -2616,7 +2885,12 @@ fn changing_app_policy_requires_define_policy() {
     );
     chain.push(by_founder);
     let state = GovernanceState::replay(&chain).expect("a founder may");
-    assert_eq!(state.policy.app_policy_int("chat:message-rate-per-minute", 0), 30);
+    assert_eq!(
+        state
+            .policy
+            .app_policy_int("chat:message-rate-per-minute", 0),
+        30
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2647,9 +2921,7 @@ fn app_entry_chain(founder: &PerNetworkIdentity, member: &PerNetworkIdentity) ->
         EntryBody::Genesis {
             network: NETWORK,
             policy,
-            everyone_capabilities: [Capability::extension("chat:post:*")]
-                .into_iter()
-                .collect(),
+            everyone_capabilities: [Capability::extension("chat:post:*")].into_iter().collect(),
         },
     )];
     let parent = chain[0].hash();
@@ -2709,7 +2981,10 @@ fn the_protocol_does_not_interpret_an_app_payload() {
         &founder,
         Some(parent),
         at(10),
-        app_entry(Capability::extension("chat:manage-channel:*"), &[0xFF, 0x00, 0xFE]),
+        app_entry(
+            Capability::extension("chat:manage-channel:*"),
+            &[0xFF, 0x00, 0xFE],
+        ),
     ));
 
     let state = GovernanceState::replay(&chain).expect("replays");
@@ -2745,7 +3020,10 @@ fn app_entries_round_trip_on_the_wire() {
         &founder,
         None,
         at(0),
-        app_entry(Capability::extension("chat:manage-channel:*"), b"opaque bytes"),
+        app_entry(
+            Capability::extension("chat:manage-channel:*"),
+            b"opaque bytes",
+        ),
     );
     let decoded = decode_entry(&encode_entry(&entry)).expect("decodes");
     assert_eq!(decoded, entry);

@@ -194,7 +194,8 @@ impl DialArgs {
             println!("reservation: not granted; circuit candidates will fail");
         }
 
-        node.dial_candidates(candidates).map_err(|e| e.to_string())?;
+        node.dial_candidates(candidates)
+            .map_err(|e| e.to_string())?;
 
         let upgrade_window = Duration::from_secs(self.upgrade_secs);
         let outcome = tokio::time::timeout(Duration::from_secs(self.timeout_secs), async {
@@ -215,7 +216,11 @@ impl DialArgs {
                     None => node.next_event().await,
                 };
                 match event {
-                    NodeEvent::Connected { peer, tier, address } => {
+                    NodeEvent::Connected {
+                        peer,
+                        tier,
+                        address,
+                    } => {
                         println!("connected: peer={peer} tier={} via={address}", tier.label());
                         // A hole-punch upgrade arrives after the initial relayed
                         // connection, so a relayed result is not final yet —
@@ -252,8 +257,10 @@ impl DialArgs {
                         // Waiting out the upgrade window instead costs nothing
                         // when the punch has genuinely failed: the window expires
                         // and `relayed` is reported anyway.
-                        println!("hole-punch: our dial failed peer={peer}; \
-                                  waiting out the upgrade window in case theirs lands");
+                        println!(
+                            "hole-punch: our dial failed peer={peer}; \
+                                  waiting out the upgrade window in case theirs lands"
+                        );
                         settle.get_or_insert_with(|| {
                             (tokio::time::Instant::now() + upgrade_window, peer)
                         });
@@ -274,7 +281,9 @@ impl DialArgs {
                         // so a scenario can assert discovery happened *without*
                         // a connection following from it.
                         for (peer, address) in peers {
-                            println!("mdns-discovered: peer={peer} address={address} (not dialled)");
+                            println!(
+                                "mdns-discovered: peer={peer} address={address} (not dialled)"
+                            );
                         }
                     }
                     NodeEvent::Disconnected { peer } => {

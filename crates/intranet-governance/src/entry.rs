@@ -613,9 +613,7 @@ impl EntryBody {
                     .fixed(revocation.signature.as_bytes());
             }
             Self::AppNameRegistration { name, app_id } => {
-                enc.variant(9)
-                    .str(name.as_str())
-                    .fixed(app_id.as_bytes());
+                enc.variant(9).str(name.as_str()).fixed(app_id.as_bytes());
             }
             Self::AppEntry {
                 namespace,
@@ -683,7 +681,13 @@ impl LogEntry {
     pub fn hash(&self) -> Hash {
         let mut e = Enc::domain(ENTRY_HASH_DOMAIN);
         e.bytes(
-            &Self::payload(self.parent.as_ref(), self.timestamp, &self.author, &self.body).finish(),
+            &Self::payload(
+                self.parent.as_ref(),
+                self.timestamp,
+                &self.author,
+                &self.body,
+            )
+            .finish(),
         );
         e.fixed(self.signature.as_bytes());
         hash_bytes(&e.finish())
@@ -788,7 +792,10 @@ mod tests {
 
         let mut retimed = entry.clone();
         retimed.timestamp = Timestamp::from_millis(11);
-        assert_eq!(retimed.verify_signature(), Err(GovernanceError::BadSignature));
+        assert_eq!(
+            retimed.verify_signature(),
+            Err(GovernanceError::BadSignature)
+        );
 
         let mut reparented = entry.clone();
         reparented.parent = Some(intranet_crypto::hash_bytes(b"elsewhere"));
@@ -818,7 +825,10 @@ mod tests {
         );
         let mut forged = entry;
         forged.author = identity(2).id();
-        assert_eq!(forged.verify_signature(), Err(GovernanceError::BadSignature));
+        assert_eq!(
+            forged.verify_signature(),
+            Err(GovernanceError::BadSignature)
+        );
     }
 
     #[test]
@@ -873,8 +883,7 @@ mod tests {
             *device_key.id().verifying_key(),
         );
 
-        let cert =
-            DeviceCertificate::issue(&author, device, "laptop", Timestamp::from_millis(1));
+        let cert = DeviceCertificate::issue(&author, device, "laptop", Timestamp::from_millis(1));
         assert!(!EntryBody::DeviceEnrollment(cert).is_capability_gated());
 
         let revocation =

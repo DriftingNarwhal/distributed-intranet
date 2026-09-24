@@ -87,13 +87,7 @@ impl DeviceCertificate {
     ) -> Self {
         let label = label.into();
         let identity_id = identity.id();
-        let payload = Self::payload(
-            identity.network(),
-            &identity_id,
-            &device,
-            &label,
-            issued_at,
-        );
+        let payload = Self::payload(identity.network(), &identity_id, &device, &label, issued_at);
         Self {
             network: *identity.network(),
             identity: identity_id,
@@ -241,7 +235,9 @@ mod tests {
         let identity = MasterSeed::from_entropy([1u8; 32])
             .identity_for(&network)
             .unwrap();
-        let device_key = DeviceSeed::from_entropy([2u8; 32]).key_for(&network).unwrap();
+        let device_key = DeviceSeed::from_entropy([2u8; 32])
+            .key_for(&network)
+            .unwrap();
         let device = DevicePublicKey::from_verifying_key(*device_key.id().verifying_key());
 
         let cert = DeviceCertificate::issue(&identity, device, "laptop", at(1_000));
@@ -256,12 +252,17 @@ mod tests {
         let identity = MasterSeed::from_entropy([1u8; 32])
             .identity_for(&network)
             .unwrap();
-        let device_key = DeviceSeed::from_entropy([2u8; 32]).key_for(&network).unwrap();
+        let device_key = DeviceSeed::from_entropy([2u8; 32])
+            .key_for(&network)
+            .unwrap();
         let device = DevicePublicKey::from_verifying_key(*device_key.id().verifying_key());
 
         let mut cert = DeviceCertificate::issue(&identity, device, "laptop", at(1_000));
         cert.label = "phone".into();
-        assert!(matches!(cert.verify(), Err(IdentityError::BadSignature { .. })));
+        assert!(matches!(
+            cert.verify(),
+            Err(IdentityError::BadSignature { .. })
+        ));
     }
 
     #[test]
@@ -272,8 +273,12 @@ mod tests {
         let identity = MasterSeed::from_entropy([1u8; 32])
             .identity_for(&network)
             .unwrap();
-        let honest = DeviceSeed::from_entropy([2u8; 32]).key_for(&network).unwrap();
-        let attacker = DeviceSeed::from_entropy([3u8; 32]).key_for(&network).unwrap();
+        let honest = DeviceSeed::from_entropy([2u8; 32])
+            .key_for(&network)
+            .unwrap();
+        let attacker = DeviceSeed::from_entropy([3u8; 32])
+            .key_for(&network)
+            .unwrap();
 
         let mut cert = DeviceCertificate::issue(
             &identity,
@@ -282,7 +287,10 @@ mod tests {
             at(1_000),
         );
         cert.device = DevicePublicKey::from_verifying_key(*attacker.id().verifying_key());
-        assert!(matches!(cert.verify(), Err(IdentityError::BadSignature { .. })));
+        assert!(matches!(
+            cert.verify(),
+            Err(IdentityError::BadSignature { .. })
+        ));
     }
 
     #[test]
@@ -320,13 +328,17 @@ mod tests {
         let identity = MasterSeed::from_entropy([1u8; 32])
             .identity_for(&network)
             .unwrap();
-        let device_key = DeviceSeed::from_entropy([2u8; 32]).key_for(&network).unwrap();
+        let device_key = DeviceSeed::from_entropy([2u8; 32])
+            .key_for(&network)
+            .unwrap();
         let device = DevicePublicKey::from_verifying_key(*device_key.id().verifying_key());
 
         let revocation = DeviceCertificateRevocation::issue(&identity, device, at(5_000));
         assert!(revocation.verify().is_ok());
 
-        let other = DeviceSeed::from_entropy([9u8; 32]).key_for(&network).unwrap();
+        let other = DeviceSeed::from_entropy([9u8; 32])
+            .key_for(&network)
+            .unwrap();
         let mut forged = revocation.clone();
         forged.device = DevicePublicKey::from_verifying_key(*other.id().verifying_key());
         assert!(matches!(
@@ -345,7 +357,9 @@ mod tests {
         let identity = MasterSeed::from_entropy([1u8; 32])
             .identity_for(&network)
             .unwrap();
-        let device_key = DeviceSeed::from_entropy([2u8; 32]).key_for(&network).unwrap();
+        let device_key = DeviceSeed::from_entropy([2u8; 32])
+            .key_for(&network)
+            .unwrap();
         let device = DevicePublicKey::from_verifying_key(*device_key.id().verifying_key());
 
         // The device signs a certificate naming the real identity as issuer.

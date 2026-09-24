@@ -38,15 +38,13 @@ pub mod sync;
 pub use libp2p::{Multiaddr, PeerId};
 
 pub use dial::{AddressFamily, ConnectionTier};
-pub use media_limits::{
-    FanOut, MediaRelayDenied, MediaRelayGuard, MediaRelayLimits,
-};
+pub use media_limits::{FanOut, MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
 pub use node::{
     Discovery, EpochRequestId, JoinRequestId, MemberNode, NodeEvent, RelayNode,
     default_listen_addresses,
 };
 pub use relay_limits::{
-    CircuitClosure, CircuitId, RelayDenied, RelayGuard, RelayLimits, ReservationId, Requester,
+    CircuitClosure, CircuitId, RelayDenied, RelayGuard, RelayLimits, Requester, ReservationId,
     TransportHandle,
 };
 

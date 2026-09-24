@@ -23,9 +23,7 @@ use crate::{
     RECLAIM_APP_NAME, REGISTER_APP_NAME, RotationReason, Tier,
 };
 use intranet_crypto::{Enc, Hash, Timestamp, hash_bytes};
-use intranet_identity::{
-    DeviceCertificate, DevicePublicKey, NetworkId, PerNetworkIdentityId,
-};
+use intranet_identity::{DeviceCertificate, DevicePublicKey, NetworkId, PerNetworkIdentityId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Who owns an application name, and what it resolves to.
@@ -837,8 +835,10 @@ impl GovernanceState {
     /// the pairing.** Refusing is the fail-closed reading: the alternative is
     /// silently privileging one setting, which makes the other a lie.
     fn check_policy_coherence(&self) -> Result<(), GovernanceError> {
-        if matches!(self.policy.governance_model, crate::GovernanceModel::MemberVote { .. })
-            && self.policy.admission_mode == crate::AdmissionMode::AutoAdmit
+        if matches!(
+            self.policy.governance_model,
+            crate::GovernanceModel::MemberVote { .. }
+        ) && self.policy.admission_mode == crate::AdmissionMode::AutoAdmit
         {
             return Err(GovernanceError::IncoherentPolicy {
                 reason: "auto-admit grants membership on a valid invite, but member-vote \

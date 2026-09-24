@@ -31,7 +31,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 /// A genesis entry granting `everyone` the capability that gates key delivery.
@@ -77,7 +79,8 @@ fn admit(
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -192,13 +195,20 @@ async fn resync(puller: &mut MemberNode, other: &mut MemberNode, from: &PerNetwo
 /// machinery.
 async fn network_with_admitted_joiner(
     history: HistoryAccess,
-) -> (MemberNode, PerNetworkIdentity, MemberNode, PerNetworkIdentity) {
+) -> (
+    MemberNode,
+    PerNetworkIdentity,
+    MemberNode,
+    PerNetworkIdentity,
+) {
     let founder = identity(1);
     let joiner = identity(2);
     let (mut founder_node, _) = node(1).await;
     let (mut joiner_node, joiner_addr) = node(2).await;
 
-    let parent = founder_node.append_entry(genesis(&founder, history)).unwrap();
+    let parent = founder_node
+        .append_entry(genesis(&founder, history))
+        .unwrap();
     founder_node.create_epoch_group(&founder).unwrap();
     founder_node
         .append_entry(admit(&founder, &joiner, parent, 10))
@@ -206,7 +216,13 @@ async fn network_with_admitted_joiner(
 
     founder_node.dial_candidates([joiner_addr]).unwrap();
     assert!(
-        drive(&mut founder_node, &mut joiner_node, Duration::from_secs(20), same_length).await,
+        drive(
+            &mut founder_node,
+            &mut joiner_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
         "the joiner should receive the governance log before asking for a key"
     );
 
@@ -287,7 +303,13 @@ async fn a_waiting_room_identity_is_refused_a_key() {
 
     founder_node.dial_candidates([waiting_addr]).unwrap();
     assert!(
-        drive(&mut founder_node, &mut waiting_node, Duration::from_secs(20), same_length).await,
+        drive(
+            &mut founder_node,
+            &mut waiting_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
         "the log should sync even to a node that will be refused a key"
     );
 
@@ -318,8 +340,7 @@ async fn a_key_package_naming_someone_else_is_refused() {
 
     // A package labelled as the founder, presented by the joiner.
     let impostor = GroupSession::prepare_join(&identity_label(&founder.id())).unwrap();
-    let request =
-        intranet_epoch::EpochKeyRequest::create(&joiner, impostor.key_package().unwrap());
+    let request = intranet_epoch::EpochKeyRequest::create(&joiner, impostor.key_package().unwrap());
     joiner_node.send_epoch_request(founder.id(), request);
 
     let outcome = deliver_key(&mut founder_node, &founder, &mut joiner_node, 20).await;
@@ -339,7 +360,9 @@ async fn full_history_delivers_superseded_keys_sealed_to_the_joiner() {
         network_with_admitted_joiner(HistoryAccess::FullHistory).await;
 
     // Give the founder a superseded epoch to have history *of*.
-    let rotation = founder_node.rotate_epoch(&founder, Timestamp::from_millis(15)).unwrap();
+    let rotation = founder_node
+        .rotate_epoch(&founder, Timestamp::from_millis(15))
+        .unwrap();
     assert_eq!(
         founder_node.epoch_keyring().len(),
         2,
@@ -349,7 +372,9 @@ async fn full_history_delivers_superseded_keys_sealed_to_the_joiner() {
 
     resync(&mut joiner_node, &mut founder_node, &founder).await;
 
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     deliver_key(&mut founder_node, &founder, &mut joiner_node, 20)
         .await
         .expect("the joiner should be keyed in");
@@ -367,7 +392,11 @@ async fn full_history_delivers_superseded_keys_sealed_to_the_joiner() {
         .next()
         .unwrap()
         .rotation_ref;
-    let founder_old = founder_node.epoch_keyring().key_for(&old_ref).unwrap().clone();
+    let founder_old = founder_node
+        .epoch_keyring()
+        .key_for(&old_ref)
+        .unwrap()
+        .clone();
     let joiner_old = joiner_node
         .epoch_keyring()
         .key_for(&old_ref)
@@ -387,10 +416,14 @@ async fn current_epoch_forward_delivers_no_history() {
     let (mut founder_node, founder, mut joiner_node, joiner) =
         network_with_admitted_joiner(HistoryAccess::CurrentEpochForward).await;
 
-    founder_node.rotate_epoch(&founder, Timestamp::from_millis(15)).unwrap();
+    founder_node
+        .rotate_epoch(&founder, Timestamp::from_millis(15))
+        .unwrap();
     resync(&mut joiner_node, &mut founder_node, &founder).await;
 
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     deliver_key(&mut founder_node, &founder, &mut joiner_node, 20)
         .await
         .expect("the joiner should be keyed in");
@@ -413,15 +446,17 @@ async fn an_unadmitted_identity_cannot_borrow_a_members_standing() {
 
     // A request validly signed by the admitted joiner, replayed by an outsider.
     let pending = GroupSession::prepare_join(&identity_label(&joiner.id())).unwrap();
-    let captured =
-        intranet_epoch::EpochKeyRequest::create(&joiner, pending.key_package().unwrap());
+    let captured = intranet_epoch::EpochKeyRequest::create(&joiner, pending.key_package().unwrap());
 
     let (mut outsider_node, outsider_addr) = node(4).await;
     founder_node.dial_candidates([outsider_addr]).unwrap();
     assert!(
-        drive(&mut founder_node, &mut outsider_node, Duration::from_secs(20), |_, b| {
-            !b.governance_log().is_empty()
-        })
+        drive(
+            &mut founder_node,
+            &mut outsider_node,
+            Duration::from_secs(20),
+            |_, b| { !b.governance_log().is_empty() }
+        )
         .await,
         "the outsider should reach the founder"
     );
@@ -435,7 +470,9 @@ async fn an_unadmitted_identity_cannot_borrow_a_members_standing() {
     assert!(!outsider_node.holds_epoch_key());
 
     // The legitimate holder is unaffected — the replay does not consume anything.
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     deliver_key(&mut founder_node, &founder, &mut joiner_node, 20)
         .await
         .expect("the real joiner should still be keyed in");
@@ -452,23 +489,41 @@ async fn a_synced_rotation_commit_keeps_a_third_member_in_step() {
     let (mut founder_node, founder, mut joiner_node, joiner) =
         network_with_admitted_joiner(HistoryAccess::CurrentEpochForward).await;
 
-    joiner_node.request_epoch_key(founder.id(), &joiner).unwrap();
+    joiner_node
+        .request_epoch_key(founder.id(), &joiner)
+        .unwrap();
     deliver_key(&mut founder_node, &founder, &mut joiner_node, 20)
         .await
         .expect("the joiner should be keyed in");
 
-    let before = joiner_node.epoch_keyring().current().unwrap().1.fingerprint();
+    let before = joiner_node
+        .epoch_keyring()
+        .current()
+        .unwrap()
+        .1
+        .fingerprint();
 
     // A third member is admitted, advancing the epoch for everyone.
     let third = identity(5);
-    let parent = founder_node.governance_log().canonical_chain().last().copied().unwrap();
+    let parent = founder_node
+        .governance_log()
+        .canonical_chain()
+        .last()
+        .copied()
+        .unwrap();
     founder_node
         .append_entry(admit(&founder, &third, parent, 30))
         .unwrap();
     let (mut third_node, third_addr) = node(5).await;
     founder_node.dial_candidates([third_addr]).unwrap();
     assert!(
-        drive(&mut founder_node, &mut third_node, Duration::from_secs(20), same_length).await,
+        drive(
+            &mut founder_node,
+            &mut third_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
         "the third node should sync the log"
     );
     third_node.request_epoch_key(founder.id(), &third).unwrap();
@@ -484,16 +539,31 @@ async fn a_synced_rotation_commit_keeps_a_third_member_in_step() {
         "the joiner should apply the commit it synced, or it is now on a stale epoch"
     );
 
-    let after = joiner_node.epoch_keyring().current().unwrap().1.fingerprint();
+    let after = joiner_node
+        .epoch_keyring()
+        .current()
+        .unwrap()
+        .1
+        .fingerprint();
     assert_ne!(before, after, "applying the commit must advance the epoch");
     assert_eq!(
         after,
-        founder_node.epoch_keyring().current().unwrap().1.fingerprint(),
+        founder_node
+            .epoch_keyring()
+            .current()
+            .unwrap()
+            .1
+            .fingerprint(),
         "all three members must land on the same epoch key"
     );
     assert_eq!(
         after,
-        third_node.epoch_keyring().current().unwrap().1.fingerprint(),
+        third_node
+            .epoch_keyring()
+            .current()
+            .unwrap()
+            .1
+            .fingerprint(),
         "including the member whose admission caused the rotation"
     );
 }
@@ -526,7 +596,13 @@ async fn a_node_without_a_group_refuses_rather_than_pretending() {
         .unwrap();
     a_node.dial_candidates([b_addr]).unwrap();
     assert!(
-        drive(&mut a_node, &mut b_node, Duration::from_secs(20), same_length).await,
+        drive(
+            &mut a_node,
+            &mut b_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await,
         "the log should sync"
     );
 
@@ -536,7 +612,9 @@ async fn a_node_without_a_group_refuses_rather_than_pretending() {
     );
     assert!(a_node.epoch_keyring().key_for(&absent()).is_none());
 
-    b_node.request_epoch_key(responder.id(), &b_identity).unwrap();
+    b_node
+        .request_epoch_key(responder.id(), &b_identity)
+        .unwrap();
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             tokio::select! {
@@ -557,4 +635,3 @@ async fn a_node_without_a_group_refuses_rather_than_pretending() {
         "refusal should name the missing group, got: {reason}"
     );
 }
-

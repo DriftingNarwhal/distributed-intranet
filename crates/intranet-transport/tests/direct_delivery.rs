@@ -204,8 +204,14 @@ async fn a_sender_past_the_limit_is_refused_rather_than_left_to_time_out() {
         );
     }
 
-    a.send_direct(bob.id(), &alice, "chat", "dm-invite", b"one too many".to_vec())
-        .expect("within the ceilings");
+    a.send_direct(
+        bob.id(),
+        &alice,
+        "chat",
+        "dm-invite",
+        b"one too many".to_vec(),
+    )
+    .expect("within the ceilings");
 
     // **Refused, and reported.** A limit that surfaced only as the sender timing
     // out would be indistinguishable from a node that had gone away, and the
@@ -266,8 +272,14 @@ async fn a_message_delivered_by_somebody_other_than_its_sender_is_dropped() {
     let carol = identity(3);
     let bob = identity(2);
 
-    a.send_direct(bob.id(), &carol, "chat", "dm-invite", b"not from alice".to_vec())
-        .expect("within the ceilings");
+    a.send_direct(
+        bob.id(),
+        &carol,
+        "chat",
+        "dm-invite",
+        b"not from alice".to_vec(),
+    )
+    .expect("within the ceilings");
 
     // Dropped, and deliberately without an answer: replying would tell a peer
     // probing with a stolen message whether it was well formed.
@@ -309,7 +321,8 @@ fn a_message_signed_by_one_member_does_not_verify_as_another() {
 #[test]
 fn neither_the_namespace_nor_the_payload_can_be_altered_in_flight() {
     let alice = identity(1);
-    let original = DirectMessage::create(&alice, "chat", "dm-invite", b"an invite".to_vec()).unwrap();
+    let original =
+        DirectMessage::create(&alice, "chat", "dm-invite", b"an invite".to_vec()).unwrap();
 
     // The signature covers sender, namespace, kind and payload together, so a
     // message cannot be re-aimed at a different consumer or have its contents
@@ -355,9 +368,13 @@ fn an_oversized_payload_is_refused_at_both_ends() {
     // And refused on decode, because the sender is not the one being trusted.
     // Built at exactly the ceiling, then grown past it, so the bytes are
     // otherwise well formed and correctly signed.
-    let mut at_ceiling =
-        DirectMessage::create(&alice, "chat", "dm-invite", vec![0u8; MAX_DIRECT_PAYLOAD_BYTES])
-            .unwrap();
+    let mut at_ceiling = DirectMessage::create(
+        &alice,
+        "chat",
+        "dm-invite",
+        vec![0u8; MAX_DIRECT_PAYLOAD_BYTES],
+    )
+    .unwrap();
     at_ceiling.payload.push(0);
     let re_signed = DirectMessage::create(&alice, "chat", "dm-invite", at_ceiling.payload.clone());
     assert!(re_signed.is_err(), "cannot even be built past the ceiling");

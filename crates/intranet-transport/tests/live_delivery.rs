@@ -23,7 +23,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -39,7 +41,11 @@ fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
     )
 }
 
-fn admit(founder: &PerNetworkIdentity, parent: intranet_crypto::Hash, who: &PerNetworkIdentity) -> LogEntry {
+fn admit(
+    founder: &PerNetworkIdentity,
+    parent: intranet_crypto::Hash,
+    who: &PerNetworkIdentity,
+) -> LogEntry {
     LogEntry::create(
         founder,
         Some(parent),
@@ -55,7 +61,8 @@ fn admit(founder: &PerNetworkIdentity, parent: intranet_crypto::Hash, who: &PerN
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
     node.set_dht_server_mode(true);
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
@@ -96,7 +103,10 @@ async fn pair() -> (MemberNode, MemberNode) {
     })
     .await
     .unwrap_or(false);
-    assert!(connected, "the pair must connect before anything is published");
+    assert!(
+        connected,
+        "the pair must connect before anything is published"
+    );
 
     (a, b)
 }
@@ -158,8 +168,14 @@ async fn a_payload_reaches_a_subscriber_byte_identical() {
         .await
         .expect("a subscriber should receive what was published");
 
-    assert_eq!(got_topic, topic, "delivered on the topic it was published to");
-    assert_eq!(got, payload, "and byte-identical, with nothing added or framed");
+    assert_eq!(
+        got_topic, topic,
+        "delivered on the topic it was published to"
+    );
+    assert_eq!(
+        got, payload,
+        "and byte-identical, with nothing added or framed"
+    );
 }
 
 #[tokio::test]
@@ -204,7 +220,10 @@ async fn unsubscribing_stops_delivery() {
     );
     assert!(b.live_topics().iter().any(|held| held == topic));
 
-    assert!(b.unsubscribe_live(topic), "unsubscribing reports the change");
+    assert!(
+        b.unsubscribe_live(topic),
+        "unsubscribing reports the change"
+    );
     assert!(
         !b.live_topics().iter().any(|held| held == topic),
         "and the topic is no longer carried"
@@ -230,5 +249,9 @@ async fn publishing_with_nobody_listening_is_not_a_failure_worth_reporting() {
     // Whether this returns Ok or Err is not the point; that it does not panic
     // and leaves the node usable is.
     let _ = a.publish_live("intranet.test.lonely.v1", b"into the void".to_vec());
-    assert!(a.live_topics().iter().any(|t| t == "intranet.test.lonely.v1"));
+    assert!(
+        a.live_topics()
+            .iter()
+            .any(|t| t == "intranet.test.lonely.v1")
+    );
 }

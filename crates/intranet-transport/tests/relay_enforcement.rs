@@ -20,11 +20,15 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn is_circuit(address: &Multiaddr) -> bool {
-    address.iter().any(|part| matches!(part, Protocol::P2pCircuit))
+    address
+        .iter()
+        .any(|part| matches!(part, Protocol::P2pCircuit))
 }
 
 fn is_loopback(address: &Multiaddr) -> bool {
@@ -71,7 +75,8 @@ async fn a_live_relay_refuses_reservations_past_its_ceiling() {
     let mut first = MemberNode::new(&identity(2)).unwrap();
     let mut second = MemberNode::new(&identity(3)).unwrap();
     for node in [&mut first, &mut second] {
-        node.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+        node.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+            .unwrap();
     }
 
     first.reserve_via_relay(relay_addr.clone()).await.unwrap();
@@ -121,7 +126,8 @@ async fn a_relay_grants_within_its_ceiling() {
     let mut first = MemberNode::new(&identity(2)).unwrap();
     let mut second = MemberNode::new(&identity(3)).unwrap();
     for node in [&mut first, &mut second] {
-        node.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+        node.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+            .unwrap();
     }
 
     first.reserve_via_relay(relay_addr.clone()).await.unwrap();
@@ -185,7 +191,9 @@ async fn circuit_lifetime(limits: RelayLimits, hold: Duration) -> (bool, bool) {
     let target_peer = target_identity.peer_id();
     let mut target = MemberNode::new(&target_identity).unwrap();
     let mut dialer = MemberNode::new(&identity(3)).unwrap();
-    dialer.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    dialer
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
 
     target.reserve_via_relay(relay_addr.clone()).await.unwrap();
     dialer.reserve_via_relay(relay_addr.clone()).await.unwrap();
@@ -218,7 +226,10 @@ async fn circuit_lifetime(limits: RelayLimits, hold: Duration) -> (bool, bool) {
         }
     })
     .await;
-    assert!(granted.is_ok(), "both peers should hold a reservation before the dial");
+    assert!(
+        granted.is_ok(),
+        "both peers should hold a reservation before the dial"
+    );
 
     let circuit = relay_addr
         .with(Protocol::P2pCircuit)
@@ -280,7 +291,10 @@ async fn a_live_relay_cuts_a_circuit_off_at_its_duration_ceiling() {
     };
     let (established, closed) = circuit_lifetime(limits, Duration::from_secs(25)).await;
 
-    assert!(established, "the circuit should open before it is timed out");
+    assert!(
+        established,
+        "the circuit should open before it is timed out"
+    );
     assert!(
         closed,
         "a circuit with a 3s lifetime must be closed by the relay — if it survives, \
@@ -297,7 +311,10 @@ async fn a_circuit_within_its_ceilings_stays_open() {
     let (established, closed) =
         circuit_lifetime(RelayLimits::default(), Duration::from_secs(12)).await;
 
-    assert!(established, "a relayed connection should establish under default limits");
+    assert!(
+        established,
+        "a relayed connection should establish under default limits"
+    );
     assert!(
         !closed,
         "a circuit well inside its ceilings must not be cut off — if this closes, the \
@@ -471,7 +488,10 @@ async fn a_designation_naming_the_wrong_relay_says_so() {
     .await
     .unwrap_or(false);
 
-    assert!(!granted, "a relay named by the wrong peer id must not grant a circuit");
+    assert!(
+        !granted,
+        "a relay named by the wrong peer id must not grant a circuit"
+    );
     let reason = member
         .last_reservation_error()
         .expect("a dial that reached a different node must be reported as the reason");
@@ -507,7 +527,10 @@ async fn a_refused_reservation_says_it_was_refused() {
     )
     .await;
 
-    assert!(!granted, "a relay with no reservation capacity must not grant one");
+    assert!(
+        !granted,
+        "a relay with no reservation capacity must not grant one"
+    );
     let reason = reason.expect(
         "a refused reservation must report a reason — without one a caller can only          say that some window elapsed, which is what sent a real deployment looking          at a correctly configured relay",
     );
@@ -555,4 +578,3 @@ async fn announcing_a_public_address_makes_reservations_usable_again() {
         "an announced public address should make the reservation usable"
     );
 }
-

@@ -35,7 +35,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn text() -> ContentType {
@@ -83,7 +85,8 @@ fn cid(n: u8) -> Cid {
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -141,7 +144,12 @@ fn seed_log(node: &mut MemberNode, founder: &PerNetworkIdentity, members: &[u8])
 }
 
 /// Two connected nodes sharing a log, both members able to publish text.
-async fn pair() -> (MemberNode, PerNetworkIdentity, MemberNode, PerNetworkIdentity) {
+async fn pair() -> (
+    MemberNode,
+    PerNetworkIdentity,
+    MemberNode,
+    PerNetworkIdentity,
+) {
     let founder = identity(1);
     let peer = identity(2);
     let (mut a, _) = node(1).await;
@@ -179,11 +187,7 @@ async fn a_published_pointer_reaches_a_peer_with_its_wrapping() {
     let epoch_key = EpochKey::from_bytes([3u8; 32]);
     let rotation = Hash::from_bytes([4u8; 32]);
     assert!(a.accept_wrapping(DekWrapping::create(
-        &founder,
-        pointer_id,
-        &dek,
-        &epoch_key,
-        rotation,
+        &founder, pointer_id, &dek, &epoch_key, rotation,
     )));
 
     b.sync_pointers_with(founder.peer_id());
@@ -270,15 +274,9 @@ async fn both_sides_of_a_same_version_fork_converge_on_the_lower_hash() {
         &state,
     )
     .unwrap();
-    let from_peer = MutablePointer::publish(
-        &peer,
-        pointer_id,
-        text(),
-        cid(2),
-        dek.commitment(),
-        &state,
-    )
-    .unwrap();
+    let from_peer =
+        MutablePointer::publish(&peer, pointer_id, text(), cid(2), dek.commitment(), &state)
+            .unwrap();
     assert_eq!(from_founder.version, from_peer.version);
     assert_ne!(from_founder.record_hash(), from_peer.record_hash());
 
@@ -347,12 +345,27 @@ async fn a_node_without_read_content_is_told_nothing_about_the_content_graph() {
     let pointer_id = new_pointer_id().unwrap();
     let dek = Dek::generate().unwrap();
     a.accept_pointer(
-        MutablePointer::publish(&founder, pointer_id, text(), cid(9), dek.commitment(), &state)
-            .unwrap(),
+        MutablePointer::publish(
+            &founder,
+            pointer_id,
+            text(),
+            cid(9),
+            dek.commitment(),
+            &state,
+        )
+        .unwrap(),
     );
 
     a.dial_candidates([outsider_addr]).unwrap();
-    assert!(drive(&mut a, &mut outsider_node, Duration::from_secs(20), same_log).await);
+    assert!(
+        drive(
+            &mut a,
+            &mut outsider_node,
+            Duration::from_secs(20),
+            same_log
+        )
+        .await
+    );
 
     outsider_node.sync_pointers_with(founder.peer_id());
     let refusal = tokio::time::timeout(Duration::from_secs(20), async {
@@ -403,7 +416,12 @@ async fn a_delisted_pointer_stops_being_served_and_stops_being_accepted() {
     assert!(a.accept_pointer(pointer.clone()));
 
     // Delist it.
-    let tip = a.governance_log().canonical_chain().last().copied().unwrap();
+    let tip = a
+        .governance_log()
+        .canonical_chain()
+        .last()
+        .copied()
+        .unwrap();
     a.append_entry(LogEntry::create(
         &founder,
         Some(tip),
@@ -507,8 +525,15 @@ async fn a_fresh_wrapping_replaces_a_stale_one_under_the_canonical_rotation() {
     let pointer_id = new_pointer_id().unwrap();
     let dek = Dek::generate().unwrap();
     a.accept_pointer(
-        MutablePointer::publish(&founder, pointer_id, text(), cid(1), dek.commitment(), &state)
-            .unwrap(),
+        MutablePointer::publish(
+            &founder,
+            pointer_id,
+            text(),
+            cid(1),
+            dek.commitment(),
+            &state,
+        )
+        .unwrap(),
     );
 
     let voided = Hash::from_bytes([1u8; 32]);

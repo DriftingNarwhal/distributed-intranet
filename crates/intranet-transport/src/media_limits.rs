@@ -360,9 +360,8 @@ impl MediaRelayGuard {
             self.last_refill = Some(now);
             return;
         }
-        let earned = (self.limits.forward_bytes_per_sec as u128)
-            .saturating_mul(elapsed as u128)
-            / 1000;
+        let earned =
+            (self.limits.forward_bytes_per_sec as u128).saturating_mul(elapsed as u128) / 1000;
         let earned = u64::try_from(earned).unwrap_or(u64::MAX);
         self.allowance = self
             .allowance
@@ -443,7 +442,9 @@ mod tests {
         g.try_carry(call(1), [id(1), id(2), id(3)]).unwrap();
         assert_eq!(g.call_count(), 1);
 
-        let fan = g.authorize(&call(1), &id(1), &Recipient::Participants, 10, &id(9)).unwrap();
+        let fan = g
+            .authorize(&call(1), &id(1), &Recipient::Participants, 10, &id(9))
+            .unwrap();
         assert_eq!(fan.recipients.len(), 2, "the new participant is included");
     }
 
@@ -456,7 +457,8 @@ mod tests {
             ..MediaRelayLimits::default()
         });
         assert_eq!(
-            g.try_carry(call(1), [id(1), id(2), id(3), id(4)]).unwrap_err(),
+            g.try_carry(call(1), [id(1), id(2), id(3), id(4)])
+                .unwrap_err(),
             MediaRelayDenied::ParticipantCeiling {
                 limit: 3,
                 requested: 4
@@ -484,7 +486,8 @@ mod tests {
         assert!(g.is_carrying(&call(1)), "an in-flight call survives");
         assert!(g.is_carrying(&call(2)));
         assert!(
-            g.authorize(&call(1), &id(1), &Recipient::Participants, 10, &id(9)).is_ok(),
+            g.authorize(&call(1), &id(1), &Recipient::Participants, 10, &id(9))
+                .is_ok(),
             "and keeps being forwarded"
         );
         assert_eq!(
@@ -507,10 +510,16 @@ mod tests {
         g.try_carry(call(1), [id(1), id(2), id(3), id(4)]).unwrap();
         let before = g.allowance();
 
-        let fan = g.authorize(&call(1), &id(1), &Recipient::Participants, 1000, &id(9)).unwrap();
+        let fan = g
+            .authorize(&call(1), &id(1), &Recipient::Participants, 1000, &id(9))
+            .unwrap();
 
         assert_eq!(fan.recipients.len(), 3, "everyone but the sender");
-        assert_eq!(before - g.allowance(), 3000, "charged three copies, not one");
+        assert_eq!(
+            before - g.allowance(),
+            3000,
+            "charged three copies, not one"
+        );
         assert_eq!(g.forwarded_bytes(), 3000);
     }
 
@@ -547,7 +556,8 @@ mod tests {
             ..MediaRelayLimits::default()
         });
         g.try_carry(call(1), [id(1), id(2)]).unwrap();
-        g.authorize(&call(1), &id(1), &Recipient::Participants, 2000, &id(9)).unwrap();
+        g.authorize(&call(1), &id(1), &Recipient::Participants, 2000, &id(9))
+            .unwrap();
         assert_eq!(g.allowance(), 0);
 
         // The first refill only establishes the baseline.
@@ -573,7 +583,8 @@ mod tests {
             ..MediaRelayLimits::default()
         });
         g.try_carry(call(1), [id(1), id(2)]).unwrap();
-        g.authorize(&call(1), &id(1), &Recipient::Participants, 1000, &id(9)).unwrap();
+        g.authorize(&call(1), &id(1), &Recipient::Participants, 1000, &id(9))
+            .unwrap();
         g.refill(Timestamp::from_millis(10_000));
         g.refill(Timestamp::from_millis(5_000));
         assert_eq!(g.allowance(), 0);
@@ -613,10 +624,16 @@ mod tests {
         g.try_carry(call(1), [id(1), id(2), carrier]).unwrap();
         let before = g.allowance();
 
-        let fan = g.authorize(&call(1), &id(1), &Recipient::Participants, 100, &carrier).unwrap();
+        let fan = g
+            .authorize(&call(1), &id(1), &Recipient::Participants, 100, &carrier)
+            .unwrap();
 
         assert!(fan.deliver_locally, "the carrier is in the call");
-        assert_eq!(fan.recipients, vec![id(2)], "and is not sent to over the wire");
+        assert_eq!(
+            fan.recipients,
+            vec![id(2)],
+            "and is not sent to over the wire"
+        );
         assert_eq!(before - g.allowance(), 100, "one copy, not two");
     }
 

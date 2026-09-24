@@ -76,9 +76,7 @@ fn open_deterministic(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, StorageErr
     if blob.len() < NONCE_LEN {
         return Err(StorageError::MalformedCiphertext);
     }
-    let nonce_bytes: [u8; NONCE_LEN] = blob[..NONCE_LEN]
-        .try_into()
-        .expect("checked length above");
+    let nonce_bytes: [u8; NONCE_LEN] = blob[..NONCE_LEN].try_into().expect("checked length above");
     let nonce = XNonce::from(nonce_bytes);
 
     let cipher = XChaCha20Poly1305::new(&Key::from(*key));

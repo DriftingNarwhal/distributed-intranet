@@ -477,7 +477,9 @@ mod tests {
     const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
     fn identity(n: u8) -> PerNetworkIdentity {
-        MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+        MasterSeed::from_entropy([n; 32])
+            .identity_for(&NETWORK)
+            .unwrap()
     }
 
     fn call() -> CallId {
@@ -507,7 +509,9 @@ mod tests {
                 call: call(),
                 proposal: TopologyProposal {
                     proposer: caller.id(),
-                    topology: Topology::Relayed { relay: identity(3).id() },
+                    topology: Topology::Relayed {
+                        relay: identity(3).id(),
+                    },
                     trigger: RenegotiationTrigger::ThresholdReached,
                     proposed_at: Timestamp::from_millis(12),
                 },
@@ -516,7 +520,9 @@ mod tests {
                 call: call(),
                 proposal: TopologyProposal {
                     proposer: caller.id(),
-                    topology: Topology::Relayed { relay: identity(3).id() },
+                    topology: Topology::Relayed {
+                        relay: identity(3).id(),
+                    },
                     trigger: RenegotiationTrigger::RelayUnavailable,
                     proposed_at: Timestamp::from_millis(13),
                 },
@@ -551,7 +557,10 @@ mod tests {
         // Compared by fingerprint rather than by bytes: key material
         // deliberately exposes no accessor, and a fingerprint is the
         // documented way to assert two keys are the same one.
-        assert_eq!(envelope.open(&callee).unwrap().fingerprint(), key.fingerprint());
+        assert_eq!(
+            envelope.open(&callee).unwrap().fingerprint(),
+            key.fingerprint()
+        );
     }
 
     #[test]
@@ -582,7 +591,9 @@ mod tests {
                 call: call(),
                 proposal: TopologyProposal {
                     proposer: identity(1).id(),
-                    topology: Topology::Relayed { relay: identity(3).id() },
+                    topology: Topology::Relayed {
+                        relay: identity(3).id(),
+                    },
                     trigger: RenegotiationTrigger::ThresholdReached,
                     proposed_at: Timestamp::from_millis(1),
                 },

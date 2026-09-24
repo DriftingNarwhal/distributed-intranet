@@ -115,12 +115,10 @@ impl ReliabilityObservations {
         candidates: &mut [PerNetworkIdentityId],
         failure_threshold: f64,
     ) {
-        candidates.sort_by_key(|peer| {
-            match self.for_peer(peer).failure_rate() {
-                Some(rate) if rate >= failure_threshold => 2u8,
-                None => 1,
-                Some(_) => 0,
-            }
+        candidates.sort_by_key(|peer| match self.for_peer(peer).failure_rate() {
+            Some(rate) if rate >= failure_threshold => 2u8,
+            None => 1,
+            Some(_) => 0,
         });
     }
 
@@ -164,12 +162,7 @@ impl ReliabilityObservations {
         history.push(now);
 
         let observations = self.for_peer(&request.subject);
-        Ok(AuditResponse::create(
-            responder,
-            request,
-            observations,
-            now,
-        ))
+        Ok(AuditResponse::create(responder, request, observations, now))
     }
 }
 

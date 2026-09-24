@@ -34,7 +34,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -89,7 +91,8 @@ async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     // Loopback confirms no external address, so Kademlia would stay a client and
     // answer every lookup with "nobody". See `set_dht_server_mode`.
     node.set_dht_server_mode(true);
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -145,9 +148,12 @@ async fn pair() -> (MemberNode, MemberNode) {
 
     publisher.dial_candidates([seeker_addr]).unwrap();
     assert!(
-        drive(&mut publisher, &mut seeker, Duration::from_secs(20), |a, b| {
-            a.governance_log().len() == 2 && b.governance_log().len() == 2
-        })
+        drive(
+            &mut publisher,
+            &mut seeker,
+            Duration::from_secs(20),
+            |a, b| { a.governance_log().len() == 2 && b.governance_log().len() == 2 }
+        )
         .await
     );
 
@@ -342,9 +348,12 @@ async fn a_posting_for_delisted_content_is_refused_by_the_searcher() {
     let publisher_peer = publisher.peer_id();
     seeker.sync_with(publisher_peer);
     assert!(
-        drive(&mut publisher, &mut seeker, Duration::from_secs(20), |_, b| {
-            b.governance_log().len() == 3
-        })
+        drive(
+            &mut publisher,
+            &mut seeker,
+            Duration::from_secs(20),
+            |_, b| { b.governance_log().len() == 3 }
+        )
         .await,
         "the searcher needs the moderation entry"
     );
@@ -367,4 +376,3 @@ async fn a_posting_for_delisted_content_is_refused_by_the_searcher() {
     );
     assert!(index.is_empty());
 }
-

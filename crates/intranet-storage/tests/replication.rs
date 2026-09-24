@@ -15,7 +15,9 @@ const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 const OTHER: NetworkId = NetworkId::from_bytes([43u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn at(millis: i64) -> Timestamp {
@@ -97,8 +99,7 @@ fn announce(
     state: &GovernanceState,
 ) {
     for holder in holders {
-        let announcement =
-            HoldingAnnouncement::create(holder, BTreeSet::from([content]), at(when));
+        let announcement = HoldingAnnouncement::create(holder, BTreeSet::from([content]), at(when));
         view.record(&announcement, state).unwrap();
     }
 }
@@ -132,11 +133,13 @@ fn a_forged_announcement_is_refused() {
     let (members, state, _) = fixture(3);
     let mut view = ReplicationView::new(NETWORK);
 
-    let mut forged =
-        HoldingAnnouncement::create(&members[0], BTreeSet::from([cid(1)]), at(100));
+    let mut forged = HoldingAnnouncement::create(&members[0], BTreeSet::from([cid(1)]), at(100));
     forged.holdings.insert(cid(2));
 
-    assert_eq!(view.record(&forged, &state), Err(StorageError::BadSignature));
+    assert_eq!(
+        view.record(&forged, &state),
+        Err(StorageError::BadSignature)
+    );
 }
 
 #[test]
@@ -145,8 +148,7 @@ fn an_announcement_from_a_non_member_is_refused() {
     let stranger = identity(99);
     let mut view = ReplicationView::new(NETWORK);
 
-    let announcement =
-        HoldingAnnouncement::create(&stranger, BTreeSet::from([cid(1)]), at(100));
+    let announcement = HoldingAnnouncement::create(&stranger, BTreeSet::from([cid(1)]), at(100));
     assert!(matches!(
         view.record(&announcement, &state),
         Err(StorageError::PublisherNotAMember { .. })
@@ -156,11 +158,12 @@ fn an_announcement_from_a_non_member_is_refused() {
 #[test]
 fn an_announcement_from_another_network_is_refused() {
     let (_, state, _) = fixture(3);
-    let elsewhere = MasterSeed::from_entropy([2u8; 32]).identity_for(&OTHER).unwrap();
+    let elsewhere = MasterSeed::from_entropy([2u8; 32])
+        .identity_for(&OTHER)
+        .unwrap();
     let mut view = ReplicationView::new(NETWORK);
 
-    let announcement =
-        HoldingAnnouncement::create(&elsewhere, BTreeSet::from([cid(1)]), at(100));
+    let announcement = HoldingAnnouncement::create(&elsewhere, BTreeSet::from([cid(1)]), at(100));
     assert!(view.record(&announcement, &state).is_err());
 }
 
@@ -217,7 +220,10 @@ fn a_departed_holder_surfaces_as_under_replication_with_no_failure_report() {
 
     let mut view = ReplicationView::new(NETWORK).with_ttl(1_000);
     announce(&mut view, &holder_nodes, content, 100, &state);
-    assert_eq!(view.assess(&content, &ledger, 3).health, ReplicationHealth::Healthy);
+    assert_eq!(
+        view.assess(&content, &ledger, 3).health,
+        ReplicationHealth::Healthy
+    );
 
     // Two keep announcing; one goes silent.
     announce(&mut view, &holder_nodes[..2], content, 2_000, &state);
@@ -237,7 +243,13 @@ fn a_revoked_holder_stops_counting_toward_durability() {
     let mut chain = network(&members.iter().collect::<Vec<_>>());
     let state = GovernanceState::replay(&chain).unwrap();
     let mut view = ReplicationView::new(NETWORK);
-    announce(&mut view, &members.iter().collect::<Vec<_>>(), content, 100, &state);
+    announce(
+        &mut view,
+        &members.iter().collect::<Vec<_>>(),
+        content,
+        100,
+        &state,
+    );
 
     push(
         &mut chain,
@@ -266,10 +278,8 @@ fn opportunistic_copies_do_not_mask_a_durability_shortfall() {
     let holders = assigned(&ledger, content, 3);
 
     // Only one assigned node holds it; several unassigned nodes cached it.
-    let assigned_holder: Vec<&PerNetworkIdentity> = members
-        .iter()
-        .filter(|m| m.id() == holders[0])
-        .collect();
+    let assigned_holder: Vec<&PerNetworkIdentity> =
+        members.iter().filter(|m| m.id() == holders[0]).collect();
     let cachers: Vec<&PerNetworkIdentity> = members
         .iter()
         .filter(|m| !holders.contains(&m.id()))
@@ -283,7 +293,10 @@ fn opportunistic_copies_do_not_mask_a_durability_shortfall() {
     let status = view.assess(&content, &ledger, 3);
     assert_eq!(status.durable_holders.len(), 1);
     assert_eq!(status.opportunistic_holders.len(), 4);
-    assert!(status.total_copies() > status.target, "plenty of copies exist");
+    assert!(
+        status.total_copies() > status.target,
+        "plenty of copies exist"
+    );
     assert_eq!(
         status.health,
         ReplicationHealth::UnderReplicated,
@@ -303,7 +316,13 @@ fn a_network_smaller_than_its_target_is_degraded_not_repairable() {
     let content = cid(1);
 
     let mut view = ReplicationView::new(NETWORK);
-    announce(&mut view, &members.iter().collect::<Vec<_>>(), content, 100, &state);
+    announce(
+        &mut view,
+        &members.iter().collect::<Vec<_>>(),
+        content,
+        100,
+        &state,
+    );
 
     let status = view.assess(&content, &ledger, 5);
     assert_eq!(status.eligible, 2);
@@ -335,15 +354,15 @@ fn repair_assigns_the_next_ranked_nodes_not_already_holding() {
     let (members, state, ledger) = fixture(8);
     let content = cid(1);
     let holders = assigned(&ledger, content, 3);
-    let present: Vec<&PerNetworkIdentity> = members
-        .iter()
-        .filter(|m| m.id() == holders[0])
-        .collect();
+    let present: Vec<&PerNetworkIdentity> =
+        members.iter().filter(|m| m.id() == holders[0]).collect();
 
     let mut view = ReplicationView::new(NETWORK);
     announce(&mut view, &present, content, 100, &state);
 
-    let plan = view.plan_repair(&content, &ledger, 3).expect("repair needed");
+    let plan = view
+        .plan_repair(&content, &ledger, 3)
+        .expect("repair needed");
     assert_eq!(plan.cid, content);
     assert_eq!(plan.assign_to.len(), 2, "two copies short of target");
     assert!(
@@ -390,7 +409,9 @@ fn a_failing_holder_is_replaced_by_the_next_node_in_the_ranking() {
     let mut view = ReplicationView::new(NETWORK);
     announce(&mut view, &holding, content, 100, &state);
 
-    let plan = view.plan_repair(&content, &ledger, target).expect("repair needed");
+    let plan = view
+        .plan_repair(&content, &ledger, target)
+        .expect("repair needed");
     assert_eq!(
         plan.assign_to,
         vec![ranked[0]],
@@ -477,12 +498,24 @@ fn losing_every_holder_is_reported_as_lost_not_merely_under_replicated() {
     let content = cid(1);
 
     let mut view = ReplicationView::new(NETWORK).with_ttl(1_000);
-    announce(&mut view, &members.iter().collect::<Vec<_>>(), content, 100, &state);
-    assert_ne!(view.assess(&content, &ledger, 3).health, ReplicationHealth::Lost);
+    announce(
+        &mut view,
+        &members.iter().collect::<Vec<_>>(),
+        content,
+        100,
+        &state,
+    );
+    assert_ne!(
+        view.assess(&content, &ledger, 3).health,
+        ReplicationHealth::Lost
+    );
 
     // Everyone goes silent.
     assert!(view.expire(at(5_000)) > 0);
-    assert_eq!(view.assess(&content, &ledger, 3).health, ReplicationHealth::Lost);
+    assert_eq!(
+        view.assess(&content, &ledger, 3).health,
+        ReplicationHealth::Lost
+    );
     assert!(view.plan_repair(&content, &ledger, 3).is_none());
 }
 
@@ -518,8 +551,14 @@ fn only_nodes_offering_storage_run_repair() {
         .insert(CapabilityAdvertisement::none(&abstainer, at(0)), &state)
         .unwrap();
 
-    assert!(intranet_storage::replication::runs_repair(&contributor.id(), &ledger));
-    assert!(!intranet_storage::replication::runs_repair(&abstainer.id(), &ledger));
+    assert!(intranet_storage::replication::runs_repair(
+        &contributor.id(),
+        &ledger
+    ));
+    assert!(!intranet_storage::replication::runs_repair(
+        &abstainer.id(),
+        &ledger
+    ));
     assert!(
         !intranet_storage::replication::runs_repair(&identity(9).id(), &ledger),
         "a node with no advertisement at all has not opted in"

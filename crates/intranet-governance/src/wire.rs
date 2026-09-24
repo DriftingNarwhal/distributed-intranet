@@ -55,9 +55,9 @@ use crate::policy::{MAX_BOOTSTRAP_RELAYS, MAX_RELAY_ADDRESS_BYTES};
 use crate::{
     AdmissionMode, AppName, Capability, CapabilitySet, Cascade, ContentType, EntryBody,
     FinalityParams, GovernanceModel, GroupId, HistoryAccess, InviteProvenance, LogEntry,
-    MembershipAction, ModerationAction, ModerationEntry, NetworkPolicy, PointerId, PolicyValue,
-    MAX_APP_ENTRY_PAYLOAD_BYTES, RotationReason, is_valid_app_entry_name, is_valid_app_policy_key,
-    Tier,
+    MAX_APP_ENTRY_PAYLOAD_BYTES, MembershipAction, ModerationAction, ModerationEntry,
+    NetworkPolicy, PointerId, PolicyValue, RotationReason, Tier, is_valid_app_entry_name,
+    is_valid_app_policy_key,
 };
 use intranet_crypto::{Dec, DecodeError, Enc, Hash, Signature, Timestamp};
 use intranet_identity::{
@@ -168,7 +168,9 @@ pub fn decode_entry(bytes: &[u8]) -> Result<LogEntry, WireError> {
     let mut d = Dec::domain(bytes, ENTRY_WIRE_DOMAIN)?;
     let entry = get_entry(&mut d)?;
     d.finish()?;
-    entry.verify_signature().map_err(|_| WireError::BadSignature)?;
+    entry
+        .verify_signature()
+        .map_err(|_| WireError::BadSignature)?;
     Ok(entry)
 }
 

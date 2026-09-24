@@ -38,7 +38,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -95,7 +97,8 @@ fn remove(
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -222,11 +225,27 @@ async fn a_revoked_member_loses_the_new_epoch_while_everyone_else_keeps_reading(
         .unwrap();
 
     founder_node.dial_candidates([stayer_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut stayer_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut stayer_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
     key_in(&mut founder_node, &founder, &mut stayer_node, &stayer, 20).await;
 
     founder_node.dial_candidates([revoked_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut revoked_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut revoked_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
     key_in(&mut founder_node, &founder, &mut revoked_node, &revoked, 21).await;
 
     // The stayer picks up the commit that admitted the third member.
@@ -252,11 +271,8 @@ async fn a_revoked_member_loses_the_new_epoch_while_everyone_else_keeps_reading(
 
     // Ordering is enforced, not assumed: rotating while the target is still a
     // member would mint a key they are still entitled to.
-    let premature = founder_node.revoke_epoch_member(
-        &revoked.id(),
-        &founder,
-        Timestamp::from_millis(29),
-    );
+    let premature =
+        founder_node.revoke_epoch_member(&revoked.id(), &founder, Timestamp::from_millis(29));
     assert!(
         premature.is_err(),
         "rotating before the membership removal must be refused"
@@ -342,7 +358,15 @@ async fn a_revoked_member_is_refused_new_ciphertext_as_well_as_new_keys() {
         .unwrap();
 
     founder_node.dial_candidates([revoked_addr]).unwrap();
-    assert!(drive(&mut founder_node, &mut revoked_node, Duration::from_secs(20), same_length).await);
+    assert!(
+        drive(
+            &mut founder_node,
+            &mut revoked_node,
+            Duration::from_secs(20),
+            same_length
+        )
+        .await
+    );
 
     // While still a member, the node can fetch content bytes.
     let cid = founder_node.store_chunk(b"published content".to_vec());

@@ -60,7 +60,10 @@ mod tests {
 
     #[test]
     fn generated_ids_are_distinct() {
-        assert_ne!(NetworkId::generate().unwrap(), NetworkId::generate().unwrap());
+        assert_ne!(
+            NetworkId::generate().unwrap(),
+            NetworkId::generate().unwrap()
+        );
     }
 
     #[test]

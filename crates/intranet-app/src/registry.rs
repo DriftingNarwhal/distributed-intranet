@@ -114,11 +114,7 @@ impl DirectoryListing {
     /// The entry references the app's pointer, so it inherits the append-set's
     /// three-part validation — including that a delisted app's listing stops
     /// being honoured without anyone having to withdraw it.
-    pub fn announce(
-        &self,
-        publisher: &PerNetworkIdentity,
-        network: &NetworkId,
-    ) -> AppendSetEntry {
+    pub fn announce(&self, publisher: &PerNetworkIdentity, network: &NetworkId) -> AppendSetEntry {
         AppendSetEntry::create(
             publisher,
             directory_collection(network),

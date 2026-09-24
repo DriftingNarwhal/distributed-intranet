@@ -142,7 +142,8 @@ impl ListenArgs {
                         sender.peer_id(),
                         match reason {
                             intranet_transport::direct::DirectRefusal::Unsupported => "unsupported",
-                            intranet_transport::direct::DirectRefusal::RateLimited => "rate-limited",
+                            intranet_transport::direct::DirectRefusal::RateLimited =>
+                                "rate-limited",
                             intranet_transport::direct::DirectRefusal::Rejected => "rejected",
                         }
                     );

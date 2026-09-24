@@ -38,7 +38,9 @@ use std::time::Duration;
 const NETWORK: NetworkId = NetworkId::from_bytes([42u8; 32]);
 
 fn identity(n: u8) -> PerNetworkIdentity {
-    MasterSeed::from_entropy([n; 32]).identity_for(&NETWORK).unwrap()
+    MasterSeed::from_entropy([n; 32])
+        .identity_for(&NETWORK)
+        .unwrap()
 }
 
 fn genesis(founder: &PerNetworkIdentity) -> LogEntry {
@@ -92,7 +94,8 @@ fn advertisement(node: &PerNetworkIdentity, storage: u64, at: i64) -> Capability
 async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     let identity = identity(seed);
     let mut node = MemberNode::new(&identity).unwrap();
-    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
+    node.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
 
     let address = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -141,7 +144,8 @@ async fn network() -> (MemberNode, MemberNode, Multiaddr) {
     let (guest, guest_addr) = node(2).await;
 
     let root = host.append_entry(genesis(&founder)).unwrap();
-    host.append_entry(admit(&founder, root, &joiner, 5)).unwrap();
+    host.append_entry(admit(&founder, root, &joiner, 5))
+        .unwrap();
 
     (host, guest, guest_addr)
 }
@@ -151,7 +155,8 @@ async fn an_advertisement_reaches_a_peer_that_agrees_it_is_a_member() {
     let (mut host, mut guest, guest_addr) = network().await;
     let founder = identity(1);
 
-    host.advertise(advertisement(&founder, 8 << 30, 100)).unwrap();
+    host.advertise(advertisement(&founder, 8 << 30, 100))
+        .unwrap();
     assert_eq!(host.capability_ledger().len(), 1);
     assert_eq!(guest.capability_ledger().len(), 0);
 
@@ -184,7 +189,9 @@ async fn a_node_with_no_governance_replica_cannot_accept_an_advertisement() {
 
     assert!(fresh.governance_log().is_empty());
     assert!(
-        fresh.advertise(advertisement(&founder, 8 << 30, 100)).is_err(),
+        fresh
+            .advertise(advertisement(&founder, 8 << 30, 100))
+            .is_err(),
         "a node that cannot replay its log must not accept advertisements"
     );
     assert_eq!(fresh.capability_ledger().len(), 0);
@@ -203,7 +210,8 @@ async fn the_ledger_converges_whichever_sync_finishes_first() {
     // rather than the ledger staying empty until the next reconnect.
     let (mut host, mut guest, guest_addr) = network().await;
     let founder = identity(1);
-    host.advertise(advertisement(&founder, 4 << 30, 100)).unwrap();
+    host.advertise(advertisement(&founder, 4 << 30, 100))
+        .unwrap();
 
     host.dial_candidates([guest_addr]).unwrap();
 
@@ -242,7 +250,8 @@ async fn a_refreshed_advertisement_replaces_the_older_copy() {
     let (mut host, mut guest, guest_addr) = network().await;
     let founder = identity(1);
 
-    host.advertise(advertisement(&founder, 1 << 30, 100)).unwrap();
+    host.advertise(advertisement(&founder, 1 << 30, 100))
+        .unwrap();
     host.dial_candidates([guest_addr]).unwrap();
     assert!(
         drive(&mut host, &mut guest, Duration::from_secs(20), |_, b| {
@@ -251,12 +260,17 @@ async fn a_refreshed_advertisement_replaces_the_older_copy() {
         .await
     );
     assert_eq!(
-        guest.capability_ledger().get(&founder.id()).unwrap().storage_offered,
+        guest
+            .capability_ledger()
+            .get(&founder.id())
+            .unwrap()
+            .storage_offered,
         1 << 30
     );
 
     // The node re-announces with different capacity.
-    host.advertise(advertisement(&founder, 64 << 30, 200)).unwrap();
+    host.advertise(advertisement(&founder, 64 << 30, 200))
+        .unwrap();
     let peer = host.peer_id();
     guest.sync_ledger_with(peer);
 
@@ -280,7 +294,8 @@ async fn an_older_advertisement_does_not_displace_a_newer_one() {
     let (mut host, mut guest, guest_addr) = network().await;
     let founder = identity(1);
 
-    host.advertise(advertisement(&founder, 64 << 30, 200)).unwrap();
+    host.advertise(advertisement(&founder, 64 << 30, 200))
+        .unwrap();
     host.dial_candidates([guest_addr]).unwrap();
     assert!(
         drive(&mut host, &mut guest, Duration::from_secs(20), |_, b| {
@@ -317,7 +332,8 @@ async fn two_nodes_compute_the_same_replica_set_from_gossiped_ledgers() {
 
     // Several advertisers with different declared capacity, so the ranking has
     // something to distinguish. Both are members of the chain the host holds.
-    host.advertise(advertisement(&founder, 8 << 30, 100)).unwrap();
+    host.advertise(advertisement(&founder, 8 << 30, 100))
+        .unwrap();
 
     host.dial_candidates([guest_addr]).unwrap();
     assert!(
@@ -331,7 +347,9 @@ async fn two_nodes_compute_the_same_replica_set_from_gossiped_ledgers() {
     );
 
     // The guest can now advertise too, and the host must learn it.
-    guest.advertise(advertisement(&joiner, 2 << 30, 150)).unwrap();
+    guest
+        .advertise(advertisement(&joiner, 2 << 30, 150))
+        .unwrap();
     let guest_peer = guest.peer_id();
     host.sync_ledger_with(guest_peer);
     assert!(

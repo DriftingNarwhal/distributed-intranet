@@ -175,12 +175,11 @@ impl CommonOwnershipProof {
     /// the interesting forgery — genuine signatures over a statement about
     /// somebody else. Compare [`linked`](Self::linked) against what you expected.
     pub fn decode(bytes: &[u8]) -> Result<Self, IdentityError> {
-        let mut d = Dec::domain(bytes, LINK_WIRE_DOMAIN).map_err(|source| {
-            IdentityError::Malformed {
+        let mut d =
+            Dec::domain(bytes, LINK_WIRE_DOMAIN).map_err(|source| IdentityError::Malformed {
                 what: "common ownership proof",
                 source,
-            }
-        })?;
+            })?;
         let first = Side::decode(&mut d)?;
         let second = Side::decode(&mut d)?;
         let first_signature = Signature::from_bytes(read_fixed(&mut d)?);
@@ -263,7 +262,9 @@ mod tests {
         let back = CommonOwnershipProof::decode(&proof.encode()).expect("a real proof");
         assert!(back.verify().is_ok());
 
-        let alice = MasterSeed::from_entropy([1u8; 32]).identity_for(&net(1)).unwrap();
+        let alice = MasterSeed::from_entropy([1u8; 32])
+            .identity_for(&net(1))
+            .unwrap();
         let (first, second) = back.linked();
         assert!(
             first.1 != alice.id() && second.1 != alice.id(),
