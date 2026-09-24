@@ -13,6 +13,11 @@ revoke that for the file it is added to.
 
 ## The gate
 
-`cargo test --workspace` and `cargo clippy --workspace --all-targets` must both be clean
-before a change lands. A run that skipped clippy because the toolchain lacked it has
-checked half the gate and should say so.
+`cargo test --workspace`, `cargo clippy --workspace --all-targets` and `cargo fmt --all --check`
+must all be clean before a change lands. A run that skipped clippy because the toolchain lacked it
+has checked only part of the gate and should say so.
+
+**Formatting is rustfmt's defaults, with no configuration.** Run `cargo fmt --all` before
+committing. The tree was formatted in one commit that changed nothing else. `ko-ls` builds these
+crates by path, and its own `cargo fmt --all` reaches into them, so an unformatted change here
+fails its gate too.

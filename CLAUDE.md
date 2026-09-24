@@ -220,9 +220,10 @@ only as one. Everything else matches.
 
 ## Invariants and the gate
 
-- `cargo test --workspace` and `cargo clippy --workspace --all-targets` must both stay clean.
-  Note that clippy is absent from some environments (a source-tarball rustc with no rustup);
-  a run that skips it has checked only half the gate, so say so rather than reporting clean.
+- `cargo test --workspace`, `cargo clippy --workspace --all-targets` and `cargo fmt --all --check`
+  must all stay clean. Note that clippy is absent from some environments (a source-tarball rustc
+  with no rustup); a run that skips it has checked only part of the gate, so say so rather than
+  reporting clean.
 - Decisions the specs left open are marked `Flagged` in a comment at the point of the
   decision. Grep for it rather than re-deriving them.
 - Determinism is load-bearing in several places (entry hashes, HRW placement, quorum
