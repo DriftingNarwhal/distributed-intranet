@@ -204,15 +204,16 @@ Crates, roughly bottom-up:
 ## Building and testing
 
 ```bash
-cargo test --workspace      # 644 tests
+cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo fmt --all --check
 cargo run -p intranet-harness -- --help
 ```
 
 Rust 1.85+ (edition 2024). No services, no network access, and no external
 state are needed for the test suite.
 
-Both stay clean. `clippy` needs a toolchain that ships it; a source-tarball rustc
+All three stay clean. `clippy` needs a toolchain that ships it; a source-tarball rustc
 with no rustup does not. On Debian/Ubuntu, `sudo apt install rust-clippy`.
 
 ## Running the NAT scenarios

@@ -17,6 +17,11 @@ revoke that for the file it is added to.
 must all be clean before a change lands. A run that skipped clippy because the toolchain lacked it
 has checked only part of the gate and should say so.
 
+**The NAT matrix is not in the gate, and runs whenever a change touches transport, NAT
+traversal or relaying**: `./harness/run-scenario.sh all`, which needs Docker (`harness/README.md`).
+Harness §8.3 names that cadence. It validates connectivity tiers, not end-to-end behaviour, so a
+passing matrix is not evidence the rest of the transport works.
+
 **Formatting is rustfmt's defaults, with no configuration.** Run `cargo fmt --all` before
 committing. The tree was formatted in one commit that changed nothing else. `ko-ls` builds these
 crates by path, and its own `cargo fmt --all` reaches into them, so an unformatted change here
