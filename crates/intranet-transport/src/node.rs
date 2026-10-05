@@ -611,9 +611,12 @@ pub enum NodeEvent {
 /// look nondeterministic when they were racing this timer.
 ///
 /// **Flagged: the specs do not name a value.** Sixty seconds is comfortably
-/// longer than an upgrade takes and still well inside the 120-second maximum
-/// circuit duration a relay enforces (§5.3), so it cannot keep a circuit alive
-/// past the relay's own ceiling.
+/// longer than an upgrade takes and no longer than the 60-second maximum circuit
+/// duration a relay enforces (§5.3, [`RelayLimits`](crate::relay_limits::RelayLimits)),
+/// so it cannot keep a circuit alive past the relay's own ceiling. This said
+/// "well inside the 120-second maximum" until §5.3 lowered that ceiling; the two
+/// are now equal, and an un-upgraded circuit is closed at
+/// `CIRCUIT_UPGRADE_DEADLINE`, well before either.
 const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How long a relayed connection may remain un-upgraded before it is closed.

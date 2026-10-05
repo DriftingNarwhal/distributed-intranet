@@ -214,7 +214,8 @@ discards any that disagrees. A browser must merge its **own** locally-held colle
 entries before enumerating: enumeration finds other providers, so skipping local ones
 both hides what this node published and lets a hostile local entry escape validation.
 
-Every layer is reachable over the network, and the specs are v1.0. One thing diverges from
+Every layer is reachable over the network. Each spec's version is on its own status line, and
+they have moved independently since v1.0, so none is restated here. One thing diverges from
 the specs and it is named above: call media delivery uses the reliable fallback §1.5 permits
 only as one. Everything else matches.
 

@@ -1,6 +1,6 @@
 //! Discovery and transport — Core Protocol Spec §5.
 //!
-//! Four things live here:
+//! The modules that matter most for reading the rest:
 //!
 //! - [`behaviour`] — the libp2p behaviour sets for member and relay nodes. The
 //!   relay's set deliberately excludes dcutr, because hole-punch negotiation is
@@ -12,8 +12,18 @@
 //!   test suite rather than pass it.
 //! - [`node`] — [`MemberNode`] and [`RelayNode`], whose PeerIds derive from the
 //!   per-network identity so that transport-layer unlinkability holds.
-//! - [`relay_limits`] — resource ceilings and rate limiting keyed on
-//!   authenticated identity, never on a regenerable peer ID.
+//! - [`relay_limits`] — resource ceilings, and rate limiting keyed on
+//!   authenticated identity, never on a regenerable peer ID. The identity and
+//!   invite keys are enforceable only at a member node offering relay service; a
+//!   bootstrap relay holds no governance state and meters with the global
+//!   ceilings alone (§5.3.1).
+//!
+//! Beside them: [`sync`], the request/response protocols — the governance log,
+//! ballots, joins, the capability ledger, epoch keys, chunks, pointers,
+//! append-set collections and call signalling and media; [`direct`] and
+//! [`direct_limits`], member-to-member delivery of a small payload and its
+//! per-sender metering (§5.1); and [`media_limits`], the media relay's ceilings
+//! (Real-Time §2.2.1).
 //!
 //! # Bootstrap nodes are scaffolding, not dependency
 //!

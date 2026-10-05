@@ -46,9 +46,10 @@ harness.
 | Scenario 5 | **Passing.** The dual-stack case §2.3 calls the most important one to automate — two CGNAT chains, succeeding at **tier 1 over IPv6**, no relay in the path. |
 | Scenario 6 | **Passing.** Scenario 5's control: the same pair with the v6 route removed must not connect at all. |
 
-Both halves of the gate in `../CLAUDE.md` are clean: `cargo test --workspace`
-passes 656 tests and `cargo clippy --workspace --all-targets` reports no
-warnings, including over the fixes described below. Note that clippy is absent
+The gate in `../CLAUDE.md` — `cargo test --workspace`, `cargo clippy --workspace
+--all-targets` and `cargo fmt --all --check` — stays clean, including over the
+fixes described below. The test count is not kept here, because it moves with
+every change: each commit's body ends with the gate line that measured it. Note that clippy is absent
 from a source-tarball rustc with no rustup; on Debian/Ubuntu
 `sudo apt install rust-clippy` supplies a matching version.
 
@@ -217,7 +218,8 @@ libp2p's `idle_connection_timeout` defaults to **10 seconds**. A relayed
 connection awaiting a DCUtR upgrade carries no traffic, so it is idle by
 definition and was being closed at almost exactly the moment an upgrade would
 complete. `MemberNode` now sets 60 seconds — comfortably longer than an upgrade,
-still inside the 120-second maximum circuit duration a relay enforces (§5.3).
+and no longer than the maximum circuit duration a relay enforces (§5.3), which
+was 120 seconds when this was written and is 60 now.
 
 This also explains the nondeterminism recorded here previously: scenario 3
 alternated between `relayed` and "no connection within 60s" because the 10-second
@@ -296,7 +298,9 @@ This does not soften the distinction the suite exists to make, and
 `hole_punch.rs` pins both halves: an upgrade must be attributed on the connection
 that replaces the relayed one, and a direct connection with no relayed connection
 before it must stay tier 1. Where no upgrade occurs the connection stays relayed
-and is still reported as tier 3 — which is what scenarios 4 and 5 assert.
+and is still reported as tier 3 — which is what scenarios 4 and 5 asserted then.
+*(Superseded: since §5.2's correction an un-upgraded circuit is closed, scenarios
+4 and 6 assert no connection, and 5 succeeds at tier 1 over IPv6.)*
 
 ### Superseded: one side's SYN is being dropped
 
@@ -310,7 +314,8 @@ not proposed again.
 
 Scenarios 4 and 5 pass, so the fallback path the protocol guarantees does hold:
 scenario 5, the worst realistic case and the one that must always succeed, ends
-in a working relayed circuit.
+in a working relayed circuit. *(Superseded with tier 3 itself: scenario 5 now
+succeeds over IPv6, see the matrix below.)*
 
 ## Diagnosing a scenario
 
@@ -343,7 +348,7 @@ Nothing above the transport layer participates.
 ## Running the verified parts
 
 ```bash
-cargo test --workspace                      # 656 tests
+cargo test --workspace
 cargo run -p intranet-harness -- --help
 ```
 
@@ -381,24 +386,25 @@ relay fallback still connects and would otherwise look healthy.
 | 1 | Both peers on one LAN, no NAT | `direct` | pass |
 | 2 | NAT'd peer to public relay | `direct` | pass |
 | 3 | Two independent restricted-cone NATs | `hole-punched` | pass |
-| 4 | Restricted NAT vs CGNAT chain | `relayed` | pass |
-| 5 | Two independent CGNAT chains | `relayed` | pass |
+| 4 | Restricted NAT vs CGNAT chain, IPv4 only | none | pass |
+| 5 | Two independent CGNAT chains, dual-stack | `direct-ipv6` | pass |
+| 6 | Scenario 5 with the IPv6 route removed | none | pass |
 
-Scenario 5 is the one that must always succeed: a connection is always
-eventually possible, even via the least efficient path.
+The status column is as of the last matrix run recorded in the table at the top
+of this file; the matrix is not part of the gate.
 
-**What a scenario 5 pass does and does not mean.** It confirms the correctness
-guarantee — a connection exists — not that the pair has a usable session. A
-bootstrap relay's job is connection-establishment assistance, not data transport
-(§4.4, §5.3), and the 120-second and 8MB circuit ceilings are enforced
-accordingly. Two peers behind CGNAT that can never hole-punch are expected to
-depend on **IPv6** for a direct path, not on the relay carrying their traffic.
-That is the intended design, and it is what reconciles §5.2's "sustained circuit
-for the duration of the session" with §5.3's explicit refusal to be sustained
-transport: tier 3 keeps the network correct, IPv6 keeps it usable.
+Scenario 5 is the one that must always succeed, and it must succeed at **tier 1
+over IPv6**, with no relay in the path. Scenario 6 is its control: take the v6
+path away and the same pair must not connect at all.
 
-This makes the missing IPv6 scenario below more than a coverage gap — it is the
-only path that actually serves the CGNAT case.
+**Why 4 and 6 expect no connection.** A bootstrap relay's job is
+connection-establishment assistance, not data transport (§4.4, §5.3), and its
+60-second and 256 KiB circuit ceilings are enforced accordingly. Since §5.2's
+correction on 2026-08-22 there is no third tier: a circuit carries the DCUtR
+negotiation and is closed when the upgrade fails, so two peers behind CGNAT that
+can never hole-punch reach each other over **IPv6** or not at all. An earlier
+version of this table asserted `relayed` for 4 and 5, which is the superseded
+reading the note at the top describes.
 
 The suite tears the topology down on exit, including on failure, which makes
 diagnosis awkward — bring it up with `docker compose -f docker/compose.yml up -d`
@@ -433,13 +439,6 @@ per-invite case there.
 
 ## Not yet built
 
-- **Any IPv6 scenario.** The topology is IPv4 only — every network in
-  `docker/compose.yml` is an IPv4 subnet and the peers bind `/ip4/...`. So the
-  matrix cannot tell us whether §5.2's tier-1 IPv6 preference works, and cannot
-  exercise the case that matters most for real deployments: a peer behind CGNAT,
-  where IPv4 hole-punching may be impossible but a globally-routable IPv6 address
-  needs no traversal at all. The ordering itself is unit-tested
-  (`dial.rs`, and `conformance.rs` over loopback), but end to end it is unproven.
 - Governance partition scenarios (§3) — fork reconciliation and finality are
   tested in-process in `intranet-governance`, but not across partitioned
   containers with real gossip. The blocker is no longer the transport: governance

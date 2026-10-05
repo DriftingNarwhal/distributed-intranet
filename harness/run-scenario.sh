@@ -242,7 +242,7 @@ main() {
     5) scenario_5 ;;
     6) scenario_6 ;;
     all) scenario_1; scenario_2; scenario_3; scenario_4; scenario_5; scenario_6 ;;
-    *) echo "unknown scenario '$SCENARIO' (expected 1-5 or 'all')" >&2; exit 2 ;;
+    *) echo "unknown scenario '$SCENARIO' (expected 1-6 or 'all')" >&2; exit 2 ;;
   esac
 
   log "scenarios complete"

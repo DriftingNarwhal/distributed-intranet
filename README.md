@@ -1,6 +1,6 @@
 # Distributed Intranet
 
-**Protocol v1.0** · a specification and reference implementation for many
+A specification and reference implementation for many
 independent, mutually-unlinkable peer-to-peer networks — each with its own
 membership, governance, encryption, storage, search, calls and app hosting.
 
@@ -103,8 +103,12 @@ Three shapes, in rough order of how most consumers would use it:
 
 ## Status
 
-**Protocol: v1.0, stable.** Every specification document has an implementation,
-and every layer is reachable over the network. **672 tests, clippy clean.**
+**Protocol: stable.** Every specification document has an implementation, and
+every layer is reachable over the network. Each document carries its own version
+in its status line, which is the place to read it; the platform documents have
+moved past v1.0 at different rates, so no list of numbers is kept here to go
+stale. The gate (below) stays clean, and each commit's body ends with the test
+count it measured.
 
 | Spec | Status |
 |---|---|
@@ -114,7 +118,7 @@ and every layer is reachable over the network. **672 tests, clippy clean.**
 | 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT matrix at §2.3's six scenarios, **all 6 passing**, including IPv6 at tier 1 and two that assert no connection. `governance grinding-check` pads a losing branch with either capability-free entry type and asserts it still loses |
-| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks ten amendments of the platform, seven of them landed — see its §7. The three outstanding are E10 and E13 (direct messages) and E15 (spec text) |
+| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks ten amendments of the platform, nine of them landed — see its §7. The one outstanding is E13, cross-network connection bootstrap for direct messages |
 
 ### Two things to know before you build on it
 
@@ -235,7 +239,8 @@ commit and the second on a slower cadence.
 A network needs at least one bootstrap relay to solve cold start between two
 members who are both behind NAT. Relays are deliberately cheap: they hold no
 state, are never trusted with keys, and establish connections rather than
-carrying traffic, so circuits are capped at 120 seconds and 8 MB by default.
+carrying traffic, so circuits are capped at 60 seconds and 256 KiB by default
+(Core §5.3; `RelayLimits` in `intranet-transport`).
 
 **[DI-Relay](https://github.com/DriftingNarwhal/DI-Relay)** is a deployable
 relay built on `intranet_transport::RelayNode`, with step-by-step Railway
@@ -268,10 +273,11 @@ These recur throughout and explain a lot of otherwise-surprising choices.
   not by convention.
 - **Relays establish connections; they do not carry traffic.** A bootstrap relay
   helps two peers find each other and gets out of the way, which is why circuits
-  are capped at 120 seconds and 8MB and why a relay holds no state across
+  are capped at 60 seconds and 256 KiB and why a relay holds no state across
   restarts. Peers that can never hole-punch — two behind CGNAT — are expected to
-  reach each other over IPv6, which needs no traversal at all. Tier 3 exists so
-  the network stays correct, not so anyone lives on it.
+  reach each other over IPv6, which needs no traversal at all. There is no third
+  tier to live on: a circuit carries the hole-punch negotiation and is closed when
+  the upgrade fails (Core §5.2).
 - **Honest guarantees.** Where a limit is unavoidable it is stated rather than
   overclaimed: revocation blocks future access but cannot un-know a key already
   held; serving converges rather than blocking instantly; VOD opt-out prevents a
@@ -287,9 +293,10 @@ Where the specs leave something open, the code says so inline. Searching for
 `Flagged` finds every such decision — each one is a choice the specs did not
 make, recorded at the point it was made rather than buried in a commit message.
 
-The specs are versioned as a set. At v1.0 the remaining open questions in each
-document are genuinely deferred rather than unresolved: application-level
-questions nobody needs yet (concurrent-edit merge semantics), tuning that wants
+The specs are versioned one document at a time, each on its own status line, and
+a release tag's major and minor follow the Core spec's. At v1.0 the remaining
+open questions in each document were genuinely deferred rather than unresolved:
+application-level questions nobody needs yet (concurrent-edit merge semantics), tuning that wants
 real deployment data (tokenisation rules, ranking formula), and enforcement
 surfaces for capabilities no app has requested. Anything that blocked
 implementation has been closed.
