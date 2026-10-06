@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.9 — **E13 is deferred**, on 2026-10-05: not withdrawn as unnecessary, and not implemented. Its client reaches a conversation's peer by borrowing the shared network's relay as a rendezvous for an ordinary Core §5.2 tier 2 punch, which works well enough that the cross-network address exchange is not being built. §7's row now says so and keeps the disclosure gate as a requirement on any future implementation. §1.5's metadata bullet is corrected: it described a conversation *falling back* to the shared network's relay when a direct connection fails, which Core §5.2 refuses — a relayed circuit carries the negotiation and nothing else, so a pair who cannot hole-punch reach each other over IPv6 or not at all. The correlation it bounds is unchanged in kind and now attaches to the rendezvous. Nothing a conformant client does changes. Previously v0.8 — **E10 landed**, and generically: §6.2's direct message invitation rides Core §5.1's `/intranet/direct/1.0.0` as namespace `chat`, kind `dm-invite`, rather than a protocol of its own. Invisible to a conformant client of this document — the payload, the checks and the honest limits are unchanged and only the frame is shared — and §6.2 now states plainly which obligations are the carrier's and which are this document's, including the two a reader owes that no platform can owe for it: verifying that the identity link binds the *right pair*, and refusing a sender who is not a current member. §6.2 also takes the profile obligation E12 left for it. Previously v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.10 — three things the reference client does and no section stated are now normative, on the user's decision of 2026-10-06 (revisable from use, like every default here). §3.3's reserved row now names `0x00`, which no class covers and readers already refused. §4.3 states the two fixed field bounds a reader refuses past: a reaction key of 64 bytes and an attachment filename of 255, fixed encoding constants rather than policy. They were in the client's encoding notes before the encoding moved here and were not carried across. §3.7 states what admits a record of a kind the reader does not know — the same authorization checks a `Message` passes, its body bounded only through `chat:segment-max-bytes` — and the limit that follows: a node that knows the kind and holds it to a stricter rule refuses a record an older node keeps, so their record sets and rate counts can differ by it, and a future kind needing more than `chat:post` cannot rely on older nodes enforcing that. §3.3, §3.7 and §4.3's claims that every node reaches the same verdict are qualified accordingly. The reserved range stays refused. §6.4 specifies presence beats, whose encoding had shipped with no section owning it: the signed payload, the sealed plaintext, the frame, the key, the topic, the cadence and the freshness window, with four domain tags added to §3.2 and the topic to §3.6. Its honest limits are stated with it: no beat is silence and never "offline", invisible publishes nothing, a beat can be replayed verbatim until the next rotation, and presence has no durable path. Two dangling references to §4.4 now point at §4.3. Nothing the reference client does changes, except that it still owes §2.2's segment ceiling, which it does not yet enforce. A client conforming to v0.9 alone could have accepted a reaction key or filename past the new bounds, and no longer may. Previously v0.9 — **E13 is deferred**, on 2026-10-05: not withdrawn as unnecessary, and not implemented. Its client reaches a conversation's peer by borrowing the shared network's relay as a rendezvous for an ordinary Core §5.2 tier 2 punch, which works well enough that the cross-network address exchange is not being built. §7's row now says so and keeps the disclosure gate as a requirement on any future implementation. §1.5's metadata bullet is corrected: it described a conversation *falling back* to the shared network's relay when a direct connection fails, which Core §5.2 refuses — a relayed circuit carries the negotiation and nothing else, so a pair who cannot hole-punch reach each other over IPv6 or not at all. The correlation it bounds is unchanged in kind and now attaches to the rendezvous. Nothing a conformant client does changes. Previously v0.8 — **E10 landed**, and generically: §6.2's direct message invitation rides Core §5.1's `/intranet/direct/1.0.0` as namespace `chat`, kind `dm-invite`, rather than a protocol of its own. Invisible to a conformant client of this document — the payload, the checks and the honest limits are unchanged and only the frame is shared — and §6.2 now states plainly which obligations are the carrier's and which are this document's, including the two a reader owes that no platform can owe for it: verifying that the identity link binds the *right pair*, and refusing a sender who is not a current member. §6.2 also takes the profile obligation E12 left for it. Previously v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -287,7 +287,7 @@ retention (§2.8) must be able to drop old history, which means old history must
 objects with separate DEKs. A single object cannot be partially forgotten.
 
 Sealing thresholds (size, age) are **local publishing tuning**, not validity rules. The one
-network-wide bound is `chat:segment-max-bytes` (§4.4), enforced by readers, so no author
+network-wide bound is `chat:segment-max-bytes` (§4.3), enforced by readers, so no author
 can compel every reader to fetch an arbitrarily large object.
 
 ### 2.3 Pointer ids are derived
@@ -468,7 +468,9 @@ collections, no clock read during encoding.
 `intranet.chat-conversation-id.v1`, `intranet.chat-thread-id.v1`,
 `intranet.chat-log-pointer.v1`, `intranet.chat-moderation-pointer.v1`,
 `intranet.chat-channel-key.v1`, `intranet.chat-topic.v1`,
-`intranet.wire.chat-live.v1`, `intranet.wire.chat-dm-invite.v1`.
+`intranet.wire.chat-live.v1`, `intranet.wire.chat-dm-invite.v1`,
+`intranet.chat-presence.v1`, `intranet.chat-presence-payload.v1`,
+`intranet.chat-presence-key.v1`, `intranet.chat-presence-topic.v1`.
 
 A tag is permanent. Changing what one covers means a new tag at an incremented version.
 
@@ -489,15 +491,16 @@ supported forever.
 | `0x01`–`0x3F` | message | `chat:message-rate-per-minute` |
 | `0x40`–`0x7F` | reaction | `chat:reaction-rate-per-minute` |
 | `0x80`–`0xBF` | control | Neither; capability-governed |
-| `0xC0`–`0xFF` | reserved | Refused |
+| `0xC0`–`0xFF`, and `0x00` | reserved | Refused |
 
 Allocated: `0x01` Message, `0x02` Edit, `0x03` Tombstone, `0x40` Reaction, `0x41` Pin,
 `0x80` Redaction.
 
 **The discriminant range carries the rate class, and this is load-bearing.** Rate ceilings
-are validity rules (§4.4), so every node must count the same records — including nodes
+are validity rules (§4.3), so every node must count the same records — including nodes
 predating a kind introduced later. Because class is a function of the tag's numeric range
-alone, an old node counts a new kind correctly without understanding it. Had class been a
+alone, an old node counts a new kind correctly without understanding it, provided it admits
+the same records a newer node does (§3.7 states when it does not). Had class been a
 property of a variant's meaning, two implementations would reach different validity
 verdicts on the same records.
 
@@ -544,7 +547,7 @@ Each is `H(domain ‖ inputs)`, domain-separated so none can be confused for ano
 id (network id, nonce), category id (network id, nonce), conversation channel id (network id),
 thread channel id (parent,
 root message), author log pointer (channel, author), moderation log pointer (channel,
-moderator), gossip topic (channel). Collection ids use Storage §2.5's existing helper.
+moderator), gossip topic (channel), presence topic (network, §6.4). Collection ids use Storage §2.5's existing helper.
 
 ### 3.7 Evolution
 
@@ -558,7 +561,40 @@ ones; dropping would let a node serve something different from what it received.
 keeps the record set, the ids and the ordering identical everywhere and confines the
 difference to what each implementation *displays*. That is a presentation difference between
 versions, not a consistency failure, and it is the only such difference this document
-accepts.
+accepts, with the one exception the honest limit below states: a kind a newer node holds to a
+stricter rule than older nodes can know.
+
+**What admits an unknown kind, and what bounds it.** A record whose discriminant the reader
+does not know, and which falls inside one of the three class ranges, is admitted under the same
+authorization checks a `Message` passes: its signature verifies; it belongs to its channel,
+and in a segment to that segment's author (§3.5); its author is a current member; and its
+author may post there as a `Message`'s author must, holding `chat:post` for the channel as §4.2
+resolves it, beside the publish gate of §2.3 (the same three-part discipline §6.1 applies on
+the live path). Its body is opaque to the reader, so no §4.3 field limit applies to
+it — which of its fields a limit would reach is part of what the reader does not know — and it
+is bounded only through the segment carrying it, by `chat:segment-max-bytes` (§2.2). On the
+live path, where no segment carries it, nothing bounds it but the carrier's own message size
+(Core §5.1), until the segment that follows arrives. Its
+extent is known without parsing it: a record is delivered whole and its signature is its last
+64 bytes, so the reader verifies it unread and re-emits it byte-identically, and its id (§3.4)
+is the same on every node.
+
+**The reserved range is not covered by any of this.** A record whose discriminant is
+`0xC0`–`0xFF`, or `0x00`, which no class covers, is refused, as §3.3's table says. Retention rests on a
+class being knowable from the tag alone, and a reserved tag has none.
+
+**The honest limit, and what it means for whoever allocates a kind.** A node that knows a kind
+may hold it to a stricter rule than the one above: a capability beyond `chat:post`, as
+`Redaction` needs moderation authority (§2.7), or a bound on one of its fields. That node refuses a
+record an older node admits, so the two nodes' record sets differ by that record. Neither
+renders it, because the newer node refused it and the older one cannot read it. But in the
+message or reaction class the older node counts it toward its author's rate (§4.3), and toward
+slowmode wherever a reader paces by class, while the newer node does not. A *later* record from the same
+author that sits near the ceiling can therefore be refused on one node and rendered on the
+other. A kind in the control range is counted by neither, which confines the difference to the
+unrendered record itself. **A future kind that needs a stricter admission rule than
+`chat:post` therefore cannot rely on older nodes to enforce it.** Until they are upgraded they
+admit it as above, and the section that allocates it must say what that costs.
 
 ---
 
@@ -748,12 +784,26 @@ histories from the same records. **They spend other members' resources** — at 
 factor 3 a 25 MiB attachment costs 75 MiB network-wide.
 
 The window is computed over **the author's own readings**, which are monotonic per device
-(§2.6), so every node reaches the same verdict regardless of arrival order or skew.
+(§2.6), so every node holding the same record set reaches the same verdict regardless of
+arrival order or skew. §3.7 states the one case in which two nodes' record sets can differ.
 
 **Per-channel slowmode is a separate, delegable knob** carried on the channel definition and
 set by `chat:manage-channel` holders, bounded by `chat:slowmode-max-seconds`. A moderator
 calming a channel should not need `define-policy`, which also governs admission mode and
 governance model.
+
+**Two field bounds are fixed encoding constants, not policy.** A `Reaction`'s `key` (`0x40`)
+is at most **64 bytes**, and each attachment's `name` in a `Message` (`0x01`) is at most
+**255 bytes**, both counted as the field's UTF-8 bytes without its length prefix (§3.1). A
+field exactly at its bound is valid. A reader **MUST** refuse a record past either bound, as it
+refuses a body past `chat:message-max-bytes`: the record is not admitted to the channel's
+record set, so it is neither counted toward a rate nor rendered, and the other records in the
+segment carrying it are unaffected. A conformant writer therefore never produces one. They are
+validity rules for the same reason the policy ceilings are. They are fixed rather than
+policy because nothing is gained by letting them vary: a key names a reaction and a filename
+names a file, neither spends other members' resources as a body or an attachment does, and
+every policy value is one more thing two nodes can disagree about while a `define-policy` entry
+propagates.
 
 ---
 
@@ -887,6 +937,121 @@ volunteered; and only then can the fetch run. **A fetch that finds nothing is us
 second, not a bug.** A manifest additionally needs its own fetch round before the chunks it
 names can be requested.
 
+### 6.4 Presence
+
+A member may tell the rest of the network that they are around. This is the one signal in this
+document that is about a person rather than about content, and two rules shape all of it.
+**A beat is positive evidence only.** With no server, *offline* and *not heard from* are the
+same observation, so hearing a beat says somebody was there and hearing none says nothing.
+**Invisible is an absence, not a state.** A beat saying *invisible* would tell every member
+that this node is running and hiding, which is most of what the setting exists to withhold.
+
+**A beat rides a gossip topic of its own, one per network**: `H(domain ‖ network_id)`
+under `intranet.chat-presence-topic.v1` (§3.6), in the same form as §6.1's channel topic and
+domain-separated from it. It is network-wide rather than per channel because a member's
+presence does not depend on which room is in view. At large sizes that is a full roster
+heartbeat to every member, and subscribing per channel in view is the scaling change. It is
+not a correctness change.
+
+**The signed payload:**
+
+```
+domain ‖ who(32) ‖ state(1) ‖ at(8)                 — intranet.chat-presence-payload.v1
+```
+
+`who` is the member's per-network identity key, and the signature is that key's Ed25519
+signature over these bytes. It is not a device key, unlike a record's signature (§3.3 carries
+the signing `device`), since a beat claims nothing about which machine spoke. `state` is `0x01` here, `0x02` idle or `0x03` busy. A
+reader **MUST** refuse any other code rather than round it to one of these, because a state a
+later client invents must not be read as a claim its sender did not make. `at` is the sender's
+clock in milliseconds since the Unix epoch, as an `i64`. It is covered by the signature, so
+nobody but the sender can put a different date on a beat. It does not stop the same beat being
+repeated (see the honest limits below).
+
+**The sealed plaintext** carries the payload's fields and the signature:
+
+```
+domain ‖ who(32) ‖ state(1) ‖ at(8) ‖ signature(64)  — intranet.chat-presence.v1
+```
+
+It is sealed under
+
+```
+keyed_hash(epoch_key_for(rotation_ref), domain ‖ rotation_ref)   — intranet.chat-presence-key.v1
+```
+
+using the same deterministic chunk seal as §6.1's live payload (Storage §1.2). The key is
+network-scoped rather than channel-scoped, because presence is about a member and not a room.
+It carries its `rotation_ref` for the reason §5.2's payloads do, so a receiver can select the key
+the sender used. A member removed at a rotation cannot open what follows it, because they never
+receive that rotation's epoch key.
+
+**The frame that travels:**
+
+```
+domain ‖ rotation_ref(32) ‖ sealed                   — intranet.chat-presence.v1
+```
+
+`sealed` is length-prefixed (§3.1). The frame and the sealed plaintext share one domain tag.
+That is how it shipped and a tag is permanent (§3.2). It separates nothing that needs
+separating: neither is signed, and the only hash taken of either is the carrier's message id
+over the frame (Core §5.1), which the plaintext never reaches.
+
+**A receiver MUST, before believing a beat:**
+
+1. **Open it** under the key for the `rotation_ref` it carries, and refuse it if that fails. A
+   beat that does not open is from outside the epoch, or from a rotation this node cannot open
+   it under. A receiver need not try any epoch key but its current one, since the next beat
+   supersedes this one within thirty seconds. The seal is what keeps a topic anybody can derive
+   from being a live attendance register.
+2. **Verify the signature** against `who`. Without it, any member holding the epoch key could
+   seal a beat naming somebody else. The signature makes a beat say who made it. It does not
+   stop a beat being repeated (see the honest limits).
+3. **Refuse a beat whose `who` is not a current member** in replayed state. The seal cannot do
+   this, since a removed member may hold the epoch key until the rotation that excludes them.
+4. **Judge freshness by when it heard the beat, never by `at`.** A beat heard at `t` is current
+   at `now` exactly when `0 ≤ now − t < 90 000` ms. A heard time in the future is not current.
+   `at` is the sender's clock and is carried for the signature and for display, so trusting it
+   would let one beat dated next year pin its sender as present indefinitely.
+
+**Cadence.** A member showing a state beats about every **30 000 ms**, and no more often. The
+receiver's window is three beats, so roughly two can be lost to an ordinary gossip hiccup
+before somebody stops being shown as present. A sender that checks its cadence on a coarser
+tick beats a little later than every 30 000 ms, which eats into that margin. A closed laptop stops looking present within about
+ninety seconds. The two figures are a pair, and like §4.3's defaults they are concrete so that
+implementations have something to agree on: a sender beating slower than the window allows
+flickers on every receiver.
+
+**Invisible publishes nothing.** There is no code for *invisible* and none for *offline*, and a
+client **MUST NOT** add either: an invisible member does not beat at all. What a member chose
+is local state and is not on the wire.
+
+**Honest limits.**
+
+- **No beat is silence, not *offline*.** A stale beat, a member who chose to be invisible and a
+  member never heard from are three different things, and nothing here tells them apart. A
+  client **MUST NOT** present the absence of a current beat as a claim about where somebody is.
+- **Invisible hides the beat and nothing else.** A peer holding a connection to the member's
+  node still knows that node is running, and the member's records still arrive as records do.
+  The setting withholds the *claim* to be present, not the evidence of activity.
+- **A beat can be replayed verbatim.** The frame is unsigned and the seal is deterministic, so
+  anybody on the topic can republish a beat they received, byte for byte, without holding the
+  epoch key. Freshness is judged by when a beat was heard, so each replay keeps its sender shown
+  as present for another window. A replay can also put an older state back in place of a newer
+  one. What bounds it is the carrier's duplicate suppression and the next rotation, which
+  changes the key every later beat must open under. Nothing here compares `at` across beats.
+- **Going invisible is not immediate.** A member who stops beating stays shown as present on
+  every receiver until their last beat leaves the window, up to ninety seconds.
+- **Presence has no durable path, and is the one exception to §6.1's rule.** It rides the
+  live path only. With gossip disabled, nobody is ever shown as present. That is consistent
+  with *no beat is silence*: what is lost is the claim, never a record.
+- **Presence is ephemeral.** Nothing here is stored as a record or segment, and a beat heard
+  before a restart is not an observation afterwards.
+- **A beat crossing a rotation may not open** on a receiver that has not yet reached the
+  sender's rotation, or that tries only its current key and has moved past it. It is refused,
+  and the first beat after both sides converge is believed. Nothing depends on any one beat
+  arriving.
+
 ---
 
 ## 7. Required Platform Amendments
@@ -945,7 +1110,8 @@ tiering itself stays in the client and is not requested here.
 - **Direct messages are their own networks** (§1.5), so nothing about them burdens a shared
   log or a third party's disk. What that isolates is content, membership and storage — not the
   fact of a connection, which an observer of both addresses can still infer (Core §1.2's limit).
-- **The live path is an optimization and never a dependency** (§6.1).
+- **The live path is an optimization and never a dependency** (§6.1). Presence (§6.4) is the
+  one thing that rides it alone, and with it disabled nobody is shown as present.
 - **A display name is unique per network, permanently bound, and not sufficient on its own**
   (§3.9). Uniqueness is decided on a normalized key that deliberately does not fold
   confusables, so an interface MUST render a name alongside enough of its holder's identity to
