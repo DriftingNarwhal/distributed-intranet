@@ -73,3 +73,11 @@ missing_docs = "warn"
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+# Dependencies get no debug information at all. Our own crates keep line tables,
+# so a failing test's backtrace still points at a file and line here; a line
+# number inside libp2p or openmls has not been what explained a failure. Without
+# this a gate build is 6.2 GB, against a 12 GB budget for build output across
+# this repository and its two consumers on the host it runs on.
+[profile.dev.package."*"]
+debug = false
