@@ -8,10 +8,12 @@ consuming the platform rather than defining it. Read it only when working on som
 touches — but do read its §7, which lists the ten amendments it asks of the platform, two
 of which change types the core specs own (governance entry variants, and an app-layer policy
 map in NetworkPolicy). Nine are implemented — E2, E4, E9, E10, E11, E12, E14, E15 and E16 —
-and **only E13 is left**. It is load-bearing rather than convenient: every direct message is
-its own network and a relay is never shared between two of them (§7, and the client's D29), so
-without cross-network bootstrap two NATed people cannot converse at all. E10 landing makes that
-the single remaining thing between the platform and direct messages.
+and **E13 is deferred** (2026-10-05), neither withdrawn nor implemented. It was written as
+load-bearing — every direct message is its own network and a relay is never shared between two
+of them (§7, and the client's D29) — but the client now borrows the shared network's relay as a
+rendezvous (its D39), so two NATed people converse wherever they can hole-punch, and otherwise
+over IPv6 or not at all (Core §5.2). If E13 is ever picked up, its disclosure gate in §7 is not
+optional.
 
 Note the shape three of those landed in, because a fourth request will meet it too: E2 asked
 for four chat-shaped governance entries and got one generic application entry, E9 asked for
