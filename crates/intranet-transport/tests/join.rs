@@ -394,11 +394,13 @@ async fn an_admin_admitting_from_the_waiting_room_clears_the_queue() {
     let state = founder_node.governance_log().replay_canonical().unwrap();
     assert!(state.is_member(&joiner.id()));
 
-    // The waiting room is a local view of "not yet authorized", so it drops
-    // anyone replay says is now a member.
-    let mut room = founder_node.waiting_room().clone();
-    room.reconcile(&state);
-    assert!(room.is_empty(), "an admitted joiner leaves the queue");
+    // The waiting room is a local view of "not yet authorized", so the node
+    // drops anyone replay says is now a member as the admission lands. It used
+    // to keep them until restart, and this test reconciled a copy by hand.
+    assert!(
+        founder_node.waiting_room().is_empty(),
+        "an admitted joiner leaves the node's own queue"
+    );
 }
 
 #[tokio::test]

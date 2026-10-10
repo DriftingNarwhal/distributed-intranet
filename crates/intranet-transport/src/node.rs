@@ -1585,7 +1585,30 @@ impl MemberNode {
     /// the pull path would then be exercised far less often than it is relied
     /// on — precisely the arrangement in which a heal-time bug hides.
     pub fn append_entry(&mut self, entry: LogEntry) -> Result<Hash, GovernanceError> {
-        self.log.insert(entry)
+        let hash = self.log.insert(entry)?;
+        self.reconcile_waiting_room();
+        Ok(hash)
+    }
+
+    /// Drops from the waiting room anyone governance now says is a member.
+    ///
+    /// **The waiting room is a view of "not yet authorized" (§2.4), so it has to
+    /// follow the log**, and an admission usually reaches this node as an entry
+    /// rather than through anything the room observes: an admin's explicit
+    /// admit, another admin's on another node, an entry arriving by sync. Without
+    /// this the room kept every admitted joiner until the node restarted, and a
+    /// consumer asking it who is waiting had to replay governance on every look
+    /// to filter out people who had long since been let in.
+    ///
+    /// Called wherever the log gains entries. Costs nothing while the room is
+    /// empty, which is nearly always; otherwise one replay per change.
+    fn reconcile_waiting_room(&mut self) {
+        if self.waiting_room.is_empty() {
+            return;
+        }
+        if let Some(state) = self.governance_state() {
+            self.waiting_room.reconcile(&state);
+        }
     }
 
     /// This node's cached view of the capability ledger — §4.5.
@@ -3567,6 +3590,9 @@ impl MemberNode {
                                     // lacks — and that is worth surfacing.
                                     Err(_) => rejected += 1,
                                 }
+                            }
+                            if accepted > 0 {
+                                self.reconcile_waiting_room();
                             }
                             if truncated {
                                 // Restart the exchange rather than tracking what
