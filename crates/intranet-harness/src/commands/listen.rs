@@ -310,14 +310,16 @@ impl ListenArgs {
                 NodeEvent::FetchComplete {
                     received,
                     unavailable,
+                    over_budget,
                 } => {
-                    // Both halves, because a partial fetch is a real outcome and
-                    // "the fetch finished" alone would hide which chunks are
+                    // Every outcome, because a partial fetch is a real outcome
+                    // and "the fetch finished" alone would hide which chunks are
                     // actually missing.
                     println!(
-                        "fetch-complete: received={} unavailable={}",
+                        "fetch-complete: received={} unavailable={} over-budget={}",
                         received.len(),
-                        unavailable.len()
+                        unavailable.len(),
+                        over_budget.len()
                     );
                 }
                 NodeEvent::CollectionProviders {

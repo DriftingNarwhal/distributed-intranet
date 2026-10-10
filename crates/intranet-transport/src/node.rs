@@ -29,8 +29,8 @@ use intranet_realtime::{
 use intranet_storage::{
     ChunkRefusal, ChunkRequest, ChunkResponse, ChunkStore, Cid, CollectionRequest,
     CollectionResponse, DekWrapping, EpochKey, FetchPlan, MAX_COLLECTION_ENTRIES,
-    MAX_POINTERS_PER_RESPONSE, MutablePointer, PointerDigestEntry, PointerRecord, PointerRefusal,
-    PointerRequest, PointerResponse, StorageError, may_serve,
+    MAX_POINTERS_PER_RESPONSE, Manifest, MutablePointer, PointerDigestEntry, PointerRecord,
+    PointerRefusal, PointerRequest, PointerResponse, StorageError, may_serve,
 };
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, dcutr, gossipsub, identify, kad, mdns, ping, relay,
@@ -415,6 +415,10 @@ pub enum NodeEvent {
         received: Vec<Cid>,
         /// Chunks no known holder would produce.
         unavailable: Vec<Cid>,
+        /// Chunks not fetched because their object took more than its manifest
+        /// declares (Storage Spec §4.4 step 6). The objects themselves are
+        /// [`object_overran`](MemberNode::object_overran).
+        over_budget: Vec<Cid>,
     },
     /// The DHT answered a collection provider lookup — Storage Spec §2.5.
     ///
@@ -787,6 +791,14 @@ pub struct MemberNode {
     /// per-operation derivation rather than being held live so that a retry
     /// three round trips later can sign something.
     fetch_requests: BTreeMap<Cid, ChunkRequest>,
+    /// Objects whose chunks took more than their manifest declares — Storage
+    /// Spec §4.4 step 6 — and which [`fetch_object`](MemberNode::fetch_object)
+    /// will not fetch again.
+    ///
+    /// Remembered because a caller that re-plans on a timer would otherwise pay
+    /// the object's whole allowance again on every pass. Held in memory only, so
+    /// a restart costs one allowance more per such object.
+    overrun_objects: std::collections::BTreeSet<Cid>,
     /// Append-set entries this node holds, by collection — Storage Spec §2.5.
     ///
     /// Keyed by entry identifier within each collection so a republish replaces
@@ -1089,6 +1101,7 @@ impl MemberNode {
             provider_queries: std::collections::HashMap::new(),
             fetch: None,
             fetch_requests: BTreeMap::new(),
+            overrun_objects: std::collections::BTreeSet::new(),
             collections: BTreeMap::new(),
             collection_queries: std::collections::HashMap::new(),
             collection_requests: BTreeMap::new(),
@@ -1995,14 +2008,84 @@ impl MemberNode {
             .into_iter()
             .filter(|cid| !self.chunks.has(cid))
             .collect();
+        self.start_fetch(wanted, None, requester, concurrency);
+    }
+
+    /// Fetches the chunks `manifest` names, taking no more bytes for them than
+    /// it declares — Storage Spec §4.4 step 6.
+    ///
+    /// `object` is the manifest's CID. The allowance is
+    /// [`Manifest::ciphertext_bound`], less what this node already holds of the
+    /// object. A chunk that would take the object past it is not kept, the rest
+    /// are not asked for, and the object is remembered as
+    /// [`object_overran`](Self::object_overran) and not fetched again. Returns
+    /// `false` for such an object, and `true` when the fetch was started or there
+    /// was nothing left to fetch.
+    ///
+    /// **What it bounds is what is kept, not what arrives.** Requests already in
+    /// flight when the allowance runs out still deliver, and a response is read
+    /// whole, so the overshoot in received bytes is up to one chunk response per
+    /// concurrent request — the codec's ceiling each.
+    ///
+    /// Use this rather than [`fetch_chunks`](Self::fetch_chunks) whenever the
+    /// chunks come from a manifest: the declared length is the only bound on
+    /// how large each chunk is, and only the fetch can apply it.
+    pub fn fetch_object(
+        &mut self,
+        object: Cid,
+        manifest: &Manifest,
+        requester: &PerNetworkIdentity,
+        concurrency: usize,
+    ) -> bool {
+        if self.overrun_objects.contains(&object) {
+            return false;
+        }
+        let distinct: std::collections::BTreeSet<Cid> = manifest.chunks.iter().copied().collect();
+        let held: u64 = distinct
+            .iter()
+            .filter_map(|cid| self.chunks.get(cid))
+            .map(|bytes| bytes.len() as u64)
+            .sum();
+        let Some(allowance) = manifest.ciphertext_bound().checked_sub(held) else {
+            // Already holds more than the object can honestly take, which no
+            // fetch fixes.
+            self.overrun_objects.insert(object);
+            return false;
+        };
+        let wanted: Vec<Cid> = distinct
+            .into_iter()
+            .filter(|cid| !self.chunks.has(cid))
+            .collect();
+        if !wanted.is_empty() {
+            self.start_fetch(wanted, Some((object, allowance)), requester, concurrency);
+        }
+        true
+    }
+
+    /// Whether `object`'s chunks took more than its manifest declares — Storage
+    /// Spec §4.4 step 6 — so it will not be fetched again.
+    pub fn object_overran(&self, object: &Cid) -> bool {
+        self.overrun_objects.contains(object)
+    }
+
+    fn start_fetch(
+        &mut self,
+        wanted: Vec<Cid>,
+        budget: Option<(Cid, u64)>,
+        requester: &PerNetworkIdentity,
+        concurrency: usize,
+    ) {
         for cid in &wanted {
             self.fetch_requests
                 .entry(*cid)
                 .or_insert_with(|| ChunkRequest::create(requester, *cid));
         }
-        match &mut self.fetch {
-            Some(plan) => plan.extend(wanted),
-            None => self.fetch = Some(FetchPlan::new(wanted, concurrency)),
+        let plan = self
+            .fetch
+            .get_or_insert_with(|| FetchPlan::new(Vec::new(), concurrency));
+        match budget {
+            Some((object, bytes)) => plan.extend_within(object, wanted, bytes),
+            None => plan.extend(wanted),
         }
         for cid in self
             .fetch
@@ -2060,6 +2143,25 @@ impl MemberNode {
         }
     }
 
+    /// Charges a verified chunk to the running plan, and says whether to keep
+    /// it — Storage Spec §4.4 step 6.
+    ///
+    /// On `false` the plan has already let the request go and abandoned what the
+    /// exhausted budget alone wanted; it issues what is next here.
+    fn admit_to_fetch(&mut self, cid: Cid, len: usize) -> bool {
+        let Some(plan) = &mut self.fetch else {
+            return true;
+        };
+        let kept = plan.admit(cid, len);
+        // Read every time, since a chunk can be kept for one object while
+        // running another out.
+        self.overrun_objects.extend(plan.overrun_objects());
+        if !kept {
+            self.drive_fetch();
+        }
+        kept
+    }
+
     /// Takes the completion event if the fetch has just finished.
     fn completed_fetch(&mut self) -> Option<NodeEvent> {
         let plan = self.fetch.as_ref()?;
@@ -2069,6 +2171,7 @@ impl MemberNode {
         let event = NodeEvent::FetchComplete {
             received: plan.received(),
             unavailable: plan.unavailable(),
+            over_budget: plan.over_budget(),
         };
         self.fetch = None;
         self.fetch_requests.clear();
@@ -4210,11 +4313,35 @@ impl MemberNode {
                         match response {
                             ChunkResponse::Chunk { bytes } => {
                                 let len = bytes.len();
+                                let held_before = self.chunks.has(&cid);
                                 // Verified against the CID that was *asked for*
                                 // (§4.4 step 5). `insert` refuses on mismatch, so
                                 // a bad chunk never enters the store and can
                                 // never be passed on.
                                 match self.chunks.insert(cid, bytes) {
+                                    // §4.4 step 6, weighed after `insert` so the
+                                    // bytes are hashed once and only verified
+                                    // bytes are charged: a holder serving garbage
+                                    // is its own fault, and charging that to the
+                                    // object would let any bad source exhaust an
+                                    // honest one. Refused bytes are taken back
+                                    // out unless something else had put them in.
+                                    Ok(()) if !self.admit_to_fetch(cid, len) => {
+                                        if !held_before {
+                                            self.chunks.remove(&cid);
+                                        }
+                                        if let Some(done) = self.completed_fetch() {
+                                            // Same rule as `note_fetch_outcome`:
+                                            // this arm returns straight after.
+                                            self.pending.push_back(done);
+                                        }
+                                        return NodeEvent::ChunkUnavailable {
+                                            peer,
+                                            cid,
+                                            reason: "past its object's declared size".into(),
+                                            counted_against_peer: false,
+                                        };
+                                    }
                                     Ok(()) => {
                                         self.observations.record_verified(source);
                                         // §4.2 again: having the bytes *is*

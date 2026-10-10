@@ -25,12 +25,16 @@
 //! - **Retry elsewhere on failure** (step 5): a source that fails verification
 //!   or has nothing to give is dropped for that chunk and the next candidate
 //!   tried, rather than the fetch failing.
+//! - **No more bytes than the manifest declares** (step 6): chunks added under a
+//!   budget stop being asked for once what arrived for them passes it, so a
+//!   manifest that understates its length costs its declared size rather than
+//!   whatever its chunks turn out to hold.
 
 use crate::serving::{SourceCandidate, select_sources};
 use crate::{Cid, rarest_first};
 use intranet_identity::PerNetworkIdentityId;
 use intranet_ledger::{CapabilityLedger, ReliabilityObservations};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// How many chunks to have in flight at once, by default.
 ///
@@ -63,6 +67,19 @@ enum ChunkState {
     Exhausted,
     /// The bytes arrived and verified.
     Done,
+    /// Given up on because every budget it was wanted under ran out (§4.4
+    /// step 6). Not asked for again by this plan.
+    OverBudget,
+}
+
+/// A byte allowance over a set of chunks — §4.4 step 6.
+#[derive(Debug, Clone)]
+struct Budget {
+    /// The object the allowance is for, normally its manifest's CID.
+    object: Cid,
+    chunks: BTreeSet<Cid>,
+    remaining: u64,
+    exceeded: bool,
 }
 
 /// A multi-source fetch in progress.
@@ -71,29 +88,170 @@ pub struct FetchPlan {
     chunks: BTreeMap<Cid, ChunkState>,
     concurrency: usize,
     inflight: usize,
+    budgets: Vec<Budget>,
+    /// Chunks some caller wanted with no budget, which no budget may abandon.
+    unbudgeted: BTreeSet<Cid>,
 }
 
 impl FetchPlan {
     /// Starts a plan for `cids`.
     pub fn new(cids: impl IntoIterator<Item = Cid>, concurrency: usize) -> Self {
-        Self {
-            chunks: cids
-                .into_iter()
-                .map(|cid| (cid, ChunkState::AwaitingProviders))
-                .collect(),
+        let mut plan = Self {
+            chunks: BTreeMap::new(),
             // A concurrency of zero would stall silently, which is a worse
             // outcome than quietly correcting an obviously unintended value.
             concurrency: concurrency.max(1),
             inflight: 0,
-        }
+            budgets: Vec::new(),
+            unbudgeted: BTreeSet::new(),
+        };
+        plan.extend(cids);
+        plan
     }
 
     /// Adds more chunks to an existing plan.
     pub fn extend(&mut self, cids: impl IntoIterator<Item = Cid>) {
         for cid in cids {
-            self.chunks
-                .entry(cid)
-                .or_insert(ChunkState::AwaitingProviders);
+            self.unbudgeted.insert(cid);
+            self.want(cid);
+        }
+    }
+
+    /// Adds `object`'s chunks, which together may take no more than `bytes` —
+    /// §4.4 step 6. `object` names the budget, normally by its manifest's CID,
+    /// so a caller can learn which objects ran out
+    /// ([`overrun_objects`](Self::overrun_objects)).
+    ///
+    /// Every verified chunk that arrives is charged against each budget it
+    /// belongs to. A chunk that would take a budget past its allowance is
+    /// refused rather than kept (see [`admit`](Self::admit)), and from then on
+    /// that budget's chunks are not asked for — unless another caller still
+    /// wants one, without a budget or under one that has room. A chunk named by
+    /// a manifest that lied about its size may well be somebody else's honest
+    /// chunk, and abandoning it for them would let one bad manifest starve
+    /// another object of content it shares.
+    ///
+    /// **What this bounds is the bytes kept, not the bytes received.** A request
+    /// already in flight when a budget runs out still delivers its response, and
+    /// a response is read whole before anybody sees it, so the overshoot is up to
+    /// one response per concurrent request. Bounding that needs a transport that
+    /// stops reading mid-response, which this plan cannot be.
+    pub fn extend_within(&mut self, object: Cid, cids: impl IntoIterator<Item = Cid>, bytes: u64) {
+        let chunks: BTreeSet<Cid> = cids.into_iter().collect();
+        for cid in &chunks {
+            self.want(*cid);
+        }
+        self.budgets.push(Budget {
+            object,
+            chunks,
+            remaining: bytes,
+            exceeded: false,
+        });
+    }
+
+    fn want(&mut self, cid: Cid) {
+        let state = self
+            .chunks
+            .entry(cid)
+            .or_insert(ChunkState::AwaitingProviders);
+        // Wanted again by a caller with room: an abandoned chunk is worth
+        // asking for after all.
+        if matches!(state, ChunkState::OverBudget) {
+            *state = ChunkState::AwaitingProviders;
+        }
+    }
+
+    /// Charges `bytes` that verified as `cid` against its budgets, and says
+    /// whether to keep them — §4.4 step 6.
+    ///
+    /// Call this only for bytes that **verified**: a holder that serves garbage
+    /// is that holder's fault (§4.6), and charging it to the object would let
+    /// any one bad source exhaust an honest object's allowance and abandon it.
+    ///
+    /// `false` means keep nothing: the chunk is marked over budget, and so is
+    /// every chunk of each budget that has now run out and that nobody else
+    /// still wants. Record nothing further for it.
+    ///
+    /// Only a chunk this plan has **in flight** is charged. Anything else — a
+    /// chunk the plan never asked for, such as a caller's own one-off request
+    /// on the same connection, or a second response for one already done — is
+    /// not this plan's to weigh, and charging it twice would run an honest
+    /// object out.
+    pub fn admit(&mut self, cid: Cid, bytes: usize) -> bool {
+        if !matches!(self.chunks.get(&cid), Some(ChunkState::InFlight { .. })) {
+            return true;
+        }
+        let bytes = bytes as u64;
+        let mut room = self.unbudgeted.contains(&cid);
+        let mut ran_out = false;
+        for budget in &mut self.budgets {
+            if budget.exceeded || !budget.chunks.contains(&cid) {
+                continue;
+            }
+            match budget.remaining.checked_sub(bytes) {
+                Some(left) => {
+                    budget.remaining = left;
+                    room = true;
+                }
+                None => {
+                    budget.exceeded = true;
+                    ran_out = true;
+                }
+            }
+        }
+        // Charged only when admitted would be tidier, and wrong: a budget that
+        // ran out ran out whichever other budget the chunk also belongs to.
+        if ran_out {
+            self.abandon_exhausted_budgets();
+        }
+        if room {
+            return true;
+        }
+        if let Some(state) = self.chunks.get_mut(&cid) {
+            if matches!(state, ChunkState::InFlight { .. }) {
+                self.inflight = self.inflight.saturating_sub(1);
+            }
+            *state = ChunkState::OverBudget;
+        }
+        false
+    }
+
+    /// Whether only budgets that have run out still want `cid`.
+    fn doomed(&self, cid: &Cid) -> bool {
+        !self.unbudgeted.contains(cid)
+            && self
+                .budgets
+                .iter()
+                .any(|budget| budget.chunks.contains(cid))
+            && self
+                .budgets
+                .iter()
+                .filter(|budget| budget.chunks.contains(cid))
+                .all(|budget| budget.exceeded)
+    }
+
+    /// Marks over budget every pending chunk that only exhausted budgets want.
+    ///
+    /// A chunk in flight is left alone, since its response is already coming:
+    /// [`admit`](Self::admit) refuses it on arrival, and
+    /// [`record_failed`](Self::record_failed) does not send it again.
+    fn abandon_exhausted_budgets(&mut self) {
+        let doomed: BTreeSet<Cid> = self
+            .budgets
+            .iter()
+            .filter(|budget| budget.exceeded)
+            .flat_map(|budget| budget.chunks.iter().copied())
+            .filter(|cid| self.doomed(cid))
+            .collect();
+        for cid in doomed {
+            if let Some(state) = self.chunks.get_mut(&cid)
+                && matches!(
+                    state,
+                    ChunkState::AwaitingProviders | ChunkState::Ready { .. }
+                )
+            {
+                *state = ChunkState::OverBudget;
+            }
         }
     }
 
@@ -223,6 +381,20 @@ impl FetchPlan {
         }
     }
 
+    /// Objects whose budget ran out: their chunks took more than allowed.
+    pub fn overrun_objects(&self) -> Vec<Cid> {
+        self.budgets
+            .iter()
+            .filter(|budget| budget.exceeded)
+            .map(|budget| budget.object)
+            .collect()
+    }
+
+    /// Chunks given up on because every budget they were wanted under ran out.
+    pub fn over_budget(&self) -> Vec<Cid> {
+        self.collect(|state| matches!(state, ChunkState::OverBudget))
+    }
+
     /// Records that a source did not produce the bytes.
     ///
     /// The chunk returns to the queue against its remaining candidates, so one
@@ -230,7 +402,12 @@ impl FetchPlan {
     /// when every known holder has been tried is it given up on — and even then
     /// the plan reports it rather than failing, since a caller may well want the
     /// chunks it *did* get.
+    ///
+    /// A chunk whose every budget has run out while it was in flight is given
+    /// up on instead (§4.4 step 6): retrying it elsewhere would fetch bytes the
+    /// plan has already decided not to keep.
     pub fn record_failed(&mut self, cid: Cid) {
+        let doomed = self.doomed(&cid);
         let Some(state) = self.chunks.get_mut(&cid) else {
             return;
         };
@@ -242,7 +419,9 @@ impl FetchPlan {
             return;
         };
         self.inflight = self.inflight.saturating_sub(1);
-        *state = if candidates.is_empty() {
+        *state = if doomed {
+            ChunkState::OverBudget
+        } else if candidates.is_empty() {
             ChunkState::Exhausted
         } else {
             ChunkState::Ready {
@@ -254,9 +433,12 @@ impl FetchPlan {
 
     /// Whether every chunk has either arrived or been given up on.
     pub fn is_complete(&self) -> bool {
-        self.chunks
-            .values()
-            .all(|state| matches!(state, ChunkState::Done | ChunkState::Exhausted))
+        self.chunks.values().all(|state| {
+            matches!(
+                state,
+                ChunkState::Done | ChunkState::Exhausted | ChunkState::OverBudget
+            )
+        })
     }
 
     /// Chunks that arrived.
@@ -623,5 +805,187 @@ mod tests {
         plan.next_requests();
         record(&mut plan, cid(1), &[2], &ledger);
         assert_eq!(plan.inflight(), 1);
+    }
+
+    /// Issues every ready request and returns the chunks, in issue order.
+    fn issue_all(plan: &mut FetchPlan) -> Vec<Cid> {
+        plan.next_requests().into_iter().map(|(c, _)| c).collect()
+    }
+
+    #[test]
+    fn a_budget_that_runs_out_abandons_the_rest_of_its_chunks() {
+        // §4.4 step 6. A manifest declaring 100 bytes whose chunks hold far more
+        // costs its declared size, not its contents: the chunk that would take
+        // the fetch past it is refused, and nothing more is asked for.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 1);
+        plan.extend_within(cid(9), [cid(1), cid(2), cid(3)], 100);
+        for which in [cid(1), cid(2), cid(3)] {
+            record(&mut plan, which, &[2], &ledger);
+        }
+
+        let first = issue_all(&mut plan);
+        assert!(plan.admit(first[0], 60), "within the allowance is kept");
+        plan.record_received(first[0]);
+
+        let second = issue_all(&mut plan);
+        assert!(!plan.admit(second[0], 60), "past the allowance is refused");
+        assert!(
+            issue_all(&mut plan).is_empty(),
+            "and nothing more is asked for"
+        );
+        assert!(plan.is_complete(), "an abandoned chunk ends the fetch");
+        assert_eq!(plan.received(), vec![first[0]]);
+        assert_eq!(plan.over_budget().len(), 2);
+        assert_eq!(plan.inflight(), 0, "the refused request freed its slot");
+        assert_eq!(plan.overrun_objects(), vec![cid(9)]);
+    }
+
+    #[test]
+    fn a_chunk_the_plan_never_asked_for_is_not_its_to_refuse() {
+        // A caller's one-off request shares the connection and the response
+        // path with the plan. Its bytes are not the plan's to weigh, and nor is
+        // a second response for a chunk already done.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 1);
+        plan.extend_within(cid(9), [cid(1)], 10);
+        record(&mut plan, cid(1), &[2], &ledger);
+        assert!(
+            plan.admit(cid(5), 1_000),
+            "a chunk outside the plan is kept"
+        );
+
+        let issued = issue_all(&mut plan);
+        assert!(plan.admit(issued[0], 10));
+        plan.record_received(issued[0]);
+        assert!(
+            plan.admit(issued[0], 10),
+            "a duplicate is not charged again"
+        );
+        assert!(plan.overrun_objects().is_empty());
+        assert_eq!(plan.received(), vec![cid(1)]);
+    }
+
+    #[test]
+    fn a_chunk_in_flight_when_its_budget_ran_out_is_not_sent_again() {
+        // The request was out before the budget ran out, so it is let finish.
+        // If it fails, retrying it with the next holder would fetch bytes the
+        // plan has already decided not to keep.
+        let ledger = ledger_with(&[(2, 1_000), (3, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 2);
+        plan.extend_within(cid(9), [cid(1), cid(2)], 50);
+        record(&mut plan, cid(1), &[2, 3], &ledger);
+        record(&mut plan, cid(2), &[2, 3], &ledger);
+
+        let issued = issue_all(&mut plan);
+        assert_eq!(issued.len(), 2);
+        assert!(!plan.admit(issued[0], 60), "the first response runs it out");
+        plan.record_failed(issued[1]);
+        assert!(issue_all(&mut plan).is_empty(), "the other is not retried");
+        assert!(plan.is_complete());
+        assert_eq!(plan.over_budget().len(), 2);
+        assert!(
+            plan.unavailable().is_empty(),
+            "it was abandoned, not unfindable"
+        );
+    }
+
+    #[test]
+    fn a_chunk_abandoned_for_one_object_is_fetched_again_for_another() {
+        // Content addressing means a liar can name an honest chunk. Once the
+        // liar's budget abandons it, an honest object wanting it later must
+        // still get it.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 1);
+        plan.extend_within(cid(8), [cid(1), cid(2)], 10);
+        record(&mut plan, cid(1), &[2], &ledger);
+        record(&mut plan, cid(2), &[2], &ledger);
+        let first = issue_all(&mut plan)[0];
+        assert!(!plan.admit(first, 50));
+        assert_eq!(plan.over_budget().len(), 2);
+
+        plan.extend_within(cid(9), [cid(1), cid(2)], 1_000);
+        assert_eq!(plan.providers_needed().len(), 2, "both are wanted again");
+        record(&mut plan, cid(1), &[2], &ledger);
+        record(&mut plan, cid(2), &[2], &ledger);
+        while let Some(&next) = issue_all(&mut plan).first() {
+            assert!(plan.admit(next, 50));
+            plan.record_received(next);
+        }
+        assert_eq!(plan.received().len(), 2);
+        assert_eq!(plan.overrun_objects(), vec![cid(8)]);
+    }
+
+    #[test]
+    fn a_budget_with_room_rescues_a_chunk_an_exhausted_one_shares() {
+        // The same rescue as below, with no unbudgeted caller to lean on: only
+        // the other object's room keeps the shared chunk wanted.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 1);
+        plan.extend_within(cid(8), [cid(1), cid(3)], 10);
+        plan.extend_within(cid(9), [cid(2), cid(3)], 1_000);
+        for which in [cid(1), cid(2), cid(3)] {
+            record(&mut plan, which, &[2], &ledger);
+        }
+        while let Some(&next) = issue_all(&mut plan).first() {
+            if plan.admit(next, 50) {
+                plan.record_received(next);
+            }
+        }
+        assert!(plan.received().contains(&cid(2)) && plan.received().contains(&cid(3)));
+        assert!(!plan.received().contains(&cid(1)));
+        assert_eq!(plan.overrun_objects(), vec![cid(8)]);
+    }
+
+    #[test]
+    fn a_chunk_another_caller_still_wants_is_not_abandoned() {
+        // A manifest that lies about its size can name somebody else's honest
+        // chunk. Running out its budget must not cost the other object that
+        // chunk, or one bad manifest starves content it shares.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new([cid(3)], 1);
+        plan.extend_within(cid(8), [cid(1), cid(3)], 10);
+        plan.extend_within(cid(9), [cid(2), cid(3)], 1_000);
+        for which in [cid(1), cid(2), cid(3)] {
+            record(&mut plan, which, &[2], &ledger);
+        }
+
+        let mut seen = Vec::new();
+        while let Some(&next) = issue_all(&mut plan).first() {
+            let kept = plan.admit(next, 50);
+            if kept {
+                plan.record_received(next);
+            }
+            seen.push((next, kept));
+        }
+        assert!(plan.is_complete());
+        assert!(
+            plan.received().contains(&cid(2)) && plan.received().contains(&cid(3)),
+            "both chunks someone with room wanted arrive: {seen:?}"
+        );
+        assert!(
+            !plan.received().contains(&cid(1)),
+            "the chunk only the exhausted budget wanted does not: {seen:?}"
+        );
+        assert_eq!(plan.overrun_objects(), vec![cid(8)]);
+    }
+
+    #[test]
+    fn an_honest_object_fetches_whole_at_exactly_its_budget() {
+        // The bound is inclusive. An honest manifest's chunks sum to exactly
+        // its ciphertext bound, so a budget that refused at equality would
+        // refuse every honest object.
+        let ledger = ledger_with(&[(2, 1_000)]);
+        let mut plan = FetchPlan::new(Vec::new(), 2);
+        plan.extend_within(cid(9), [cid(1), cid(2)], 80);
+        record(&mut plan, cid(1), &[2], &ledger);
+        record(&mut plan, cid(2), &[2], &ledger);
+        for which in issue_all(&mut plan) {
+            assert!(plan.admit(which, 40));
+            plan.record_received(which);
+        }
+        assert!(plan.is_complete());
+        assert!(plan.over_budget().is_empty());
+        assert!(plan.overrun_objects().is_empty());
     }
 }

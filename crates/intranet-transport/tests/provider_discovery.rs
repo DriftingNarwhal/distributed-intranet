@@ -474,10 +474,15 @@ async fn an_object_is_fetched_from_several_holders_at_once() {
     let Some(NodeEvent::FetchComplete {
         received,
         unavailable,
+        over_budget,
     }) = completion
     else {
         unreachable!()
     };
+    assert!(
+        over_budget.is_empty(),
+        "nothing here had a budget: {over_budget:?}"
+    );
     assert!(
         unavailable.is_empty(),
         "every chunk had a holder, so none should be unavailable: {unavailable:?}"
@@ -535,10 +540,12 @@ async fn a_fetch_completes_even_when_some_chunks_have_no_holder() {
     let Some(NodeEvent::FetchComplete {
         received,
         unavailable,
+        over_budget,
     }) = completion
     else {
         panic!("the fetch should complete, got {completion:?}");
     };
+    assert!(over_budget.is_empty());
     assert_eq!(received, vec![held]);
     assert_eq!(unavailable, vec![missing]);
 }
@@ -709,5 +716,119 @@ async fn a_fetcher_finds_a_holder_it_was_never_told_about() {
         fetcher.chunk_store().get(&cid),
         Some(content.as_slice()),
         "the content should arrive intact from a peer discovered through another"
+    );
+}
+
+/// Fetches `manifest`'s chunks as one object and waits for the plan to finish.
+async fn fetch_object_to_completion(
+    host: &mut MemberNode,
+    guest: &mut MemberNode,
+    manifest: &intranet_storage::Manifest,
+    joiner: &PerNetworkIdentity,
+) -> (Vec<Cid>, Vec<Cid>, Vec<Cid>) {
+    assert!(guest.fetch_object(manifest.cid(), manifest, joiner, 1));
+    let completion = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            tokio::select! {
+                event = guest.next_event() => {
+                    if let NodeEvent::FetchComplete { received, unavailable, over_budget } = event {
+                        return Some((received, unavailable, over_budget));
+                    }
+                }
+                _ = host.next_event() => {}
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    completion.expect("the fetch should complete")
+}
+
+#[tokio::test]
+async fn an_object_takes_no_more_than_its_manifest_declares() {
+    // Storage §4.4 step 6, over a real connection. A manifest that understates
+    // its length used to have every chunk fetched and kept before anything
+    // refused it, which let its author make a reader download whatever its
+    // chunks held, up to the codec's 16 MiB each.
+    let (mut host, mut guest) = pair().await;
+    let joiner = identity(2);
+
+    // An honest-sized object first, declared to the byte: its chunks are
+    // exactly the bound, and the bound must let them through.
+    let honest: Vec<Cid> = (0..3u8).map(|i| host.store_chunk(vec![i; 500])).collect();
+    let honest = intranet_storage::Manifest {
+        chunks: honest,
+        plaintext_len: 1_500 - 3 * intranet_storage::CHUNK_OVERHEAD_BYTES,
+    };
+    // Then a liar: four 1,000-byte chunks declared as 100 bytes in all.
+    let lying: Vec<Cid> = (10..14u8)
+        .map(|i| host.store_chunk(vec![i; 1_000]))
+        .collect();
+    let lying = intranet_storage::Manifest {
+        chunks: lying,
+        plaintext_len: 100,
+    };
+    settle(&mut host, &mut guest, Duration::from_secs(3)).await;
+
+    let (received, unavailable, over_budget) =
+        fetch_object_to_completion(&mut host, &mut guest, &honest, &joiner).await;
+    assert_eq!(received.len(), 3, "an honest object arrives whole");
+    assert!(unavailable.is_empty() && over_budget.is_empty());
+    assert!(!guest.object_overran(&honest.cid()));
+
+    let (received, _, over_budget) =
+        fetch_object_to_completion(&mut host, &mut guest, &lying, &joiner).await;
+    assert!(
+        received.is_empty(),
+        "the first chunk is already past 140 bytes"
+    );
+    assert_eq!(over_budget.len(), 4, "and nothing more is asked for");
+    for cid in &lying.chunks {
+        assert!(
+            guest.chunk_store().get(cid).is_none(),
+            "a refused chunk is not kept: {}",
+            cid.short()
+        );
+    }
+    assert!(guest.object_overran(&lying.cid()));
+    assert!(
+        !guest.fetch_object(lying.cid(), &lying, &joiner, 1),
+        "and the object is not fetched again"
+    );
+}
+
+#[tokio::test]
+async fn a_corrupt_chunk_does_not_spend_its_objects_allowance() {
+    // Storage §4.4 step 6 charges only bytes that verify. A holder serving
+    // garbage for a chunk is that holder's fault (step 5), and if its bytes were
+    // charged to the object, one bad source could run any honest object out.
+    // Here the garbage alone is five times the object's whole allowance.
+    let (mut host, mut guest) = pair().await;
+    let joiner = identity(2);
+
+    let honest = host.store_chunk(vec![1u8; 500]);
+    let corrupted = Cid::of(&[2u8; 500]);
+    host.chunk_store_mut()
+        .insert_unchecked(corrupted, vec![9u8; 5_000]);
+    host.announce_chunk(corrupted);
+    let manifest = intranet_storage::Manifest {
+        chunks: vec![honest, corrupted],
+        plaintext_len: 1_000 - 2 * intranet_storage::CHUNK_OVERHEAD_BYTES,
+    };
+    settle(&mut host, &mut guest, Duration::from_secs(3)).await;
+
+    let (received, unavailable, over_budget) =
+        fetch_object_to_completion(&mut host, &mut guest, &manifest, &joiner).await;
+    assert_eq!(received, vec![honest], "the honest chunk still arrives");
+    assert_eq!(
+        unavailable,
+        vec![corrupted],
+        "the corrupt one is a failed source, not an overrun"
+    );
+    assert!(over_budget.is_empty(), "{over_budget:?}");
+    assert!(
+        !guest.object_overran(&manifest.cid()),
+        "and the object is not refused for bytes that never verified"
     );
 }

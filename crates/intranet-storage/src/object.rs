@@ -83,6 +83,19 @@ impl Manifest {
         Cid::of(&self.canonical_bytes())
     }
 
+    /// The most bytes fetching this manifest's chunks can honestly take — Storage
+    /// Spec §4.4 step 6.
+    ///
+    /// Every chunk's ciphertext is its plaintext plus
+    /// [`CHUNK_OVERHEAD_BYTES`](crate::crypto::CHUNK_OVERHEAD_BYTES), so the
+    /// chunks of an honest manifest sum to at most this. A repeated chunk is
+    /// counted once per mention, which only makes the bound looser.
+    pub fn ciphertext_bound(&self) -> u64 {
+        (self.chunks.len() as u64)
+            .saturating_mul(crate::crypto::CHUNK_OVERHEAD_BYTES)
+            .saturating_add(self.plaintext_len)
+    }
+
     /// The canonical encoding this manifest hashes as.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut e = Enc::domain("intranet.manifest.v1");
@@ -431,6 +444,19 @@ mod tests {
             decode(&object.manifest, &blobs(&object), &dek).unwrap(),
             Vec::<u8>::new()
         );
+    }
+
+    #[test]
+    fn an_honest_object_is_exactly_its_ciphertext_bound() {
+        // §4.4 step 6 stops a fetch past this figure, so it must never be
+        // smaller than what an honest encoder produces — or a fetch would
+        // refuse genuine content. Exactly equal is the strongest form.
+        let dek = Dek::generate().unwrap();
+        for len in [0, 1, 4_000, 300_000] {
+            let object = encode(&data(len, 7), &dek, ChunkSpec::default());
+            let held: u64 = object.chunks.iter().map(|(_, b)| b.len() as u64).sum();
+            assert_eq!(held, object.manifest.ciphertext_bound(), "at {len} bytes");
+        }
     }
 
     #[test]

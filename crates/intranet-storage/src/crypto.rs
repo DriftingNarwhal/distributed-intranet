@@ -41,6 +41,16 @@ use intranet_crypto::{Hash, hash_bytes, keyed_hash, random_bytes};
 /// Length of the synthetic nonce prefixed to every sealed blob.
 const NONCE_LEN: usize = 24;
 
+/// Length of the Poly1305 tag XChaCha20-Poly1305 appends.
+const TAG_LEN: usize = 16;
+
+/// How many bytes sealing adds to a chunk: the nonce in front, the tag behind.
+///
+/// A chunk's ciphertext is exactly its plaintext plus this, which is what lets a
+/// manifest's declared length bound what fetching its chunks may take
+/// ([`Manifest::ciphertext_bound`](crate::Manifest::ciphertext_bound)).
+pub const CHUNK_OVERHEAD_BYTES: u64 = (NONCE_LEN + TAG_LEN) as u64;
+
 /// Seals `plaintext` under `key` with a nonce derived from both.
 ///
 /// The nonce is prepended to the output because decryption needs it and cannot

@@ -5,9 +5,9 @@ cross-reference each other extensively.
 
 specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
 consuming the platform rather than defining it. Read it only when working on something it
-touches — but do read its §7, which lists the ten amendments it asks of the platform, two
+touches — but do read its §7, which lists the eleven amendments it asks of the platform, two
 of which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). Nine are implemented — E2, E4, E9, E10, E11, E12, E14, E15 and E16 —
+map in NetworkPolicy). Ten are implemented — E2, E4, E9, E10, E11, E12, E14, E15, E16 and E17 —
 and **E13 is deferred** (2026-10-05), neither withdrawn nor implemented. It was written as
 load-bearing — every direct message is its own network and a relay is never shared between two
 of them (§7, and the client's D29) — but the client now borrows the shared network's relay as a
@@ -15,10 +15,12 @@ rendezvous (its D39), so two NATed people converse wherever they can hole-punch,
 over IPv6 or not at all (Core §5.2). If E13 is ever picked up, its disclosure gate in §7 is not
 optional.
 
-Note the shape three of those landed in, because a fourth request will meet it too: E2 asked
+Note the shape four of those landed in, because a fifth request will meet it too: E2 asked
 for four chat-shaped governance entries and got one generic application entry, E9 asked for
-chat-named policy fields and got an app-layer map, and E10 asked for `/chat/dm-invite/1.0.0`
-and got `/intranet/direct/1.0.0` carrying a namespace and an opaque payload. §0 is why —
+chat-named policy fields and got an app-layer map, E10 asked for `/chat/dm-invite/1.0.0`
+and got `/intranet/direct/1.0.0` carrying a namespace and an opaque payload, and E17 asked
+for a byte budget on chat's segment fetch and got a rule of every object fetch, bounded by the
+manifest's own declared length (Storage §4.4 step 6). §0 is why —
 the platform must not be shaped around one application — and the answer each time was a door
 rather than a room.
 Treat them as authoritative; if an implementation choice isn't covered by them, flag it
