@@ -1,7 +1,7 @@
 # Chat Application Specification
 
 **Project:** Distributed Intranet
-**Document status:** v0.10 — three things the reference client does and no section stated are now normative, on the user's decision of 2026-10-06 (revisable from use, like every default here). §3.3's reserved row now names `0x00`, which no class covers and readers already refused. §4.3 states the two fixed field bounds a reader refuses past: a reaction key of 64 bytes and an attachment filename of 255, fixed encoding constants rather than policy. They were in the client's encoding notes before the encoding moved here and were not carried across. §3.7 states what admits a record of a kind the reader does not know — the same authorization checks a `Message` passes, its body bounded only through `chat:segment-max-bytes` — and the limit that follows: a node that knows the kind and holds it to a stricter rule refuses a record an older node keeps, so their record sets and rate counts can differ by it, and a future kind needing more than `chat:post` cannot rely on older nodes enforcing that. §3.3, §3.7 and §4.3's claims that every node reaches the same verdict are qualified accordingly. The reserved range stays refused. §6.4 specifies presence beats, whose encoding had shipped with no section owning it: the signed payload, the sealed plaintext, the frame, the key, the topic, the cadence and the freshness window, with four domain tags added to §3.2 and the topic to §3.6. Its honest limits are stated with it: no beat is silence and never "offline", invisible publishes nothing, a beat can be replayed verbatim until the next rotation, and presence has no durable path. Two dangling references to §4.4 now point at §4.3. Nothing the reference client does changes, except that it still owes §2.2's segment ceiling, which it does not yet enforce. A client conforming to v0.9 alone could have accepted a reaction key or filename past the new bounds, and no longer may. Previously v0.9 — **E13 is deferred**, on 2026-10-05: not withdrawn as unnecessary, and not implemented. Its client reaches a conversation's peer by borrowing the shared network's relay as a rendezvous for an ordinary Core §5.2 tier 2 punch, which works well enough that the cross-network address exchange is not being built. §7's row now says so and keeps the disclosure gate as a requirement on any future implementation. §1.5's metadata bullet is corrected: it described a conversation *falling back* to the shared network's relay when a direct connection fails, which Core §5.2 refuses — a relayed circuit carries the negotiation and nothing else, so a pair who cannot hole-punch reach each other over IPv6 or not at all. The correlation it bounds is unchanged in kind and now attaches to the rendezvous. Nothing a conformant client does changes. Previously v0.8 — **E10 landed**, and generically: §6.2's direct message invitation rides Core §5.1's `/intranet/direct/1.0.0` as namespace `chat`, kind `dm-invite`, rather than a protocol of its own. Invisible to a conformant client of this document — the payload, the checks and the honest limits are unchanged and only the frame is shared — and §6.2 now states plainly which obligations are the carrier's and which are this document's, including the two a reader owes that no platform can owe for it: verifying that the identity link binds the *right pair*, and refusing a sender who is not a current member. §6.2 also takes the profile obligation E12 left for it. Previously v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
+**Document status:** v0.11 — on the user's decision of 2026-10-06, §6.4 refuses a replayed presence beat. A receiver accepts a beat only if its signed `at` is later than the newest it has accepted from that sender, and keeps that floor across restarts. It refuses a beat dated outside `chat:max-future-skew-millis` either way (plus the freshness window behind), so one bad clock cannot lift the floor out of reach and an old run of beats cannot be replayed. v0.10 stated the replay as an honest limit, and a client conforming to v0.10 alone could accept one; under this version it may not. What remains is stated: recent beats replayed to a receiver that missed them, a clock that steps back or runs slow, and two devices of one identity (flagged against multi-device). The reference client also now applies §2.2's segment ceiling, which v0.10 recorded it as owing, though not yet fully: it refuses from a manifest's declared length, so a manifest that understates its length still has its chunks fetched before storage refuses it (the client's O28). Previously v0.10 — three things the reference client does and no section stated are now normative, on the user's decision of 2026-10-06 (revisable from use, like every default here). §3.3's reserved row now names `0x00`, which no class covers and readers already refused. §4.3 states the two fixed field bounds a reader refuses past: a reaction key of 64 bytes and an attachment filename of 255, fixed encoding constants rather than policy. They were in the client's encoding notes before the encoding moved here and were not carried across. §3.7 states what admits a record of a kind the reader does not know — the same authorization checks a `Message` passes, its body bounded only through `chat:segment-max-bytes` — and the limit that follows: a node that knows the kind and holds it to a stricter rule refuses a record an older node keeps, so their record sets and rate counts can differ by it, and a future kind needing more than `chat:post` cannot rely on older nodes enforcing that. §3.3, §3.7 and §4.3's claims that every node reaches the same verdict are qualified accordingly. The reserved range stays refused. §6.4 specifies presence beats, whose encoding had shipped with no section owning it: the signed payload, the sealed plaintext, the frame, the key, the topic, the cadence and the freshness window, with four domain tags added to §3.2 and the topic to §3.6. Its honest limits are stated with it: no beat is silence and never "offline", invisible publishes nothing, a beat can be replayed verbatim until the next rotation, and presence has no durable path. Two dangling references to §4.4 now point at §4.3. Nothing the reference client does changes, except that it still owes §2.2's segment ceiling, which it does not yet enforce. A client conforming to v0.9 alone could have accepted a reaction key or filename past the new bounds, and no longer may. Previously v0.9 — **E13 is deferred**, on 2026-10-05: not withdrawn as unnecessary, and not implemented. Its client reaches a conversation's peer by borrowing the shared network's relay as a rendezvous for an ordinary Core §5.2 tier 2 punch, which works well enough that the cross-network address exchange is not being built. §7's row now says so and keeps the disclosure gate as a requirement on any future implementation. §1.5's metadata bullet is corrected: it described a conversation *falling back* to the shared network's relay when a direct connection fails, which Core §5.2 refuses — a relayed circuit carries the negotiation and nothing else, so a pair who cannot hole-punch reach each other over IPv6 or not at all. The correlation it bounds is unchanged in kind and now attaches to the rendezvous. Nothing a conformant client does changes. Previously v0.8 — **E10 landed**, and generically: §6.2's direct message invitation rides Core §5.1's `/intranet/direct/1.0.0` as namespace `chat`, kind `dm-invite`, rather than a protocol of its own. Invisible to a conformant client of this document — the payload, the checks and the honest limits are unchanged and only the frame is shared — and §6.2 now states plainly which obligations are the carrier's and which are this document's, including the two a reader owes that no platform can owe for it: verifying that the identity link binds the *right pair*, and refusing a sender who is not a current member. §6.2 also takes the profile obligation E12 left for it. Previously v0.7 — **E15 landed** as Core v1.2: §1.1–§1.3 admit independent per-network seeds beside the derived model, with §1.2's properties restated as requirements on the result. The harness spec was amended with it, because a conformance test exercising only one mechanism would have failed a client that satisfied the requirement by the other. Previously v0.6 — draft. §9's first open question is closed: moderation authority is now evaluated as of the cited governance head in the reference implementation, and §9 records the two halves of the property and the direction it fails in. Previously v0.5 — draft. **E16 landed** — Core §2.5.1: a membership removal naming its own author is valid without a capability, and is excluded from fork-choice branch weight, which the amendment as written did not anticipate. Previously v0.4 — §7 added E16. Previously v0.3 — §1.6 fixes sidebar order, §1.7 a network's name and §1.8 categories as named, ordered metadata over a scope that already exists; `SetPosition` is channel-update `0x07` and categories are entry kinds `0x05`/`0x06` (§3.8). All of it is implemented in `ko-ls` as of 2026-08-23. A reference implementation is in progress (`ko-ls`); where the two differ, this document is normative and the divergence is recorded in the implementation.
 **Depends on:** Core Protocol Spec (identity, governance, epoch keying, capability ledger, transport), Storage & Replication Spec (mutable pointers, append-sets, swarm serving, envelope encryption), Real-Time Transport Spec (calls, streams), Search & Indexing Spec (postings)
 **Consumed by:** nothing yet — this is a leaf
 
@@ -966,7 +966,7 @@ reader **MUST** refuse any other code rather than round it to one of these, beca
 later client invents must not be read as a claim its sender did not make. `at` is the sender's
 clock in milliseconds since the Unix epoch, as an `i64`. It is covered by the signature, so
 nobody but the sender can put a different date on a beat. It does not stop the same beat being
-repeated (see the honest limits below).
+repeated; rules 5 and 6 below are what limit that, and the honest limits say how far.
 
 **The sealed plaintext** carries the payload's fields and the signature:
 
@@ -1006,13 +1006,33 @@ over the frame (Core §5.1), which the plaintext never reaches.
    from being a live attendance register.
 2. **Verify the signature** against `who`. Without it, any member holding the epoch key could
    seal a beat naming somebody else. The signature makes a beat say who made it. It does not
-   stop a beat being repeated (see the honest limits).
+   stop a beat being repeated, which is what rule 5 is for.
 3. **Refuse a beat whose `who` is not a current member** in replayed state. The seal cannot do
    this, since a removed member may hold the epoch key until the rotation that excludes them.
 4. **Judge freshness by when it heard the beat, never by `at`.** A beat heard at `t` is current
    at `now` exactly when `0 ≤ now − t < 90 000` ms. A heard time in the future is not current.
-   `at` is the sender's clock and is carried for the signature and for display, so trusting it
-   would let one beat dated next year pin its sender as present indefinitely.
+   `at` is the sender's clock, so trusting it for freshness would let one beat dated next year pin
+   its sender as present indefinitely. It is used for order instead (rules 5 and 6).
+5. **Refuse a beat whose `at` is not later than the newest `at` already accepted from that
+   `who`**, and keep that newest reading across restarts. The frame is unsigned and the seal is
+   deterministic, so anybody on the topic can republish a beat byte for byte without holding the
+   epoch key. Judged by heard time alone, each copy would keep its sender shown as present for
+   another window, and a copy of an older beat would put a state back that the sender had left.
+   A sender's own beats carry ever-later readings and a copy carries one already accepted, so this
+   refuses copies and stragglers. It also refuses an honest sender whose clock has stepped back,
+   and one device of a member whose other device's clock runs ahead (see the honest limits).
+   Refusing a copy is not worth reporting: it is not news, and saying so on every copy would let
+   whoever replays fill a member's screen. A receiver
+   that forgot the floor at each restart would accept one more copy of every member's last beat
+   each time.
+6. **Refuse a beat whose `at` is more than `chat:max-future-skew-millis` ahead of the receiver's
+   clock** (§2.6's bound for records), **or more than that bound plus the 90 000 ms freshness
+   window behind it.** Rule 5 makes the newest accepted reading a floor, so a beat dated next year
+   would silence its sender's honest beats until next year; bounded ahead, a corrected clock costs
+   at most the skew. Behind, a beat older than any that could still be current is not news, and
+   refusing it is what keeps a captured run of beats from being replayed, in rising order, to a
+   receiver that missed them. A beat refused ahead sets no floor, so every copy of it is refused
+   again, and a client reporting it should say so once per sender rather than once per copy.
 
 **Cadence.** A member showing a state beats about every **30 000 ms**, and no more often. The
 receiver's window is three beats, so roughly two can be lost to an ordinary gossip hiccup
@@ -1034,12 +1054,29 @@ is local state and is not on the wire.
 - **Invisible hides the beat and nothing else.** A peer holding a connection to the member's
   node still knows that node is running, and the member's records still arrive as records do.
   The setting withholds the *claim* to be present, not the evidence of activity.
-- **A beat can be replayed verbatim.** The frame is unsigned and the seal is deterministic, so
-  anybody on the topic can republish a beat they received, byte for byte, without holding the
-  epoch key. Freshness is judged by when a beat was heard, so each replay keeps its sender shown
-  as present for another window. A replay can also put an older state back in place of a newer
-  one. What bounds it is the carrier's duplicate suppression and the next rotation, which
-  changes the key every later beat must open under. Nothing here compares `at` across beats.
+- **Recent beats can still be replayed to a receiver that has not accepted them.** Rule 5 refuses
+  only what a receiver has already accepted, and rule 6 only what is too old to be current. So
+  somebody who captured a run of a sender's beats can feed a receiver that missed them every one
+  dated within the skew and the window behind its clock, in rising order, and each keeps the
+  sender shown for another window. With the shipped skew that is the last six and a half minutes
+  of beats, and the last one replayed keeps its sender shown for one more window, so in the worst
+  case a member stays shown for about eight minutes after their real last beat. It ends with the
+  sender's own next beat, the next rotation, or the run ageing out.
+- **A sender whose clock steps backwards goes quiet**, until it passes the newest reading each
+  receiver accepted. That lasts at most as long as the step, less the time since that beat was
+  accepted, and at most the skew when the step only undoes a clock that ran fast.
+- **A sender whose clock is off by more than the bound is never heard.** Slow by more than the
+  skew plus the window, every beat is older than rule 6 admits. Fast by more than the skew, every
+  beat is refused as ahead, sets no floor, and is reported once per sender.
+- **So is everybody, to a receiver whose own clock is that far off.** A receiver slow by more than
+  the skew refuses every beat as ahead, and one fast by more than the skew plus the window refuses
+  every beat as old. Rule 6's bound on what a corrected clock costs assumes the receiver's clock is
+  right: one running fast by some amount can accept a floor that much further ahead.
+- **Two devices of one identity can silence each other.** A beat is per `who`, not per device,
+  and the floor is too. While two devices beat with different clocks, either one's beat is refused
+  whenever it reads earlier than the other's last accepted beat. **Flagged:** multi-device is
+  designed and not built (the client's D17). A per-device floor needs the device in the beat,
+  which this payload does not carry.
 - **Going invisible is not immediate.** A member who stops beating stays shown as present on
   every receiver until their last beat leaves the window, up to ninety seconds.
 - **Presence has no durable path, and is the one exception to §6.1's rule.** It rides the
