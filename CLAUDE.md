@@ -219,9 +219,14 @@ entries before enumerating: enumeration finds other providers, so skipping local
 both hides what this node published and lets a hostile local entry escape validation.
 
 Every layer is reachable over the network. Each spec's version is on its own status line, and
-they have moved independently since v1.0, so none is restated here. One thing diverges from
-the specs and it is named above: call media delivery uses the reliable fallback §1.5 permits
-only as one. Everything else matches.
+they have moved independently since v1.0, so none is restated here. Two things diverge from
+the specs. One is named above: call media delivery uses the reliable fallback §1.5 permits
+only as one. The other, recorded 2026-10-11: Core §5.1 says a direct message's `Received`
+means the payload reached a consumer that understands it, but `intranet-transport` answers
+`Received` once the sender binding and the meter pass, before any consumer sees it, and never
+sends `DirectRefusal::Unsupported` (`node.rs`, the `/intranet/direct` request arm). To be
+resolved by answering per (namespace, kind) consumer or by amending §5.1. Everything else
+matches.
 
 ## Invariants and the gate
 
