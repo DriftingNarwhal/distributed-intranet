@@ -5,9 +5,9 @@ cross-reference each other extensively.
 
 specs/07-chat-application-spec.md is different in kind: the first application-layer spec,
 consuming the platform rather than defining it. Read it only when working on something it
-touches — but do read its §7, which lists the eleven amendments it asks of the platform, two
+touches — but do read its §7, which lists the twelve amendments it asks of the platform, two
 of which change types the core specs own (governance entry variants, and an app-layer policy
-map in NetworkPolicy). Ten are implemented — E2, E4, E9, E10, E11, E12, E14, E15, E16 and E17 —
+map in NetworkPolicy). Eleven are implemented — E2, E4, E9, E10, E11, E12, E14, E15, E16, E17 and E18 —
 and **E13 is deferred** (2026-10-05), neither withdrawn nor implemented. It was written as
 load-bearing — every direct message is its own network and a relay is never shared between two
 of them (§7, and the client's D29) — but the client now borrows the shared network's relay as a
@@ -219,14 +219,12 @@ entries before enumerating: enumeration finds other providers, so skipping local
 both hides what this node published and lets a hostile local entry escape validation.
 
 Every layer is reachable over the network. Each spec's version is on its own status line, and
-they have moved independently since v1.0, so none is restated here. Two things diverge from
-the specs. One is named above: call media delivery uses the reliable fallback §1.5 permits
-only as one. The other, recorded 2026-10-11: Core §5.1 says a direct message's `Received`
-means the payload reached a consumer that understands it, but `intranet-transport` answers
-`Received` once the sender binding and the meter pass, before any consumer sees it, and never
-sends `DirectRefusal::Unsupported` (`node.rs`, the `/intranet/direct` request arm). To be
-resolved by answering per (namespace, kind) consumer or by amending §5.1. Everything else
-matches.
+they have moved independently since v1.0, so none is restated here. One thing diverges from
+the specs, and it is named above: call media delivery uses the reliable fallback §1.5
+permits only as one. (A second, recorded 2026-10-11, was fixed the same
+day: the direct carrier answered `Received` to every kind, before any consumer, and now answers
+it only to a kind declared with `MemberNode::handle_direct`, as Core v1.8 §5.1 requires.)
+Everything else matches.
 
 ## Invariants and the gate
 

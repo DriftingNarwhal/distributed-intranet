@@ -108,6 +108,10 @@ impl ListenArgs {
                 // sent it — printing it would put an application's shape in a
                 // tool that deliberately has none. The length stands in for it,
                 // which is enough to see that bytes arrived intact.
+                // **Never reached as things stand**: this listener declares no
+                // kind with `handle_direct`, so since Core v1.8 §5.1 every direct
+                // message is answered `Unsupported` and printed below as a
+                // refusal. Kept for a listener that declares one.
                 NodeEvent::DirectReceived { message } => {
                     println!(
                         "direct: from={} namespace={} kind={} bytes={}",
@@ -125,7 +129,7 @@ impl ListenArgs {
                 // the refusal below: a payload that was delivered and one that
                 // vanished look identical from the sending side otherwise, which
                 // is what this event was added to end.
-                NodeEvent::DirectDelivered { to, ack } => {
+                NodeEvent::DirectDelivered { to, ack, .. } => {
                     println!(
                         "direct-delivered: to={} ack={}",
                         to.peer_id(),
@@ -134,6 +138,10 @@ impl ListenArgs {
                             intranet_transport::direct::DirectAck::Refused(_) => "refused",
                         }
                     );
+                }
+
+                NodeEvent::DirectFailed { to, error, .. } => {
+                    println!("direct-failed: to={} error={error}", to.peer_id());
                 }
 
                 NodeEvent::DirectRefused { sender, reason } => {

@@ -88,12 +88,15 @@ async fn node(seed: u8) -> (MemberNode, Multiaddr) {
     (node, address.with(Protocol::P2p(identity.peer_id())))
 }
 
-/// Two connected members, agreeing on governance.
+/// Two connected members, agreeing on governance, each handling `chat`
+/// `dm-invite` as the first consumer does.
 async fn pair() -> (MemberNode, MemberNode) {
     let founder = identity(1);
     let peer = identity(2);
     let (mut a, _) = node(1).await;
     let (mut b, b_addr) = node(2).await;
+    a.handle_direct("chat", "dm-invite");
+    b.handle_direct("chat", "dm-invite");
 
     let root = a.append_entry(genesis(&founder)).unwrap();
     a.append_entry(admit(&founder, root, &peer)).unwrap();
@@ -167,13 +170,16 @@ async fn a_second_namespace_needs_no_second_protocol() {
     let (mut a, mut b) = pair().await;
     let alice = identity(1);
     let bob = identity(2);
+    // A consumer the carrier has never heard of, declared by the node that
+    // runs it and by nothing in this crate.
+    b.handle_direct("ledger", "settle-up");
 
     a.send_direct(bob.id(), &alice, "ledger", "settle-up", b"7 owed".to_vec())
         .expect("within the ceilings");
 
     let arrived = await_direct(&mut b, &mut a, Duration::from_secs(20))
         .await
-        .expect("an unknown namespace still arrives");
+        .expect("a namespace this crate never names still arrives");
     assert_eq!(arrived.namespace, "ledger");
     assert_eq!(arrived.kind, "settle-up");
     assert_eq!(arrived.payload, b"7 owed".to_vec());
@@ -442,7 +448,7 @@ async fn a_sender_learns_its_payload_was_delivered() {
         loop {
             tokio::select! {
                 event = a.next_event() => {
-                    if let NodeEvent::DirectDelivered { to, ack } = event {
+                    if let NodeEvent::DirectDelivered { to, ack, .. } = event {
                         return Some((to, ack));
                     }
                 }
@@ -462,4 +468,111 @@ async fn a_sender_learns_its_payload_was_delivered() {
         "delivery-level only: it reached a consumer that understands it, and says \
          nothing about anybody agreeing to it"
     );
+}
+
+#[tokio::test]
+async fn a_kind_nothing_handles_is_answered_unsupported_not_received() {
+    // Core §5.1: `Received` says a consumer that understands the payload got
+    // it. Until 2026-10-11 the node said it about every kind, so a sender could
+    // not tell a recipient that understood a message from one that dropped it —
+    // which is what a client too old for a new kind does.
+    let (mut a, mut b) = pair().await;
+    let alice = identity(1);
+    let bob = identity(2);
+
+    let sent = a
+        .send_direct(bob.id(), &alice, "chat", "dm-knock", b"wake".to_vec())
+        .expect("within the ceilings");
+
+    let (mut answered, mut refused) = (None, None);
+    let _ = tokio::time::timeout(Duration::from_secs(20), async {
+        while answered.is_none() || refused.is_none() {
+            tokio::select! {
+                event = a.next_event() => {
+                    if let NodeEvent::DirectDelivered { request, ack, .. } = event {
+                        answered = Some((request, ack));
+                    }
+                }
+                event = b.next_event() => match event {
+                    NodeEvent::DirectRefused { reason, .. } => refused = Some(reason),
+                    NodeEvent::DirectReceived { .. } => panic!("an unhandled kind reached a consumer"),
+                    _ => {}
+                },
+            }
+        }
+    })
+    .await;
+
+    let (request, ack) = answered.expect("the sender is told");
+    assert_eq!(request, sent, "the answer names the send it answers");
+    assert_eq!(ack, DirectAck::Refused(DirectRefusal::Unsupported));
+    assert_eq!(refused, Some(DirectRefusal::Unsupported));
+}
+
+#[tokio::test]
+async fn each_answer_names_the_send_it_answers() {
+    // Two messages out to one member at once. Without the request id on the
+    // ack, a sender could only match answers by who sent them, and a client
+    // that cleared a pending offer on any answer from its recipient would clear
+    // it on the answer to something else (ko-ls, found designing D41's knock).
+    let (mut a, mut b) = pair().await;
+    let alice = identity(1);
+    let bob = identity(2);
+
+    let handled = a
+        .send_direct(bob.id(), &alice, "chat", "dm-invite", b"an invite".to_vec())
+        .expect("within the ceilings");
+    let unhandled = a
+        .send_direct(bob.id(), &alice, "chat", "unheard-of", b"?".to_vec())
+        .expect("within the ceilings");
+
+    let mut answers = std::collections::BTreeMap::new();
+    let _ = tokio::time::timeout(Duration::from_secs(20), async {
+        while answers.len() < 2 {
+            tokio::select! {
+                event = a.next_event() => {
+                    if let NodeEvent::DirectDelivered { request, ack, .. } = event {
+                        answers.insert(request, ack);
+                    }
+                }
+                _ = b.next_event() => {}
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(answers.get(&handled), Some(&DirectAck::Received));
+    assert_eq!(
+        answers.get(&unhandled),
+        Some(&DirectAck::Refused(DirectRefusal::Unsupported))
+    );
+}
+
+#[tokio::test]
+async fn a_send_nobody_answers_is_reported_as_failed() {
+    // There is no queue (Core §5.1), so a send to somebody unreachable is the
+    // sender's to retry, and a sender tracking its sends by id must be told this
+    // one is over. Before it was reported, every send to an absent member stayed
+    // outstanding for as long as the node ran.
+    let (mut a, _) = node(1).await;
+    let alice = identity(1);
+    let nobody = identity(9);
+
+    let sent = a
+        .send_direct(nobody.id(), &alice, "chat", "dm-invite", b"hello?".to_vec())
+        .expect("within the ceilings");
+
+    let failed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match a.next_event().await {
+                NodeEvent::DirectFailed { request, to, .. } => return (request, to),
+                NodeEvent::DirectDelivered { .. } => panic!("nobody was there to answer"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the sender is told the send failed");
+
+    assert_eq!(failed, (sent, nobody.id()));
 }

@@ -485,6 +485,11 @@ pub enum NodeEvent {
     /// third time this carrier has been completed that way after §1.2's proof
     /// and §5.6's invite bytes.
     DirectDelivered {
+        /// Which send this answers: the id [`MemberNode::send_direct`]
+        /// returned. Core §5.1 requires an ack be correlated to its send. A
+        /// sender with an offer and a knock out to the same member could
+        /// otherwise take one's answer for the other's.
+        request: request_response::OutboundRequestId,
         /// Who answered.
         to: PerNetworkIdentityId,
         /// What they said at the delivery level.
@@ -501,6 +506,22 @@ pub enum NodeEvent {
         sender: PerNetworkIdentityId,
         /// Why it was not taken.
         reason: crate::direct::DirectRefusal,
+    },
+    /// A direct message this node sent got no answer at all — Core §5.1.
+    ///
+    /// The recipient could not be reached, the stream failed, or it timed out.
+    /// Nothing was delivered and nothing is held (there is no queue), so the
+    /// retry is the sender's, as for a refusal. Reported so a sender tracking
+    /// its sends by [`MemberNode::send_direct`]'s id can stop tracking this
+    /// one: before it was reported, an unreachable recipient left every send to
+    /// it outstanding forever.
+    DirectFailed {
+        /// Which send failed.
+        request: request_response::OutboundRequestId,
+        /// Who it was for.
+        to: PerNetworkIdentityId,
+        /// What failed, for a log rather than for a decision.
+        error: String,
     },
     /// A call signalling message arrived — Real-Time Spec §1.4.
     ///
@@ -927,6 +948,16 @@ pub struct MemberNode {
     /// remember to apply is one an inbound message reaches before anybody has
     /// decided anything. See [`crate::direct_limits`].
     direct_meter: crate::direct_limits::DirectMeter,
+    /// The `(namespace, kind)` pairs something on this node handles — Core §5.1.
+    ///
+    /// **What makes `Received` true.** The acknowledgement says a payload
+    /// reached a consumer that understands it, and the node answers before any
+    /// consumer runs, because a request/response cannot wait on one. So the
+    /// consumers say in advance what they understand, and anything else is
+    /// answered `Unsupported`. Until 2026-10-11 the node answered `Received` to
+    /// every kind, so a sender could not tell a recipient that understood it
+    /// from one that dropped it.
+    direct_consumers: std::collections::BTreeSet<(String, String)>,
 }
 
 /// Says why a listen failed, which libp2p's own `Display` does not.
@@ -1125,6 +1156,7 @@ impl MemberNode {
             next_epoch_request: 0,
             media_relay: MediaRelayGuard::new(MediaRelayLimits::default()),
             direct_meter: crate::direct_limits::DirectMeter::new(),
+            direct_consumers: std::collections::BTreeSet::new(),
         })
     }
 
@@ -1779,6 +1811,18 @@ impl MemberNode {
             .collect()
     }
 
+    /// Declares that something on this node handles direct messages of this
+    /// namespace and kind — Core §5.1.
+    ///
+    /// Only these are answered `Received` and reported as
+    /// [`NodeEvent::DirectReceived`]; any other is answered `Unsupported` and
+    /// reported as [`NodeEvent::DirectRefused`]. Declared rather than inferred,
+    /// because the answer goes back before any consumer has seen the message.
+    pub fn handle_direct(&mut self, namespace: &str, kind: &str) {
+        self.direct_consumers
+            .insert((namespace.to_owned(), kind.to_owned()));
+    }
+
     /// Hands a payload directly to another member — Core §5.1.
     ///
     /// `namespace` and `kind` say which consumer the payload is for; this crate
@@ -1790,6 +1834,9 @@ impl MemberNode {
     /// deliberately no store: a message that could not be handed over is the
     /// caller's to retry, because a carrier that held one would be an inbox, and
     /// an inbox puts one member's private request on somebody else's disk.
+    ///
+    /// The returned id is the one [`NodeEvent::DirectDelivered`] carries, so a
+    /// sender with several messages out to one member knows which was answered.
     pub fn send_direct(
         &mut self,
         to: PerNetworkIdentityId,
@@ -3729,6 +3776,23 @@ impl MemberNode {
                 }
 
                 SwarmEvent::Behaviour(MemberBehaviourEvent::Direct(
+                    request_response::Event::OutboundFailure {
+                        peer,
+                        request_id,
+                        error,
+                        ..
+                    },
+                )) => {
+                    if let Some(to) = PerNetworkIdentityId::from_peer_id(&peer) {
+                        return NodeEvent::DirectFailed {
+                            request: request_id,
+                            to,
+                            error: error.to_string(),
+                        };
+                    }
+                }
+
+                SwarmEvent::Behaviour(MemberBehaviourEvent::Direct(
                     request_response::Event::Message { peer, message, .. },
                 )) => {
                     // The sender's half. Reported rather than dropped: §5.1
@@ -3741,9 +3805,14 @@ impl MemberNode {
                     // its public key and every consumer of this event is
                     // reasoning about identities — a consumer left to convert
                     // would be a consumer with its own opinion about how.
-                    if let request_response::Message::Response { response, .. } = &message {
+                    if let request_response::Message::Response {
+                        request_id,
+                        response,
+                    } = &message
+                    {
                         if let Some(to) = PerNetworkIdentityId::from_peer_id(&peer) {
                             return NodeEvent::DirectDelivered {
+                                request: *request_id,
                                 to,
                                 ack: response.clone(),
                             };
@@ -3779,12 +3848,23 @@ impl MemberNode {
                             .direct_meter
                             .admit(&request.sender, std::time::Instant::now());
 
-                        let ack = if within {
-                            crate::direct::DirectAck::Received
+                        // **Then whether anything here understands it.** Core
+                        // §5.1's `Received` means a consumer that understands
+                        // the payload got it; answering that to a kind nobody
+                        // handles tells the sender something false.
+                        let understood = self
+                            .direct_consumers
+                            .contains(&(request.namespace.clone(), request.kind.clone()));
+                        let refusal = if !within {
+                            Some(crate::direct::DirectRefusal::RateLimited)
+                        } else if !understood {
+                            Some(crate::direct::DirectRefusal::Unsupported)
                         } else {
-                            crate::direct::DirectAck::Refused(
-                                crate::direct::DirectRefusal::RateLimited,
-                            )
+                            None
+                        };
+                        let ack = match refusal {
+                            None => crate::direct::DirectAck::Received,
+                            Some(reason) => crate::direct::DirectAck::Refused(reason),
                         };
                         let _ = self
                             .swarm
@@ -3793,15 +3873,15 @@ impl MemberNode {
                             .send_response(channel, ack);
 
                         // The answer goes back either way — a sender learns it
-                        // was rate limited rather than being left to time out,
-                        // which is the difference between a limit and a black
-                        // hole.
-                        if within {
-                            return NodeEvent::DirectReceived { message: request };
-                        }
-                        return NodeEvent::DirectRefused {
-                            sender: request.sender,
-                            reason: crate::direct::DirectRefusal::RateLimited,
+                        // was rate limited, or sent something this node does not
+                        // handle, rather than being left to time out, which is
+                        // the difference between a limit and a black hole.
+                        return match refusal {
+                            None => NodeEvent::DirectReceived { message: request },
+                            Some(reason) => NodeEvent::DirectRefused {
+                                sender: request.sender,
+                                reason,
+                            },
                         };
                     }
                 }

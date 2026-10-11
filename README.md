@@ -118,7 +118,7 @@ count it measured.
 | 04 Real-time transport — calls, streams, VOD | Implemented; relay media fans out (§2.2.1) under enforced local ceilings (§2.2.2), but uses the fallback delivery path, see below |
 | 05 Search & indexing | Implemented |
 | 06 Reference test harness | CLI implemented; NAT matrix at §2.3's six scenarios, **all 6 passing**, including IPv6 at tier 1 and two that assert no connection. `governance grinding-check` pads a losing branch with either capability-free entry type and asserts it still loses |
-| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks eleven amendments of the platform, ten of them landed — see its §7. The other, E13 (cross-network connection bootstrap for direct messages), is deferred: the client meets at a borrowed relay instead |
+| 07 Chat application (draft) | Specified; implemented out of tree by [`ko-ls`](https://github.com/DriftingNarwhal/ko-ls). Asks twelve amendments of the platform, eleven of them landed — see its §7. The other, E13 (cross-network connection bootstrap for direct messages), is deferred: the client meets at a borrowed relay instead |
 
 ### Two things to know before you build on it
 
