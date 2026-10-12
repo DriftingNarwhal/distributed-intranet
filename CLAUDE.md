@@ -160,6 +160,13 @@ event pushed there from inside its loop is delivered on the *next* call — whic
 comes if the arm falls through and nothing else happens. Push to `pending` only in an arm
 that returns immediately afterwards; otherwise return the event directly.
 
+`NodeEvent::Disconnected` is raised only when a peer's **last** connection closes, circuits
+included, deliberately (`node.rs`, `ConnectionClosed`: losing the circuit after a punch costs
+nothing). The other side of that: a consumer that counts a peer present only on a direct
+connection is not told when the direct one drops while a circuit to the same peer is still
+open, and can show them present for up to the circuit's lifetime. Noticed by ko-ls
+2026-10-12; not addressed.
+
 ## Real-time: calls, relays and media
 
 Calls run over two protocols, and their separation is load-bearing:
@@ -224,13 +231,26 @@ the specs, and it is named above: call media delivery uses the reliable fallback
 permits only as one. (A second, recorded 2026-10-11, was fixed the same
 day: the direct carrier answered `Received` to every kind, before any consumer, and now answers
 it only to a kind declared with `MemberNode::handle_direct`, as Core v1.8 §5.1 requires.)
-**A third, recorded 2026-10-12 and not yet fixed:** the listening side of a relayed connection
-classifies it as `Direct(Ipv4)`, so it syncs over the circuit, which Core §5.2 forbids. `classify`
-reads the remote address, and for an inbound connection that is the send-back address, which
-names no circuit (and no IP, hence the IPv4 fallback). Found by ko-ls running two installations
-across the NAT matrix. Everything else matches.
+(A third, recorded 2026-10-12, was fixed the same day: the listening side of a relayed connection
+classified it as `Direct(Ipv4)` and synced over the circuit, which Core §5.2 forbids, because
+`classify` read the remote address, and for an inbound connection that is the send-back address,
+which names no circuit. The tier is now asked of the connection (`ConnectedPoint::is_relayed`).
+Found by ko-ls running two installations across the NAT matrix.) (A fourth, found the same way the
+same day and fixed the same day: every protocol ran over a circuit until its deadline — direct
+messages, gossip, the join handshake, sync — because libp2p hands a request to whatever connection
+a peer has. Each payload-carrying behaviour is now wrapped in `DirectOnly`, below.) Everything else
+matches.
 
 ## Invariants and the gate
+
+- **Every behaviour in `MemberBehaviour` is wrapped in `DirectOnly`** (`direct_only.rs`), which keeps
+  it off relayed circuits by never telling it a circuit exists — Core §5.2's "the DCUtR negotiation
+  and nothing else". Bare are DCUtR, the relay client and identify, which §5.3 budgets a circuit for,
+  and mDNS, which opens no streams. A protocol added unwrapped would run over circuits silently, so a
+  test in `behaviour.rs` reads the struct and fails on it; `tests/circuit_carries_nothing.rs` checks
+  what actually crosses, for direct messages and gossip only. A dial to a peer reachable only by
+  circuit is answered as failed at once, because request-response and Kademlia ignore the swarm's
+  own "already connected" refusal and would otherwise hold the request until a punch landed.
 
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets` and `cargo fmt --all --check`
   must all stay clean. Note that clippy is absent from some environments (a source-tarball rustc

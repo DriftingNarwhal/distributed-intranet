@@ -188,3 +188,199 @@ async fn a_circuit_that_never_upgrades_is_closed_on_the_deadline() {
          treating a relayed connection as a usable path"
     );
 }
+
+/// The other end of the same circuit must know it is a circuit.
+///
+/// The test above watches the dialer. This one watches the target, which
+/// receives the circuit as an *inbound* connection — and for an inbound
+/// connection libp2p's remote address is the send-back address, which names
+/// no circuit. Classified from that, the target reported `Direct(Ipv4)` and
+/// synced over a connection §5.2 permits to carry the DCUtR negotiation and
+/// nothing else. Found by ko-ls running two installations across the NAT
+/// matrix, where the listening side of every circuit said it was direct.
+#[tokio::test]
+async fn the_listening_end_of_a_circuit_reports_it_as_relayed() {
+    let (relay_addr, mut relay) = start_relay().await;
+
+    let target_identity = identity(4);
+    let dialer_identity = identity(5);
+    let target_peer = target_identity.peer_id();
+    let dialer_peer = dialer_identity.peer_id();
+
+    let mut target = MemberNode::new(&target_identity).unwrap();
+    let mut dialer = MemberNode::new(&dialer_identity).unwrap();
+    // The same shape as above: the circuit is the target's only address.
+    dialer
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
+
+    target.reserve_via_relay(relay_addr.clone()).await.unwrap();
+    dialer.reserve_via_relay(relay_addr.clone()).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut granted = false;
+        while !granted {
+            tokio::select! {
+                event = target.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && address.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+                    {
+                        granted = true;
+                    }
+                }
+                _ = dialer.next_event() => {}
+                _ = relay.next_event() => {}
+            }
+        }
+    })
+    .await
+    .expect("the target's reservation should be granted");
+
+    let circuit: Multiaddr = format!("{relay_addr}/p2p-circuit/p2p/{target_peer}")
+        .parse()
+        .unwrap();
+    dialer.dial_candidates(vec![circuit]).unwrap();
+
+    let tier = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = tokio::select! {
+                event = target.next_event() => event,
+                _ = dialer.next_event() => continue,
+                _ = relay.next_event() => continue,
+            };
+            if let NodeEvent::Connected { peer, tier, .. } = event
+                && peer == dialer_peer
+            {
+                return tier;
+            }
+        }
+    })
+    .await
+    .expect("the target should see the dialer arrive over the circuit");
+
+    assert_eq!(
+        tier,
+        ConnectionTier::Relayed,
+        "an inbound circuit is still a circuit: reported as direct, the target \
+         syncs over it, which \u{a7}5.2 forbids"
+    );
+    assert_eq!(target.tier_for(&dialer_peer), Some(ConnectionTier::Relayed));
+}
+
+/// A circuit to a peer already reached directly must not cost the direct
+/// connection.
+///
+/// The tier is kept per peer, and a circuit arriving second used to overwrite
+/// it: the peer read as relayed, the deadline started, and when it ran out the
+/// node disconnected the *peer* — closing the direct connection along with the
+/// circuit. Redialling an invite's circuit address while already connected
+/// opens exactly that, on either side.
+///
+/// **What this does not prove, stated:** the disconnect needs the late
+/// circuit's own punch to fail, and on loopback it succeeds — so before the fix
+/// this passed too, the peer re-upgrading in time. It pins the path (a circuit
+/// after a direct connection leaves that connection standing), not the failure,
+/// which was found by reading `close_stale_circuit` rather than by running it.
+#[tokio::test]
+async fn a_late_circuit_does_not_cost_a_direct_connection() {
+    let (relay_addr, mut relay) = start_relay().await;
+
+    let target_identity = identity(10);
+    let dialer_identity = identity(11);
+    let target_peer = target_identity.peer_id();
+    let dialer_peer = dialer_identity.peer_id();
+
+    let mut target = MemberNode::new(&target_identity).unwrap();
+    let mut dialer = MemberNode::new(&dialer_identity).unwrap();
+    target
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    dialer
+        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+        .unwrap();
+    dialer.set_circuit_upgrade_deadline(DEADLINE);
+    target.set_circuit_upgrade_deadline(DEADLINE);
+
+    let direct = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let NodeEvent::Listening(address) = target.next_event().await
+                && has_tcp(&address)
+            {
+                return address.with(Protocol::P2p(target_peer));
+            }
+        }
+    })
+    .await
+    .expect("the target listens");
+
+    target.reserve_via_relay(relay_addr.clone()).await.unwrap();
+    dialer.reserve_via_relay(relay_addr.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut granted = false;
+        while !granted {
+            tokio::select! {
+                event = target.next_event() => {
+                    if let NodeEvent::Listening(address) = event
+                        && address.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+                    {
+                        granted = true;
+                    }
+                }
+                _ = dialer.next_event() => {}
+                _ = relay.next_event() => {}
+            }
+        }
+    })
+    .await
+    .expect("the target's reservation should be granted");
+
+    dialer.dial_candidates(vec![direct]).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = tokio::select! {
+                event = dialer.next_event() => event,
+                _ = target.next_event() => continue,
+                _ = relay.next_event() => continue,
+            };
+            if let NodeEvent::Connected { peer, tier, .. } = event
+                && peer == target_peer
+            {
+                assert!(!tier.relay_in_data_path(), "the first connection is direct");
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the direct connection should open");
+
+    let circuit: Multiaddr = format!("{relay_addr}/p2p-circuit/p2p/{target_peer}")
+        .parse()
+        .unwrap();
+    dialer.dial_candidates(vec![circuit]).unwrap();
+
+    // Well past the deadline, on both ends.
+    let watch = tokio::time::sleep(DEADLINE * 3);
+    tokio::pin!(watch);
+    loop {
+        tokio::select! {
+            () = &mut watch => break,
+            event = dialer.next_event() => {
+                if let NodeEvent::Disconnected { peer } = event {
+                    assert_ne!(peer, target_peer, "the dialer lost its direct connection to a late circuit");
+                }
+            }
+            event = target.next_event() => {
+                if let NodeEvent::Disconnected { peer } = event {
+                    assert_ne!(peer, dialer_peer, "the target lost its direct connection to a late circuit");
+                }
+            }
+            _ = relay.next_event() => {}
+        }
+    }
+    assert!(
+        dialer
+            .tier_for(&target_peer)
+            .is_some_and(|tier| !tier.relay_in_data_path()),
+        "the peer must still read as direct, not downgraded by the circuit"
+    );
+}

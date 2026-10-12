@@ -42,7 +42,7 @@ harness.
 | Docker NAT topology (`docker/`) | **Executed and working.** All 12 containers come up; peers reach the relay through their NATs, including both CGNAT chains. |
 | Scenarios 1, 2 | **Passing.** |
 | Scenario 3 (hole-punching) | **Passing**, confirmed in the container. |
-| Scenario 4 | **Passing.** Asserts no surviving connection: the punch fails, and the circuit that carried the negotiation is closed rather than used. |
+| Scenario 4 | **Passing.** Asserts no surviving connection: the punch fails, and the circuit that carried the negotiation is closed rather than used. §2.4's stronger, negative assertion — *no payload crossed a circuit* — is only partly met: there is no relay byte counter here, and `intranet-transport/tests/circuit_carries_nothing.rs` checks direct messages and gossip in process, not every protocol. What keeps the rest off circuits is structural (`DirectOnly`, and a test that every protocol is wrapped), not asserted on the wire. |
 | Scenario 5 | **Passing.** The dual-stack case §2.3 calls the most important one to automate — two CGNAT chains, succeeding at **tier 1 over IPv6**, no relay in the path. |
 | Scenario 6 | **Passing.** Scenario 5's control: the same pair with the v6 route removed must not connect at all. |
 
@@ -317,6 +317,20 @@ scenario 5, the worst realistic case and the one that must always succeed, ends
 in a working relayed circuit. *(Superseded with tier 3 itself: scenario 5 now
 succeeds over IPv6, see the matrix below.)*
 
+### Not fixed: a relay on both TCP and QUIC defeats the punch
+
+Found 2026-10-12 by ko-ls, running two of its own installations in this matrix,
+unchanged (`ko-ls/scripts/nat-dm.sh`). Its nodes listen on TCP and QUIC, and the
+matrix's relay does too (`compose.yml`), so the two sides reached the relay over
+different transports, each learned an external address only for the one it used,
+and DCUtR punched on mismatched transports. Scenario 3's punch never succeeded
+for them, in every run. The scenarios here pass because their peers listen on
+TCP only, so they cannot show it. With the relay on TCP alone, as the deployed
+DI-Relay is (and with that day's other fixes in place), the same two
+installations punched. Nothing in the transport
+handles it: any relay offering both transports to dual-transport peers will
+leave them unable to punch. Recorded, not fixed.
+
 ## Diagnosing a scenario
 
 Logging is now wired up. `RUST_LOG` reaches the transport layer, and swarm
@@ -343,7 +357,9 @@ Peers also print two lines that matter more than the rest:
 A green run here validates **connectivity and tier selection**. It is not an
 end-to-end test. The scenarios assert which path a connection took; no
 governance entry, stored object or application message crosses these circuits.
-Nothing above the transport layer participates.
+Nothing above the transport layer participates. ko-ls's `scripts/nat-dm.sh` is the
+end-to-end run on this topology: two of its installations join a network, hold a
+direct conversation and time each message (2026-10-12).
 
 ## Running the verified parts
 

@@ -1929,6 +1929,7 @@ name = "intranet-transport"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "either",
  "futures",
  "intranet-app",
  "intranet-crypto",

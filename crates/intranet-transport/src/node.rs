@@ -1,6 +1,7 @@
 //! Member and relay nodes — Core Protocol Spec §5.1–5.5.
 
 use crate::dial::{ConnectionTier, classify};
+use crate::direct_only::DirectOnly;
 use crate::media_limits::{MediaRelayDenied, MediaRelayGuard, MediaRelayLimits};
 use crate::{RelayLimits, TransportError, behaviour::*};
 use intranet_crypto::{Hash, Timestamp};
@@ -1078,10 +1079,10 @@ impl MemberNode {
                     let gossip =
                         crate::sync::gossip_behaviour().expect("the gossip configuration is valid");
                     MemberBehaviour {
-                        gossip,
-                        kad: Toggle::from(discovery.on().then(|| {
+                        gossip: DirectOnly::new(gossip),
+                        kad: DirectOnly::new(Toggle::from(discovery.on().then(|| {
                             kad::Behaviour::new(peer, kad::store::MemoryStore::new(peer))
-                        })),
+                        }))),
                         mdns: Toggle::from(discovery.on().then(|| {
                             mdns::tokio::Behaviour::new(mdns::Config::default(), peer)
                                 .expect("mdns config is valid")
@@ -1090,20 +1091,20 @@ impl MemberNode {
                             PROTOCOL_VERSION.into(),
                             key.public(),
                         )),
-                        ping: ping::Behaviour::default(),
+                        ping: DirectOnly::new(ping::Behaviour::default()),
                         relay_client,
                         dcutr: dcutr::Behaviour::new(peer),
-                        sync: crate::sync::behaviour(),
-                        ballot: crate::sync::ballot_behaviour(),
-                        join: crate::sync::join_behaviour(),
-                        epoch: crate::sync::epoch_behaviour(),
-                        ledger: crate::sync::ledger_behaviour(),
-                        chunk: crate::sync::chunk_behaviour(),
-                        pointer: crate::sync::pointer_behaviour(),
-                        collection: crate::sync::collection_behaviour(),
-                        direct: crate::sync::direct_behaviour(),
-                        signal: crate::sync::signal_behaviour(),
-                        media: crate::sync::media_behaviour(),
+                        sync: DirectOnly::new(crate::sync::behaviour()),
+                        ballot: DirectOnly::new(crate::sync::ballot_behaviour()),
+                        join: DirectOnly::new(crate::sync::join_behaviour()),
+                        epoch: DirectOnly::new(crate::sync::epoch_behaviour()),
+                        ledger: DirectOnly::new(crate::sync::ledger_behaviour()),
+                        chunk: DirectOnly::new(crate::sync::chunk_behaviour()),
+                        pointer: DirectOnly::new(crate::sync::pointer_behaviour()),
+                        collection: DirectOnly::new(crate::sync::collection_behaviour()),
+                        direct: DirectOnly::new(crate::sync::direct_behaviour()),
+                        signal: DirectOnly::new(crate::sync::signal_behaviour()),
+                        media: DirectOnly::new(crate::sync::media_behaviour()),
                     }
                 })
                 .map_err(|e| TransportError::Build(e.to_string()))?
@@ -3412,10 +3413,23 @@ impl MemberNode {
                 }
 
                 SwarmEvent::ConnectionEstablished {
-                    peer_id, endpoint, ..
+                    peer_id,
+                    connection_id,
+                    endpoint,
+                    ..
                 } => {
                     let address = endpoint.get_remote_address().clone();
-                    let tier = classify(&address);
+                    // **Asked of the connection, not of the remote address.**
+                    // For an inbound connection that address is the send-back
+                    // address, which names no circuit, so the listening end of
+                    // every circuit was classified `Direct(Ipv4)` and synced over
+                    // it — which §5.2 forbids. `is_relayed` reads the dialled
+                    // address or the local one, whichever end this is.
+                    let tier = if endpoint.is_relayed() {
+                        ConnectionTier::Relayed
+                    } else {
+                        classify(&address)
+                    };
                     // Tier 2 is defined by what happened to the *connection* —
                     // §5.2: a relayed connection that became direct — not by
                     // which peer's dial won the race to make it so.
@@ -3438,6 +3452,22 @@ impl MemberNode {
                     // exists to make: where no upgrade occurs the connection
                     // stays relayed and is still reported as tier 3, which is
                     // what scenarios 4 and 5 assert.
+                    // **A circuit to a peer already reached without one is
+                    // closed, and changes nothing.** It has nothing to
+                    // negotiate, and the tier is kept per peer: recorded, it
+                    // read the peer as relayed and started the deadline, whose
+                    // expiry disconnects the *peer* — the direct connection
+                    // with it. Redialling an invite's circuit address while
+                    // connected opens one, on either end.
+                    if tier.relay_in_data_path()
+                        && self
+                            .tiers
+                            .get(&peer_id)
+                            .is_some_and(|known| !known.relay_in_data_path())
+                    {
+                        self.swarm.close_connection(connection_id);
+                        continue;
+                    }
                     let tier = match self.tiers.get(&peer_id) {
                         // Already upgraded: never downgrade on a later event.
                         Some(ConnectionTier::HolePunched) if !tier.relay_in_data_path() => {
