@@ -224,7 +224,11 @@ the specs, and it is named above: call media delivery uses the reliable fallback
 permits only as one. (A second, recorded 2026-10-11, was fixed the same
 day: the direct carrier answered `Received` to every kind, before any consumer, and now answers
 it only to a kind declared with `MemberNode::handle_direct`, as Core v1.8 §5.1 requires.)
-Everything else matches.
+**A third, recorded 2026-10-12 and not yet fixed:** the listening side of a relayed connection
+classifies it as `Direct(Ipv4)`, so it syncs over the circuit, which Core §5.2 forbids. `classify`
+reads the remote address, and for an inbound connection that is the send-back address, which
+names no circuit (and no IP, hence the IPv4 fallback). Found by ko-ls running two installations
+across the NAT matrix. Everything else matches.
 
 ## Invariants and the gate
 
