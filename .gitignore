@@ -1,13 +1,7 @@
 /target
 
-# Per-machine Claude Code state, not project configuration.
-#
-# This dev environment creates zero-byte, read-only placeholders at these
-# paths — and `skills`, `hooks`, `workflows`, `routines` and `output-styles`
-# are placeholder *files* where a working setup expects *directories*, so
-# committing them would plant a file in a clone where a teammate's tooling
-# needs to create a directory. Anything here that is genuinely shared config
-# should be un-ignored deliberately, one path at a time.
-.claude/*
-!.claude/settings.local.json
+# Agent tooling (Claude Code and the like) lives in a separate workspace repo, not here.
+/.claude/
+/CLAUDE.md
+/AGENTS.md
 .mcp.json

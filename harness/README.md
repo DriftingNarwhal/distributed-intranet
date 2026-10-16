@@ -46,7 +46,7 @@ harness.
 | Scenario 5 | **Passing.** The dual-stack case §2.3 calls the most important one to automate — two CGNAT chains, succeeding at **tier 1 over IPv6**, no relay in the path. |
 | Scenario 6 | **Passing.** Scenario 5's control: the same pair with the v6 route removed must not connect at all. |
 
-The gate in `../CLAUDE.md` — `cargo test --workspace`, `cargo clippy --workspace
+The gate in `../CONTRIBUTING.md` — `cargo test --workspace`, `cargo clippy --workspace
 --all-targets` and `cargo fmt --all --check` — stays clean, including over the
 fixes described below. The test count is not kept here, because it moves with
 every change: each commit's body ends with the gate line that measured it. Note that clippy is absent
